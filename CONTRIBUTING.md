@@ -152,6 +152,7 @@ window, including one started to update a game, uses Automatic again.
 | `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 | `python -I scripts/hookshot_mcp.py --check` | The MCP server for automated in-game tests (needs the `mcp` package; see [docs/mcp.md](docs/mcp.md)). |
+| `python -I -B scripts/pr_check.py --base main` | A read-only pre-PR check: game-derived paths, LF endings, commit format and the full test suite. |
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
 local artifacts; they are never committed.
@@ -214,6 +215,8 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
   a check whose tool is missing is skipped, or fails with `--strict`. A test that needs none of this declares nothing.
 - Keep the test fast: every check shares one CI job with a 20-minute limit. Make it pass on both Ubuntu and Windows
   where it can.
+- Before opening a pull request, run `python -I -B scripts/pr_check.py --base main`. It is read-only and checks the
+  changed paths, line endings, commit subjects and trailers, then runs the game-free suite.
 - If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in
   which part of the game.
 
