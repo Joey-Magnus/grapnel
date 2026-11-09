@@ -262,8 +262,11 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
    message. Before and after for a fix, the new screen for a feature, and the sizes or settings it was checked at. A
    screenshot of the game is fine; the rule above is about game files, not pictures of the game.
 5. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+6. If the repository's automatic checks (Actions) run on the pull request, wait for them to finish and push fixes for
+   anything that failed. A red run is not left for a maintainer to explain: read the failed job's log, fix it, or say
+   which environment failure it is (and that it fails the same way on `main`), then push again.
+7. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
+8. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
 Commit subjects decide the next release: write them as Conventional Commits (`feat:`, `fix:`, and `!` or
 `BREAKING CHANGE:` for a break). The version rules, branches and changelog format are in
