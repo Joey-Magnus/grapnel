@@ -46,6 +46,8 @@ typedef struct Obj {
     struct Obj *mw;    /* holder -> the multi-wait it is linked to */
     int spin_misses, spin_waits;
     int64_t sig_ns;      /* (HOS_WAKE_LAT: when it was last signaled / sent to) */
+    int64_t trace_signal_ns; /* HOS_SYNC_WAIT_TRACE_MS: last signal, under lk */
+    DWORD trace_signal_tid;
     struct Obj *spare;   /* (on the spare list: see spares) */
 } Obj;
 
@@ -191,8 +193,9 @@ static Obj *obj_lookup(uint64_t key, int kind);
    of the shared table and a cache miss on a scattered object). Game threads use a few objects over and over: a small
    direct-mapped cache per thread answers those. An entry holds while its object is still that address's and of the
    kind asked for (objects are reused, never freed: spares). HOS_NO_OBJ_CACHE=1: off. */
-static Obj *obj(uint64_t key, int kind) {
-    hos_vcore_checkpoint();   /* (virtual cores: every nn::os call, where a better waiter takes the core) */
+/* Internal lookups under a host monitor must not yield a virtual core: its
+   replacement may need that monitor before it can give the core back. */
+static Obj *obj_cached(uint64_t key, int kind) {
     /* (hookshot: 128 still missed: obj_lookup was the busiest leaf in dense Kokiri, 3.2% of all samples, 4.3% of the instants when one
        thread alone ran; each actor has its own mutexes) */
     static _Thread_local struct { uint64_t key; Obj *o; } cache[1024];
@@ -209,6 +212,11 @@ static Obj *obj(uint64_t key, int kind) {
         return o;
     }
     return obj_lookup(key, kind);
+}
+
+static Obj *obj(uint64_t key, int kind) {
+    hos_vcore_checkpoint();   /* public nn::os entry, before taking host locks */
+    return obj_cached(key, kind);
 }
 
 static Obj *obj_lookup(uint64_t key, int kind) {
@@ -606,9 +614,44 @@ static void event_init(uint64_t key, int signaled, int clear_mode) {
     e->signaled = signaled;
     e->autoclear = clear_mode == 1;   /* EventClearMode_AutoClear = 1, ManualClear = 0 */
 }
+/* Per-wait diagnostics: copy signal metadata under the object lock, emit after
+   releasing it. The last signal is correlation evidence, not proof of a unique
+   causal producer (manual-reset events can have multiple waiters/signals). */
+static int sync_wait_trace_ms(void) {
+    static _Thread_local int initialized, threshold;
+    if (!initialized) {
+        const char *value = getenv("HOS_SYNC_WAIT_TRACE_MS");
+        threshold = value ? atoi(value) : 0;
+        if (threshold < 0) threshold = 0;
+        initialized = 1;
+    }
+    return threshold;
+}
+static int64_t sync_wait_trace_start(void) {
+    if (!sync_wait_trace_ms()) return 0;
+    const char *filter = getenv("HOS_SYNC_WAIT_TRACE_THREAD");
+    if (filter && strcmp(filter, hos_thread_name(hos_self()))) return 0;
+    return hos_now_ns();
+}
+static void sync_wait_trace_emit(uint64_t key, int64_t start, int64_t end,
+                                 int64_t signal_ns, DWORD signal_tid, int got) {
+    static volatile LONG count;
+    if (!start || end - start < (int64_t)sync_wait_trace_ms() * 1000000) return;
+    if (InterlockedIncrement(&count) > 4096) return;
+    hos_log("sync-wait: kind=event key=%#llx waiter_tid=%lu start_ns=%lld end_ns=%lld "
+            "signal_ns=%lld signal_tid=%lu got=%d name=%s",
+            (unsigned long long)key, (unsigned long)GetCurrentThreadId(),
+            (long long)start, (long long)end, (long long)signal_ns,
+            (unsigned long)signal_tid, got, hos_thread_name(hos_self()));
+}
+
 static void event_signal(Obj *e) {
     AcquireSRWLockExclusive(&e->lk);
     e->signaled = 1;
+    if (sync_wait_trace_ms()) {
+        e->trace_signal_ns = hos_now_ns();
+        e->trace_signal_tid = GetCurrentThreadId();
+    }
     if (wake_lat_on()) e->sig_ns = hos_now_ns();
     ReleaseSRWLockExclusive(&e->lk);
     WakeAllConditionVariable(&e->cv);
@@ -658,6 +701,7 @@ static void wake_lat_note(int how, int64_t lat_ns) {   /* how: 0 ready, 1 spun, 
 }
 
 static int event_wait(Obj *e, int64_t timeout_ns, int try_only) {
+    const int64_t trace_start = try_only ? 0 : sync_wait_trace_start();
     int64_t deadline = timeout_ns > 0 ? hos_now_ns() + timeout_ns : 0;
     const int was_set = e->signaled > 0;
     if (!try_only) spin_until_set(e, &e->signaled);
@@ -672,7 +716,12 @@ static int event_wait(Obj *e, int64_t timeout_ns, int try_only) {
     int got = e->signaled;
     if (got && !try_only && wake_lat_on()) wake_lat_note(slept ? 2 : spun ? 1 : 0, slept ? hos_now_ns() - e->sig_ns : 0);
     if (got && e->autoclear) e->signaled = 0;
+    const uint64_t trace_key = trace_start ? e->key : 0;
+    const int64_t trace_signal = trace_start ? e->trace_signal_ns : 0;
+    const DWORD trace_tid = trace_start ? e->trace_signal_tid : 0;
+    const int64_t trace_end = trace_start ? hos_now_ns() : 0;
     ReleaseSRWLockExclusive(&e->lk);
+    if (trace_start) sync_wait_trace_emit(trace_key, trace_start, trace_end, trace_signal, trace_tid, got);
     return got;
 }
 
@@ -1062,12 +1111,12 @@ static void holder(Ctx *c, int what) {
 /* Ready now? Consumes an auto-clear event's signal, as the kernel does when a wait is satisfied by it. */
 static int holder_ready(Obj *h) {
     switch (h->sem_max) {
-    case H_EVENT: return event_wait(obj(h->event, K_EVENT), 0, 1);
-    case H_TIMER: { Obj *t = obj(h->event, K_TIMER); return t->due_ns && hos_now_ns() >= t->due_ns; }
+    case H_EVENT: return event_wait(obj_cached(h->event, K_EVENT), 0, 1);
+    case H_TIMER: { Obj *t = obj_cached(h->event, K_TIMER); return t->due_ns && hos_now_ns() >= t->due_ns; }
     case H_THREAD: return 0;   /* thread exit is not tracked as an object yet */
-    case H_SEMA: { Obj *s = obj(h->event, K_SEMA); return s->sem > 0; }
-    case H_QUEUE_NOT_EMPTY: { Obj *q = obj(h->event, K_QUEUE); return q->qlen > 0; }
-    case H_QUEUE_NOT_FULL: { Obj *q = obj(h->event, K_QUEUE); return q->qlen < q->qcap; }
+    case H_SEMA: { Obj *s = obj_cached(h->event, K_SEMA); return s->sem > 0; }
+    case H_QUEUE_NOT_EMPTY: { Obj *q = obj_cached(h->event, K_QUEUE); return q->qlen > 0; }
+    case H_QUEUE_NOT_FULL: { Obj *q = obj_cached(h->event, K_QUEUE); return q->qlen < q->qcap; }
     default: return 0;         /* native handles: never, without a kernel behind them */
     }
 }
@@ -1126,7 +1175,7 @@ static uint64_t wait_any(uint64_t multiwait, int64_t timeout_ns) {
         for (int i = 0; i < mw->nlinks && !found; i++) {
             if (holder_ready(mw->links[i])) found = mw->links[i]->key;
             else if (mw->links[i]->sem_max == H_TIMER) {
-                const int64_t due = obj(mw->links[i]->event, K_TIMER)->due_ns;
+                const int64_t due = obj_cached(mw->links[i]->event, K_TIMER)->due_ns;
                 if (due && due < wake) wake = due;
             }
         }
