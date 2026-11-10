@@ -17,6 +17,7 @@ REPLAY = ROOT / "gpu" / "vk" / "vk_replay.cpp"
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 FIXTURE = r'''
+#define _CRT_SECURE_NO_WARNINGS
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
