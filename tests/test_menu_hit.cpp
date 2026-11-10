@@ -18,11 +18,11 @@ int main() {
     auto at = [&](int x, int y, int s) {
         int vl[11];
         for (int i = 0; i < 11; i++) vl[i] = value_l[i] * s;
-        return options(x, y, s, kWidth * s, h1 * s, 3, 11, vl, slider);
+        return options(x, y, s, kWidth * s, h1 * s, 4, 11, vl, slider);
     };
     Hit h;
 
-    // ---- scale 1: the tabs (side 85, slots of 103 from 85) ----
+    // ---- scale 1: the tabs (side 85, slots of 97 from 85) ----
     h = at(100, 60, 1);
     CHECK("tab 0", h.part == kTab && h.index == 0);
     h = at(240, 60, 1);
@@ -30,7 +30,8 @@ int main() {
     h = at(300, 60, 1);
     CHECK("tab 2", h.part == kTab && h.index == 2);
     CHECK("[Q / LB] is the previous tab", at(40, 60, 1).part == kTabPrev);
-    CHECK("[E / RB] is the next tab", at(450, 60, 1).part == kTabNext);
+    CHECK("tab 3", at(400, 60, 1).part == kTab && at(400, 60, 1).index == 3);
+    CHECK("[E / RB] is the next tab", at(500, 60, 1).part == kTabNext);
     CHECK("the title is no control", at(100, 20, 1).part == kNone);
 
     // ---- scale 1: the rows (from 84, 28 high) ----
@@ -38,7 +39,7 @@ int main() {
     CHECK("row 3 by its name", h.part == kRow && h.index == 3 && h.side == 0);
     h = at(390, 84 + 3 * 28 + 10, 1);
     CHECK("row 3's value, left half", h.part == kRow && h.index == 3 && h.side == -1);
-    h = at(450, 84 + 3 * 28 + 10, 1);
+    h = at(500, 84 + 3 * 28 + 10, 1);
     CHECK("row 3's value, right half", h.part == kRow && h.index == 3 && h.side == 1);
     h = at(30, 84, 1);
     CHECK("row 0's top line", h.part == kRow && h.index == 0);
@@ -46,7 +47,7 @@ int main() {
     CHECK("above the rows", h.part == kNone);
     CHECK("the row band's left margin", at(7, 84 + 10, 1).part == kNone);
     CHECK("past the last row", at(30, 84 + 11 * 28 + 2, 1).part == kNone);
-    CHECK("a tab with fewer rows", options(30, 84 + 5 * 28 + 2, 1, w1, h1, 3, 3, value_l, nullptr).part == kNone);
+    CHECK("a tab with fewer rows", options(30, 84 + 5 * 28 + 2, 1, w1, h1, 4, 3, value_l, nullptr).part == kNone);
 
     // ---- scale 1: the slider's track, 200 to 330 ----
     const int sy = 84 + 7 * 28 + 14;
@@ -78,7 +79,7 @@ int main() {
     CHECK("scale 2: [Q / LB]", at(100, 120, 2).part == kTabPrev);
     h = at(60, 168 + 2 * 56 + 5, 2);
     CHECK("scale 2: row 2", h.part == kRow && h.index == 2 && h.side == 0);
-    h = at(900, 168 + 2 * 56 + 5, 2);
+    h = at(1000, 168 + 2 * 56 + 5, 2);
     CHECK("scale 2: row 2's value, right half", h.part == kRow && h.side == 1);
     h = at(530, 168 + 7 * 56 + 28, 2);
     CHECK("scale 2: the track's middle", h.part == kSlider && h.permille == 500);
@@ -91,16 +92,16 @@ int main() {
     // ---- the window's pixels to the menu's: a 1280x720 window, the menu centred ----
     {
         int ix, iy, x0, y0;
-        to_image(400 + 300, 100 + 60, 1280, 720, 1280, 720, &ix, &iy);
+        to_image(360 + 300, 100 + 60, 1280, 720, 1280, 720, &ix, &iy);
         origin(1280, 720, w1, h1, &x0, &y0);
-        CHECK("centred at 1280x720", x0 == 400 && y0 == 100);
-        h = options(ix - x0, iy - y0, 1, w1, h1, 3, 11, value_l, slider);
+        CHECK("centred at 1280x720", x0 == 360 && y0 == 100);
+        h = options(ix - x0, iy - y0, 1, w1, h1, 4, 11, value_l, slider);
         CHECK("1280x720: tab 2", h.part == kTab && h.index == 2);
     }
     {   // (the swapchain at 2560x1440 while the window still says 1280x720 pixels: a resize on its way)
         int ix, iy, x0, y0;
-        to_image(640, 160, 1280, 720, 2560, 1440, &ix, &iy);
-        CHECK("window to image", ix == 1280 && iy == 320);
+        to_image(560, 160, 1280, 720, 2560, 1440, &ix, &iy);
+        CHECK("window to image", ix == 1120 && iy == 320);
         origin(2560, 1440, kWidth * 2, h1 * 2, &x0, &y0);
         h = at(ix - x0, iy - y0, 2);
         CHECK("2560x1440: tab 1", h.part == kTab && h.index == 1);
@@ -108,7 +109,7 @@ int main() {
     {   // (a 1920x1080 window: still scale 1, centred)
         int x0, y0;
         origin(1920, 1080, w1, h1, &x0, &y0);
-        h = options(960 - x0, (y0 + 84 + 28 + 5) - y0, 1, w1, h1, 3, 11, value_l, slider);
+        h = options(960 - x0, (y0 + 84 + 28 + 5) - y0, 1, w1, h1, 4, 11, value_l, slider);
         CHECK("1920x1080: row 1", h.part == kRow && h.index == 1);
     }
 
@@ -139,7 +140,7 @@ int main() {
         CHECK("cheats: row 4's name", h.part == kCheatRow && h.index == 4 && h.side == 0);
         h = cheats(425, 44 + 4 * 28 + 10, 1, kWidth, cheat_h, 11, vl);
         CHECK("cheats: row 4's value, left half", h.part == kCheatRow && h.index == 4 && h.side == -1);
-        h = cheats(460, 44 + 4 * 28 + 10, 1, kWidth, cheat_h, 11, vl);
+        h = cheats(520, 44 + 4 * 28 + 10, 1, kWidth, cheat_h, 11, vl);
         CHECK("cheats: row 4's value, right half", h.part == kCheatRow && h.index == 4 && h.side == 1);
         h = cheats(460, 44 + 2 * 28 + 10, 1, kWidth, cheat_h, 11, vl);
         CHECK("cheats: a row without a value", h.part == kCheatRow && h.index == 2 && h.side == 0);
@@ -151,7 +152,7 @@ int main() {
         for (int i = 0; i < 11; i++) vl2[i] = vl[i] * 2;
         h = cheats(60, (44 + 10 * 28 + 3) * 2, 2, kWidth * 2, cheat_h * 2, 11, vl2);
         CHECK("cheats, scale 2: the last row", h.part == kCheatRow && h.index == 10 && h.side == 0);
-        h = cheats(930, (44 + 4 * 28 + 3) * 2, 2, kWidth * 2, cheat_h * 2, 11, vl2);
+        h = cheats(1040, (44 + 4 * 28 + 3) * 2, 2, kWidth * 2, cheat_h * 2, 11, vl2);
         CHECK("cheats, scale 2: row 4's value, right half", h.part == kCheatRow && h.index == 4 && h.side == 1);
     }
 
@@ -165,7 +166,7 @@ int main() {
         CHECK("list: line 3's name", h.part == kListLine && h.index == 3 && h.side == 0);
         h = list_lines(445, 48 + 3 * 24 + 5, 1, kWidth, list_h, 20, vl);
         CHECK("list: line 3's amount, left half", h.part == kListLine && h.index == 3 && h.side == -1);
-        h = list_lines(460, 48 + 3 * 24 + 5, 1, kWidth, list_h, 20, vl);
+        h = list_lines(520, 48 + 3 * 24 + 5, 1, kWidth, list_h, 20, vl);
         CHECK("list: line 3's amount, right half", h.part == kListLine && h.index == 3 && h.side == 1);
         h = list_lines(460, 48 + 5 * 24 + 5, 1, kWidth, list_h, 20, vl);
         CHECK("list: a line without an amount", h.part == kListLine && h.index == 5 && h.side == 0);

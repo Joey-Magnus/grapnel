@@ -208,7 +208,7 @@ bool init_scale() {
     scale.init = scale.failed = true;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    if (make_pipe(scale.pipe, FG_SCALE_COMP_SPV, sizeof FG_SCALE_COMP_SPV, {S, I}, 8)) {
+    if (make_pipe(scale.pipe, FG_SCALE_COMP_SPV, sizeof FG_SCALE_COMP_SPV, {S, I}, 20)) {
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.maxLod = 0.25f;
@@ -419,7 +419,7 @@ bool framegen_on() {
 }
 
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh) {
-    if (!opts.upscale && !opts.sharpness) return VK_NULL_HANDLE;
+    if (!opts.upscale && !opts.sharpness && !opts.filter) return VK_NULL_HANDLE;   // (and the Cheats/Mods tab's screen filter)
     if (!src || !image || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     if (crop && crop[2] > 0 && crop[3] > 0 &&
         (crop[0] < 0 || crop[1] < 0 || (uint32_t)crop[0] >= sw || (uint32_t)crop[1] >= sh)) return VK_NULL_HANDLE;
@@ -465,7 +465,9 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         scale.scaled_w = dw, scale.scaled_h = dh;
         to_general(cmd, scale.scaled.image);
     }
-    const struct { int mode; float sharp; } pc{opts.upscale, opts.sharpness / 100.0f};
+    extern int64_t presents_now;   // (the film grain's clock: a 60th of a second a present)
+    const struct { int mode; float sharp; int fx; float strength; float time; } pc{
+        opts.upscale, opts.sharpness / 100.0f, opts.filter, opts.filter_strength / 100.0f, (float)(presents_now % 36000) / 60.0f};
     pass(cmd, scale.pipe, {{src, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
     static const bool report = getenv("RX_VK_UPSCALE_LOG") != nullptr;
     static bool reported = false;

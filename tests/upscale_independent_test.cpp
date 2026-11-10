@@ -34,7 +34,8 @@ struct VkSamplerCreateInfo {
 struct Offset { int x = 0, y = 0, z = 0; };
 struct Layers { int aspect = 0, level = 0, first = 0, count = 0; };
 struct VkImageBlit { Layers srcSubresource, dstSubresource; Offset srcOffsets[2], dstOffsets[2]; };
-struct { int upscale = 0, sharpness = 0, framegen = 0; } opts;
+struct { int upscale = 0, sharpness = 0, framegen = 0, filter = 0, filter_strength = 60; } opts;
+int64_t presents_now = 120;
 struct SpyMutex {
     bool held = false;
     void lock() { CHECK(!held); held = true; }
@@ -55,10 +56,12 @@ uint64_t next_handle = 100;
 uint32_t made_w = 0, made_h = 0, dispatched_w = 0, dispatched_h = 0;
 int made_usage = 0, dispatched_mode = -1;
 float dispatched_sharp = -1;
+int dispatched_fx = -1;
+float dispatched_strength = -1, dispatched_time = -1;
 VkImageView sampled_view = 0;
 VkImageBlit last_blit;
 bool make_pipe(Pipe& p, const uint32_t* code, size_t bytes, std::initializer_list<int> types, uint32_t push) {
-    CHECK(code == FG_SCALE_COMP_SPV && bytes == sizeof FG_SCALE_COMP_SPV && types.size() == 2 && push == 8);
+    CHECK(code == FG_SCALE_COMP_SPV && bytes == sizeof FG_SCALE_COMP_SPV && types.size() == 2 && push == 20);
     CHECK(*types.begin() == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && *(types.begin() + 1) == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
     ++pipe_calls; p.set = 1; p.layout = 2; p.pipe = pipe_fail ? 0 : 3; return !pipe_fail;
 }
@@ -92,11 +95,12 @@ void vkCmdBlitImage(int, VkImage src, int, VkImage dst, int, int count, const Vk
 }
 void pass(int, const Pipe& p, std::initializer_list<std::pair<VkImageView, VkSampler>> b,
           uint32_t w, uint32_t h, const void* data, uint32_t bytes) {
-    CHECK(p.pipe == 3 && b.size() == 2 && b.begin()->first && b.begin()->second == 4 && bytes == 8);
+    CHECK(p.pipe == 3 && b.size() == 2 && b.begin()->first && b.begin()->second == 4 && bytes == 20);
     CHECK((b.begin() + 1)->first && !(b.begin() + 1)->second);
-    struct PC { int mode; float sharp; } pc;
+    struct PC { int mode; float sharp; int fx; float strength; float time; } pc;
     std::memcpy(&pc, data, sizeof pc);
     ++dispatches; dispatched_mode = pc.mode; dispatched_sharp = pc.sharp;
+    dispatched_fx = pc.fx; dispatched_strength = pc.strength; dispatched_time = pc.time;
     dispatched_w = w; dispatched_h = h; sampled_view = b.begin()->first;
 }
 void logf(const char*, ...) { CHECK(dispatches > 0); ++logs; }
@@ -132,6 +136,10 @@ int main() {
         opts.upscale = opts.sharpness = 0; CHECK(!draw());
         CHECK(dispatches == 2 && image_calls == 1 && pipe_calls == 1);
     }
+    // (the screen filter alone runs the pass too, with its strength and the grain's clock)
+    reset(); opts.filter = 3; opts.filter_strength = 40; CHECK(draw());
+    CHECK(dispatches == 1 && dispatched_fx == 3 && dispatched_strength == 0.4f && dispatched_time == 2.0f);
+    opts.filter = 0; CHECK(!draw()); CHECK(dispatches == 1);
     reset(); opts.upscale = 1; opts.framegen = std::atoi(std::getenv("RX_VK_FRAMEGEN")) == 0 ? 2 : 0;
     CHECK(!framegen_on()); CHECK(draw()); CHECK(!fg.init && !fg.thread_started);
     reset(); opts.upscale = 1; pipe_fail = true;

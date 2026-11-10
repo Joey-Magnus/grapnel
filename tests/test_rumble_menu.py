@@ -81,6 +81,9 @@ struct { void note(const int*) {} } restart_state;
 /* (the Microphone row's hook in set_row: no microphones here) */
 bool can_mic() { return false; }
 void mic_chosen() {}
+/* (the Cheats/Mods tab's Free camera row's hook in set_row) */
+int mod_free_camera = 0;
+struct { void store(int) {} } free_camera;
 // (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
 int step_output_choice(int id, int dir) { return id + dir; }
 %(set_row)s
