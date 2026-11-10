@@ -46,6 +46,7 @@ ARGS = {
     "tests/test_dump_readback.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_ui_texture_upload.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_ub_snapshot_default.py": ["--cxx", "{cxx}"],
+    "tests/test_event_waits_default.py": ["--cxx", "{cxx}"],
     "tests/test_texture_staging_publication.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_multiwait_wake.py": ["--cxx", "{cxx}"],
     "tests/test_parallel_rb_refresh.py": ["--cxx", "{cxx}"],
