@@ -236,40 +236,89 @@ The other rows are 0 Off and 1 On. Some are read at the start, before the menu e
 
 ## macOS (Apple Silicon)
 
-The macOS builder and generated game are native arm64, with no Rosetta dependency. It uses SDL2 for the window and
-input, and the existing WebGPU renderer through `wgpu-native`'s Metal backend; the Vulkan backend is not built on
-macOS. The executable targets macOS 13.3 or newer because Apple's C++20 floating-point formatting support requires it.
+The builder and generated game target native Apple Silicon (`arm64`), without Rosetta. The game uses SDL2 for input
+and the WebGPU renderer through `wgpu-native`'s Metal backend; Vulkan is not built on macOS. The minimum supported OS
+is macOS 13.3. Intel Macs and Rosetta processes are not supported by these scripts.
 
-The `macOS platform` workflow uploads a `HookshotBuilder-macos-arm64` artifact containing a command-line builder,
-the Hookshot source, a native arm64 Python runtime and modules, SDL2, static FFmpeg, and Metal-enabled `wgpu-native`.
-It does not contain game data or a built game. Download and unpack it on the target Mac; Xcode Command Line Tools
-must be installed there. Double-click `HookshotBuilder.app` to choose your own `.nup` dump and output folder, or
-use the command-line launcher:
+### Build and package the Builder from a clone
 
-```sh
-./HookshotBuilder/HookshotBuilder.command --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
-```
-
-For development outside the artifact, use arm64 builds of SDL2 2.26 or newer and `wgpu-native`. `wgpu-native` must
-include its matching `include/webgpu/webgpu.h` and `lib/libwgpu_native.dylib`, built with Metal support. Set
-`HOOKSHOT_FFMPEG` to the static FFmpeg prefix (or provide FFmpeg through `pkg-config`) and build natively:
+Use an Apple Silicon Mac running macOS 13.3 or newer. If Xcode Command Line Tools are not installed, install them;
+then install Homebrew's dependency builders:
 
 ```sh
-export WGPU_NATIVE=/path/to/arm64-wgpu-native
-export HOOKSHOT_SDL2=/path/to/arm64/libSDL2-2.0.0.dylib
-export HOOKSHOT_FFMPEG=/path/to/arm64/ffmpeg
-python3 -I nx2/make_game.py --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
+xcode-select --install
+brew install cmake nasm meson ninja
+git submodule update --init --recursive
 ```
 
-The normal builder command validates the arm64 compiler, SDL2, FFmpeg and `wgpu-native` before lifting the game,
-then places `hookshot`, `libSDL2-2.0.0.dylib` and `libwgpu_native.dylib` beside `image.bin` in the output folder;
-FFmpeg is statically linked when `HOOKSHOT_FFMPEG` points to the packaged static libraries (including dav1d). The macOS FFmpeg build
-includes dav1d for software AV1 decoding, which is required for the game's AV1 movies.
-For lower-level development, `nx2/lift.py --standalone --write` followed by `nx2/build.py --standalone --jobs 4`
-writes the executable and libraries under `work/sa/build/`. Set `RX_BACKEND=metal` to make the renderer choice
-explicit (Metal is the macOS default). As on other platforms, the local game dump is required to generate and build
-the game. The workflow packages and validates builder dependencies without running a game build; it is not a
-notarized app release.
+From the repository root, build the pinned arm64 Python, SDL2, FFmpeg/dav1d, and Metal-enabled `wgpu-native`
+dependencies, then assemble and sign the Builder package:
+
+```sh
+bash scripts/macos/deps.sh
+bash scripts/macos/package-builder.sh
+```
+
+The default dependency directory is `build-macos/deps`; `DEPS=/path/to/deps` overrides it. Packages are written to
+`build-macos/`; set `OUT=/path/to/output` to change that directory. The scripts download pinned upstream releases,
+so the first run needs network access and several gigabytes of free disk space. Later runs reuse completed downloads
+and builds. `package-builder.sh` verifies arm64 slices, signs the finished app ad hoc, verifies that signature, and
+creates:
+
+- `build-macos/HookshotBuilder-macos-arm64.zip` — the Builder folder with the app, command-line launcher, source,
+  runtime, libraries, and license notices.
+- `build-macos/HookshotBuilder-macos-arm64.app.zip` — the standalone `HookshotBuilder.app`.
+
+These are not notarized release packages. To try the CI package, open the
+[macOS platform workflow](https://github.com/NotRexed/Hookshot/actions/workflows/macos-platform.yml), select a
+successful run, and download its `HookshotBuilder-macos-arm64` artifact. Pull-request artifacts are test builds, not
+published stable releases, and expire after the normal GitHub Actions retention period.
+
+### Build a game directly from the clone
+
+The dependency script's bundled Python has the pinned packages expected by the build. Set the native dependency
+paths and run `make_game.py` with a legally obtained game dump:
+
+```sh
+export WGPU_NATIVE="$PWD/build-macos/deps/wgpu-native"
+export HOOKSHOT_SDL2="$PWD/build-macos/deps/sdl2/lib/libSDL2-2.0.0.dylib"
+export HOOKSHOT_FFMPEG="$PWD/build-macos/deps/ffmpeg"
+export RX_BACKEND=metal
+build-macos/deps/python/bin/python3 -I nx2/make_game.py \
+  --nup "/path/to/your-game.nup" \
+  --out "$HOME/Games/Hookshot" \
+  --jobs 4 --language en-US
+```
+
+For an already extracted dump, replace `--nup` with `--romfs /path/to/romfs --exefs /path/to/exefs`. Use `--check`
+to verify the dump without building, `--log /path/to/build.log` to save output, and omit `--jobs` to use the
+memory-aware default. The build places the native `hookshot`, SDL2 dylib, and `wgpu-native` dylib beside the game's
+data. FFmpeg is linked statically; the packaged FFmpeg includes dav1d for the game's AV1 movies. Launch the result
+from its output folder with `./hookshot`. The game dump is not included in the repository or Builder package.
+
+### Use the Builder
+
+For the packaged folder, unzip it and open `HookshotBuilder/HookshotBuilder.app`. For the standalone app archive,
+unzip it and open `HookshotBuilder.app`. On first use, choose the `.nup` dump and an output folder in the Builder
+window, then start the build. The command-line equivalent is:
+
+```sh
+./HookshotBuilder/HookshotBuilder.command --check --nup "/path/to/your-game.nup"
+./HookshotBuilder/HookshotBuilder.command --nup "/path/to/your-game.nup" \
+  --out "$HOME/Games/Hookshot" --jobs 4 --language en-US
+```
+
+Run `./HookshotBuilder/HookshotBuilder.command --help` for all options. `--romfs` and `--exefs` can be used instead
+of `--nup`. Keep the Builder in a folder writable by your account if you want its in-app updater to replace it. The
+updater checks the latest stable GitHub release; a pull-request artifact is not itself a release and may update to
+the last published version.
+
+The `macOS platform` workflow checks the POSIX build, Builder dependencies, package architecture, signature, and
+startup command. It does not build or run a game. For actual game testing, report the Mac model/chip, macOS version,
+build command, and log; include an Xcode Metal GPU frame capture for rendering defects if possible. Current reports
+needing hardware investigation include a missing triangle in the title logo and occasional SDL focus loss. For
+lower-level development, `nx2/lift.py --standalone --write` followed by `nx2/build.py --standalone --jobs 4` writes
+the executable and libraries under `work/sa/build/`.
 
 ## Layout
 
