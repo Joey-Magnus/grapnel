@@ -793,20 +793,29 @@ class Builder(tk.Tk):
                                           filetypes=[("Switch 2 game package", "*.nup"), ("All files", "*")])
 
     def run_chooser(self, command):
-        """runs the desktop's chooser while this window waits under a veil that takes its clicks (and Enter: self.busy), so
-        it keeps drawing meanwhile. The path; "" when cancelled; None when the chooser could not run"""
-        result = []
-
+        """runs the desktop's chooser (run_waiting). The path; "" when cancelled; None when the chooser could not run"""
         def run():
             try:
                 done = subprocess.run(command, env=make_game.game_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                       text=True, encoding="utf-8", errors="surrogateescape")
-                result.append(done.stdout.rstrip("\n") if done.returncode == 0 else "" if done.returncode == 1 else None)
+                return done.stdout.rstrip("\n") if done.returncode == 0 else "" if done.returncode == 1 else None
             except OSError:
-                result.append(None)
+                return None
+        return self.run_waiting(run, "Choose in the window that opened…")
+
+    def run_waiting(self, work, text):
+        """work() on a thread of its own while this window waits under a veil saying text, which takes its clicks (and
+        Enter: self.busy), so it keeps drawing meanwhile. What work returns; what it raises is raised here"""
+        result = []
+
+        def run():
+            try:
+                result.append((True, work()))
+            except BaseException as error:   # (raised again below: a work that never answered would leave the veil up)
+                result.append((False, error))
         veil = tk.Frame(self, background=PAGE, cursor="watch")
         veil.place(x=0, y=0, relwidth=1, relheight=1)
-        ttk.Label(veil, text="Choose in the window that opened…", style="Sub.TLabel").place(relx=0.5, rely=0.5, anchor="center")
+        ttk.Label(veil, text=text, style="Sub.TLabel").place(relx=0.5, rely=0.5, anchor="center")
         self.busy = True
         threading.Thread(target=run, daemon=True).start()
         finished = tk.BooleanVar(self, False)
@@ -820,7 +829,10 @@ class Builder(tk.Tk):
         self.wait_variable(finished)
         veil.destroy()
         self.busy = False
-        return result[0]
+        ok, value = result[0]
+        if not ok:
+            raise value
+        return value
 
     def pick_file(self, var):
         p = self.ask_path("nup", "Your game's .nup", os.path.dirname(var.get()))
@@ -976,7 +988,15 @@ class Builder(tk.Tk):
                                  cursor="hand2", command=lambda: self.play_and_close(folder))
         play_button.pack(side="right", padx=px(4))
         play_button.focus_set()   # (Enter plays, with the profile above)
-        self.bind("<Return>", lambda event: self.play_and_close(folder) if self.page is page and not self.busy else None)
+        def enter(event):
+            # (a button with the focus is pressed: Enter on Update or Manage is not Play. Play has it at first)
+            if self.page is not page or self.busy:
+                return
+            if isinstance(event.widget, ttk.Button) and event.widget is not play_button:
+                event.widget.invoke()
+            else:
+                self.play_and_close(folder)
+        self.bind("<Return>", enter)
         ttk.Button(f, text="Open the game folder", style="Link.TButton", cursor="hand2",
                    command=lambda: subprocess.Popen(["xdg-open", folder])).pack(pady=(px(22), 0))
         self.lookup_latest()
@@ -1257,13 +1277,23 @@ class Builder(tk.Tk):
         if not messagebox.askyesno("Hookshot", "Import %s in %s into the profile %s?\n\nThe profile's saves now, if it has "
                                    "any, are copied to %s first." % (whose, save["path"], name, backups), parent=self):
             return
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = oot_saves.main(["import", "--from", save["folder"], "--profile", save["id"], "--hookshot", saves,
-                                   "--backup-dir", backups])
+        def copy():
+            # (each value joined to its option: an id or a folder that starts with "-" is not taken for an option. The output
+            # is this process's while the copy runs: nothing else here prints meanwhile, the window waits under its veil)
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = oot_saves.main(["import", "--from=" + save["folder"], "--profile=" + save["id"], "--hookshot=" + saves,
+                                           "--backup-dir=" + backups])
+            except OSError as error:   # (oot_saves reports a copy that failed; a backup that could not be made is this)
+                return 1, out.getvalue(), "The copy failed: %s" % error
+            except SystemExit:   # (its arguments refused: argparse's reason is the last line, after the usage)
+                return 1, out.getvalue(), (err.getvalue().strip().splitlines() or [""])[-1]
+            return code, out.getvalue(), err.getvalue()
+        code, out, err = self.run_waiting(copy, "Copying the save…")
         if code:
-            return self.profile_error(err.getvalue().strip().removeprefix("error: ") or "The copy failed.")
-        done = (out.getvalue().strip().splitlines() or [""])[-1].removeprefix("Done.").strip()   # (where the backup went)
+            return self.profile_error(err.strip().removeprefix("error: ") or "The copy failed.")
+        done = (out.strip().splitlines() or [""])[-1].removeprefix("Done.").strip()   # (where the backup went)
         self.profile_note.set("Imported into %s.%s" % (name, " " + done if done else ""))
 
     def export_profile_save(self):

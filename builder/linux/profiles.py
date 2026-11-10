@@ -1,13 +1,13 @@
 """The launcher's profiles: each one is a user of the game with saves of its own, save/<id> in the game's user folder.
 The Windows launcher has no profiles yet: it starts the default one.
 
-The game plays the profile HOOKSHOT_PROFILE=<id> names (host/nn_applet.c); without it, the default profile, the one user
-every build had before profiles, so its saves stay where they were. The list is profiles.txt in the user folder, one
-"<id> <name>" a line. An id is 32 hex digits, the save folder's name (host/nn_fs.c).
+The game plays the profile HOOKSHOT_PROFILE=<id> names (host/nn_applet.c) while it is on the list; without it, or with
+one that is not, the default profile, the one user every build had before profiles, so its saves stay where they were.
+The list is profiles.txt in the user folder, one "<id> <name>" a line: the game reads it there too. An id is 32 hex digits, the save folder's name (host/nn_fs.c).
 
 A profile's saves are imported from the emulators by scripts/oot_saves.py (docs/saves.md), with its --hookshot naming
-the profile's save folder. Export copies them into a new folder of the player's choosing, never into an emulator. Removing a profile moves its saves to save-backups/<id>-<time> in the user
-folder: nothing is deleted.
+the profile's save folder. Export copies them into a new folder of the player's choosing, never into an emulator.
+Removing a profile moves its saves to save-backups/<id>-<time> in the user folder: nothing is deleted.
 """
 import os
 import re
@@ -23,7 +23,10 @@ _ID = re.compile(r"[0-9a-f]{32}")
 
 def user_dir(folder, environ=os.environ):
     """The folder the game keeps saves in when the launcher starts it, as host/hos_main.c's saves_dir chooses it:
-    $XDG_DATA_HOME/hookshot or ~/.local/share/hookshot, unless a user folder the game could not move is still beside it."""
+    $XDG_DATA_HOME/hookshot or ~/.local/share/hookshot, unless a user folder is still beside it. The game moves that one's
+    entries there at its next start, and plays the one beside it when some could not go: either way the game finds what the
+    launcher wrote there (profiles.txt, save/<id>) where the launcher reads it next. The only copy of the rule
+    outside the game: hookshot-launch leaves the profile to the game, which checks it against the list in its folder."""
     beside = os.path.join(folder, "user")
     try:
         if os.listdir(beside):
@@ -63,7 +66,9 @@ def load(user):
     """[(id, name)], the default profile first"""
     profiles = []
     try:
-        with open(os.path.join(user, LIST), encoding="utf-8") as f:
+        # (a name a hand edit wrote in another encoding is shown with a replacement character: its id is ASCII and is kept,
+        # so the next store does not drop the profile)
+        with open(os.path.join(user, LIST), encoding="utf-8", errors="replace") as f:
             for line in f:
                 uid, _, name = line.strip().partition(" ")
                 uid = uid.lower()
@@ -95,11 +100,14 @@ def add(user, name):
     profiles = load(user)
     if any(n.casefold() == name.casefold() for _, n in profiles):
         raise ValueError('There is a profile called "%s" already.' % name)
+    # (a removed profile's id is not reused: its saves, moved to save-backups/<id>-<time>, and a launcher's profile= that
+    # still names it would be taken for the new profile's)
     taken = set(p[0] for p in profiles)
-    try:
-        taken.update(n.lower() for n in os.listdir(os.path.join(user, "save")))   # (a removed profile's folder is not reused)
-    except OSError:
-        pass
+    for folder in ("save", "save-backups"):
+        try:
+            taken.update(n[:32].lower() for n in os.listdir(os.path.join(user, folder)))
+        except OSError:
+            pass
     n = 2
     while "%s%016x" % (PREFIX, n) in taken:
         n += 1

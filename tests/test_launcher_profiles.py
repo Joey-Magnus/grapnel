@@ -76,8 +76,22 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles.load(self.user), [(profiles.DEFAULT, "Player")])
         with self.assertRaises(ValueError):
             profiles.remove(self.user, profiles.DEFAULT)
-        save(Path(self.user) / "save" / uid)   # (a folder left over: a new profile does not take it)
-        self.assertNotEqual(profiles.add(self.user, "Again"), uid)
+        self.assertNotEqual(profiles.add(self.user, "Again"), uid)   # (its saves are in save-backups, named by its id)
+        other = profiles.add(self.user, "Other")
+        save(Path(self.user) / "save" / other)
+        profiles.remove(self.user, other)
+        save(Path(self.user) / "save" / other)   # (a folder left over: a new profile does not take it either)
+        self.assertNotIn(profiles.add(self.user, "Third"), (uid, other))
+
+    def test_a_list_in_another_encoding_keeps_every_profile(self):
+        # (a hand edit in Latin-1: the name is shown as best it can be, and adding a profile does not drop the others)
+        os.makedirs(self.user)
+        uid = "5a3c9e1f0b7d24680000000000000002"
+        with open(os.path.join(self.user, profiles.LIST), "wb") as f:
+            f.write(("%s Jos\xe9\n" % uid).encode("latin-1"))
+        self.assertEqual([u for u, _ in profiles.load(self.user)], [profiles.DEFAULT, uid])
+        profiles.add(self.user, "Zelda")
+        self.assertEqual([n for _, n in profiles.load(self.user)], ["Player", "Jos\ufffd", "Zelda"])
 
     def test_a_profiles_saves_go_in_and_out_through_oot_saves(self):
         # (the launchers' Import and Export: scripts/oot_saves.py with --hookshot the profile's save folder)
@@ -196,6 +210,7 @@ class LauncherCopyTests(unittest.TestCase):
             launcher = types.SimpleNamespace(user=user, current_profile=lambda: (uid, "Link"), profile_error=errors.append,
                                              choose_emulator_save=choose, profile_note=types.SimpleNamespace(set=notes.append))
             launcher.ask_path = lambda kind, title, start=None: str(emulator)
+            launcher.run_waiting = lambda work, text: work()
             with mock.patch.object(builder.messagebox, "askyesno", lambda *a, **k: True, create=True), \
                     mock.patch.object(oot, "emulator_saves", return_value=[]), \
                     mock.patch.object(oot, "running_games", return_value=[]):
@@ -226,6 +241,7 @@ class LauncherCopyTests(unittest.TestCase):
                                              choose_emulator_save=choose, profile_note=types.SimpleNamespace(set=notes.append))
             folder_asked = []
             launcher.ask_path = lambda *a, **k: folder_asked.append(a)
+            launcher.run_waiting = lambda work, text: work()
             with mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(Path(tmp) / "data")}), \
                     mock.patch.object(builder.messagebox, "askyesno", lambda *a, **k: True, create=True), \
                     mock.patch.object(oot, "running_games", return_value=[]):
@@ -238,6 +254,37 @@ class LauncherCopyTests(unittest.TestCase):
             self.assertEqual([u for u, _ in rows], ["Svenja"])
             self.assertIn("Eden", rows[0][1])
             self.assertEqual((Path(profiles.save_dir(user, uid)) / "account.sav").read_text(), "svenja")
+
+    def test_import_that_fails_says_so_and_an_id_is_never_an_option(self):
+        # (a backup that could not be made, a full disk: an OSError past oot_saves' own report is the player's error too,
+        # not a traceback on a stderr nobody sees. An id starting with "-" goes to oot_saves joined to its option)
+        builder = load_builder()
+        with tempfile.TemporaryDirectory() as tmp:
+            user = os.path.join(tmp, "hookshot")
+            uid = profiles.add(user, "Link")
+            errors, notes, argv = [], [], []
+            found = {"id": "-backup", "path": os.path.join(tmp, "-backup"), "folder": tmp, "user": None}
+            launcher = types.SimpleNamespace(user=user, current_profile=lambda: (uid, "Link"), profile_error=errors.append,
+                                             choose_emulator_save=lambda found_, other=False: found,
+                                             profile_note=types.SimpleNamespace(set=notes.append),
+                                             run_waiting=lambda work, text: work())
+
+            def main(args):
+                argv.append(args)
+                raise OSError(28, "No space left on device")
+            with mock.patch.object(builder.messagebox, "askyesno", lambda *a, **k: True, create=True), \
+                    mock.patch.object(builder.oot_saves, "emulator_saves", return_value=[found]), \
+                    mock.patch.object(builder.oot_saves, "main", main):
+                builder.Builder.import_profile_save(launcher)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("No space left on device", str(errors[0]))
+            self.assertEqual(notes, [])
+            self.assertIn("--profile=-backup", argv[0])
+            # (and argparse itself takes it so: no SystemExit, which would close the window)
+            parsed = []
+            with mock.patch.object(builder.oot_saves, "run", parsed.append):
+                self.assertEqual(builder.oot_saves.main(["import", "--from=" + tmp, "--profile=-backup"]), 0)
+            self.assertEqual(parsed[0].profile, "-backup")
 
     def test_export_makes_a_new_folder_and_never_touches_an_emulator(self):
         builder = load_builder()

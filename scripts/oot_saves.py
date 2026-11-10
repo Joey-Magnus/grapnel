@@ -136,9 +136,10 @@ def find_saves(root):
         for start in range(len(layout)):
             if TITLE in layout and TITLE not in layout[start:] and not title_folder:
                 continue   # (below the title id folder, only the title id folder itself is a place to start)
-            if TITLE in layout and start == idpos and os.path.basename(norm).lower() != layout[idpos - 1].lower():
-                continue   # (the user folders' own parent only: any folder with a title id folder in it is not a user,
-                #           Eden's mods folder load/<title id> among them)
+            # (from a folder of users that is not named as the emulator names it (copied user folders, say), only a folder
+            # named as a user is, 32 hex digits, is one: any folder with a title id folder in it is not, Eden's mods folder
+            # load/<title id> among them)
+            any_user = not (TITLE in layout and start == idpos and os.path.basename(norm).lower() != layout[idpos - 1].lower())
             key = None
             if start > idpos:   # (root is at or below the <id> folder: the id is a folder above it)
                 up = norm
@@ -148,6 +149,8 @@ def find_saves(root):
             for k, path in walk(norm, layout[start:], key):
                 # A folder named by the layout (the title id folder) counts as soon as it is there: the game may not
                 # have saved yet. A profile folder counts only when it holds a save (Eden's profile folders do not).
+                if not any_user and not re.fullmatch("[0-9a-fA-F]{32}", k):
+                    continue
                 if (layout[-1] != "<id>" or is_save_folder(path)) and k not in found and path not in found.values():
                     found[k] = path
     return found

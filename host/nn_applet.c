@@ -213,13 +213,32 @@ HLE(_ZN2nn2oe22PopNotificationMessageEv) { for (;;) hos_sleep_ns(1000000000LL); 
 
 /* ---- nn::account: one user ------------------------------------------------------------------------------------ */
 /* The user is the launcher's profile: HOOKSHOT_PROFILE=<32 hex digits> is its save folder's name, save/<those digits> in the
-   user folder (nn_fs.c names the folder by the uid's second word, then its first). Without it, or with anything else in it, the
-   user every build had before profiles: its saves stay where they were. The launchers keep the profile list:
-   builder/linux/profiles.py (the Windows launcher has none yet: it plays the default profile). */
+   user folder (nn_fs.c names the folder by the uid's second word, then its first). Without it, with anything else in it, or
+   with a profile that is not on the launcher's list, profiles.txt in the user folder (one removed since it was chosen would
+   start on an empty save folder of its own), the user every build had before profiles: its saves stay where they were. The
+   launchers keep the list: builder/linux/profiles.py (the Windows launcher has none yet: it plays the default profile).
+   hos_main.c calls hos_account_init once the user folder is known, before the game runs: the HLEs below only read user_uid. */
+extern const char *hos_user_dir;
 static uint64_t user_uid[2] = {0x0000000000000001ULL, 0x5a3c9e1f0b7d2468ULL};
-static void pick_user(void) {
-    static volatile LONG picked;
-    if (picked) return;
+/* whether the 32 hex digits are a line's id in profiles.txt, as profiles.py reads it: "<id> <name>", the id in any case */
+static int profile_listed(const char *hex) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s/profiles.txt", hos_user_dir ? hos_user_dir : "user");
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[160];
+    int found = 0, whole = 1;
+    while (!found && fgets(line, sizeof line, f)) {
+        const int starts = whole;   /* (a line longer than line[]: its next pieces are not lines of their own) */
+        whole = strchr(line, '\n') != NULL;
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        found = starts && strlen(p) >= 32 && !_strnicmp(p, hex, 32) && strchr(" \r\n", p[32]);
+    }
+    fclose(f);
+    return found;
+}
+void hos_account_init(void) {
     const char *hex = getenv("HOOKSHOT_PROFILE");
     uint64_t w[2] = {0, 0};
     int ok = hex && strlen(hex) == 32;
@@ -229,19 +248,22 @@ static void pick_user(void) {
         if (d < 0) ok = 0;
         else w[i / 16] = w[i / 16] << 4 | (uint64_t)d;
     }
-    if (ok && (w[0] | w[1])) {
-        user_uid[1] = w[0];
-        user_uid[0] = w[1];
-        hos_log("account: profile %016llx%016llx", (unsigned long long)user_uid[1], (unsigned long long)user_uid[0]);
-    } else if (hex && *hex) {
-        hos_log("account: HOOKSHOT_PROFILE=%s is not 32 hex digits: the default profile", hex);
+    if (!ok || !(w[0] | w[1])) {
+        if (hex && *hex) hos_log("account: HOOKSHOT_PROFILE=%s is not 32 hex digits: the default profile", hex);
+        return;
     }
-    InterlockedExchange(&picked, 1);
+    if (w[0] == user_uid[1] && w[1] == user_uid[0]) return;   /* (the default profile, which is on every list) */
+    if (!profile_listed(hex)) {
+        hos_log("account: profile %s is not in %s/profiles.txt: the default profile", hex, hos_user_dir ? hos_user_dir : "user");
+        return;
+    }
+    user_uid[1] = w[0];
+    user_uid[0] = w[1];
+    hos_log("account: profile %016llx%016llx", (unsigned long long)user_uid[1], (unsigned long long)user_uid[0]);
 }
-HLE(_ZN2nn7account10InitializeEv) { pick_user(); }
+HLE(_ZN2nn7account10InitializeEv) {}
 /* TryOpenPreselectedUser(UserHandle*) -> bool. A handle is three words; ours carries the uid. */
 HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {
-    pick_user();
     G64(ARG(0)) = user_uid[0];
     G64(ARG(0) + 8) = user_uid[1];
     G64(ARG(0) + 16) = 1;
@@ -250,7 +272,6 @@ HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {
 HLE(_ZN2nn7account9CloseUserERKNS0_10UserHandleE) {}
 /* GetUserId(Uid*, UserHandle const&) -> Result */
 HLE(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE) {
-    pick_user();
     G64(ARG(0)) = user_uid[0];
     G64(ARG(0) + 8) = user_uid[1];
     RET(0);
@@ -262,7 +283,6 @@ HLE(_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE) {
     RET(0);
 }
 HLE(_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE) {
-    pick_user();
     *(uint8_t *)GP(ARG(0)) = G64(ARG(1)) == user_uid[0] && G64(ARG(1) + 8) == user_uid[1];
     RET(0);
 }
@@ -409,7 +429,6 @@ HLE(_ZN2nn5prepo12AsyncContextD1Ev) {}
 /* ---- (mkw-recomp) MKW's account and oe calls TOTK never made: the one user, offline ------------------------- */
 /* ListAllUsers(int* count, Uid* out, int max) -> Result */
 HLE(_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi) {
-    pick_user();
     const int n = (int)ARG(2) > 0 ? 1 : 0;
     if (n && ARG(1)) {
         G64(ARG(1)) = user_uid[0];

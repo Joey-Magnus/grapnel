@@ -139,6 +139,14 @@ class Discovery(Case):
         for root in (data, save.parent, save):
             self.assertEqual(oot.find_saves(str(root)), {uuid: str(save)}, root)
 
+    def test_copied_user_folders_under_any_name(self):
+        # (Eden's user folders copied out, into a folder of the player's naming: each found by its id. A folder that is not
+        # named as a user is, Eden's mods folder load/<title id> among them, is no user)
+        copied = self.tmp / "eden-saves"
+        make_save(copied / PROFILE / oot.TITLE, b"COPY")
+        (copied / "load" / oot.TITLE).mkdir(parents=True)
+        self.assertEqual(oot.find_saves(str(copied)), {PROFILE: str(copied / PROFILE / oot.TITLE)})
+
     def test_unrelated_folders_are_not_saves(self):
         (self.tmp / "junk" / "a" / "0").mkdir(parents=True)
         (self.tmp / "junk" / "b" / "save" / UID).mkdir(parents=True)

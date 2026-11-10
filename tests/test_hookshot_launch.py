@@ -75,36 +75,33 @@ class LaunchTests(unittest.TestCase):
         self.assertIn("HOME=%s" % os.environ["HOME"], lines)
 
     def test_the_profile_the_launcher_chose_last_is_played(self):
+        # (passed on as the launcher wrote it: whether it is still on the list is the game's to check, in the user folder it
+        # chooses, host/nn_applet.c, tests/test_account_profile.py)
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
             root = Path(tmp)
             folder = root / "game"
             game(folder)
             ini = root / "builder.ini"
             profile = "5a3c9e1f0b7d24680000000000000002"
-            data = root / "data"
-            (data / "hookshot").mkdir(parents=True)
-            (data / "hookshot" / "profiles.txt").write_text("# list\n%s Link\n" % profile.upper(), encoding="utf-8")
             ini.write_text("out=%s\nprofile=%s\n" % (folder, profile), encoding="utf-8")
-            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale",
-                                                             XDG_DATA_HOME=str(data)),
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale"),
                                  text=True, capture_output=True, check=False)
             self.assertEqual(ran.returncode, 0, ran.stderr)
-            self.assertIn("HOOKSHOT_PROFILE=%s" % profile, ran.stdout.splitlines())
-            # (removed from the list since: the default profile, not an empty save folder of the removed one)
-            (data / "hookshot" / "profiles.txt").write_text("# list\n", encoding="utf-8")
-            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), XDG_DATA_HOME=str(data)),
-                                 text=True, capture_output=True, check=False)
-            self.assertIn("HOOKSHOT_PROFILE=UNSET", ran.stdout.splitlines())
-            # (a user folder beside the game, which the game has not moved yet, is the one with the list)
-            (folder / "user").mkdir()
-            (folder / "user" / "profiles.txt").write_text("%s Link\n" % profile, encoding="utf-8")
-            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), XDG_DATA_HOME=str(data)),
-                                 text=True, capture_output=True, check=False)
             self.assertIn("HOOKSHOT_PROFILE=%s" % profile, ran.stdout.splitlines())
             ini.write_text("out=%s\n" % folder, encoding="utf-8")
             ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale"),
                                  text=True, capture_output=True, check=False)
             self.assertIn("HOOKSHOT_PROFILE=UNSET", ran.stdout.splitlines())
+
+    def test_a_folder_given_starts_without_home(self):
+        # (a systemd unit or a bare env: no HOME, no XDG_CONFIG_HOME. The ini is looked for all the same, under set -u)
+        with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
+            folder = Path(tmp) / "game"
+            game(folder)
+            env = {k: v for k, v in self.env().items() if k not in ("HOME", "XDG_CONFIG_HOME", "HOOKSHOT_LAUNCH_CONFIG")}
+            ran = subprocess.run([str(LAUNCH), str(folder)], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertIn("HOME=", ran.stdout.splitlines())
 
     def test_play_starts_the_game_in_bin_not_the_launcher(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
