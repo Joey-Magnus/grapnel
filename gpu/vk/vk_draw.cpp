@@ -7341,7 +7341,10 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR || !input_view || !output_view || !out) return false;
     if (!src_w || !src_h) return false;
     // (FSR 1's EASU + RCAS in the stand-in's place (shaders/taau_easu.comp, taau_rcas.comp); RX_VK_TAAU_MODE=bilinear:
-    // the old one-tap stand-in, for an A/B. RX_VK_TAAU_SHARPNESS=<stops> (0 the sharpest, 2 soft; default 0.2))
+    // the old one-tap stand-in, for an A/B. RX_VK_TAAU_SHARPNESS=<stops> (0 the sharpest, 2 soft; default 0.2).
+    // RX_VK_TAAU_FXAA (PR #1115) belongs to the bilinear stand-in only: the FSR path replaces it, its EASU kernel
+    // doing the edge work FXAA was added for, and the flag is read by nothing here; set RX_VK_TAAU_MODE=bilinear
+    // with it for the FXAA picture)
     static const bool bilinear = getenv("RX_VK_TAAU_MODE") && !strcmp(getenv("RX_VK_TAAU_MODE"), "bilinear");
     static const float sharpness = [] {
         const char* e = getenv("RX_VK_TAAU_SHARPNESS");

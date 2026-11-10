@@ -1,7 +1,9 @@
 #version 450
 // (hookshot) The TAAU stand-in's upscale, second pass: FSR 1's RCAS over taau_easu.comp's
-// `mid`, the flash/NaN bound of the old stand-in (taau_upscale.comp) kept: each pixel
-// bounded by this pass's own last output (hist) when it is last frame's or so.
+// `mid` (still in the source's sqrt-encoded perceptual space, FSR 1's expected input: the
+// edge detection and lobe weights were tuned for [0,1] perceptual values), squared once at
+// this pass's output; the flash/NaN bound of the old stand-in (taau_upscale.comp) kept:
+// each pixel bounded by this pass's own last output (hist) when it is last frame's or so.
 //
 // FidelityFX Super Resolution 1.0, Copyright (c) 2021 Advanced Micro Devices, Inc. All
 // rights reserved. (MIT-style, as rx_present_fx.cpp carries it.)
@@ -28,7 +30,10 @@ void main() {
     const vec3 lobeRGB = max(-hitMin, hitMax);
     const float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * pc.sharp;
     vec3 c = (lobe * (b + d + h + f) + e) / (4.0 * lobe + 1.0);
-    if (pc.valid != 0) {   // taau_upscale.comp's bound, unchanged
+    c *= c;   // (the perceptual encoding undone once here: EASU filtered the sqrt-encoded input as-is, FSR 1's
+              // expected space, and this square gives the linear colour the output and the bound below want)
+    if ((pc.valid & 1) != 0) {   // taau_upscale.comp's bound, unchanged (bit 0 only: the higher bits are FXAA's,
+                                 // taau_upscale.comp after PR #1115, and never turn this bound on)
         const vec3 p = imageLoad(hist, g).rgb;
         c = mix(c, p, bvec3(isnan(c.r) || isinf(c.r), isnan(c.g) || isinf(c.g), isnan(c.b) || isinf(c.b)));
         c = clamp(c, p * 0.6, p * 1.5 + 0.01);

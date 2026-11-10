@@ -1,8 +1,10 @@
 #version 450
 // (hookshot) The TAAU stand-in's upscale, first pass: FSR 1's EASU (ffx_fsr1.h; the WGSL
 // port rx_present_fx.cpp runs at present, back in GLSL compute). Its input is the scene
-// colour in RGB9E5, sqrt-encoded (the network's perceptual encoding: squared at the load,
-// all math in linear); 12 taps gathered per output pixel, filtered with an anisotropic
+// colour in RGB9E5, sqrt-encoded (the network's perceptual encoding), filtered as it is:
+// FSR 1 expects perceptually encoded input, so its edge detection and luma weights work in
+// the space they were tuned for, and the encoding is undone once, by a square at
+// taau_rcas.comp's output; 12 taps gathered per output pixel, filtered with an anisotropic
 // kernel stretched along the estimated edge direction, clamped to the 4 nearest texels
 // (no ringing). Written to `mid` at the output's size; taau_rcas.comp finishes it.
 //
@@ -13,10 +15,9 @@ layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, r11f_g11f_b10f) uniform writeonly image2D mid;
 layout(push_constant) uniform P { ivec2 size; ivec2 src_size; int valid; float sharp; } pc;
 
-vec3 ld(ivec2 q) {   // the source texel, squared (linear), clamped to the image
-    q = clamp(q, ivec2(0), pc.src_size - 1);
-    const vec3 c = texelFetch(src, q, 0).rgb;
-    return c * c;
+vec3 ld(ivec2 q) {   // the source texel, clamped to the image; the sqrt encoding kept (FSR 1 runs on
+    q = clamp(q, ivec2(0), pc.src_size - 1);   // perceptual input, and B10G11R11 keeps the darks in it;
+    return texelFetch(src, q, 0).rgb;   // taau_rcas.comp squares once at its output)
 }
 float luma(vec3 c) { return c.g + 0.5 * (c.r + c.b); }   // FSR's cheap approximation
 
