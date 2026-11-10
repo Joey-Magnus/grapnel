@@ -18,8 +18,14 @@ void MemoryBarrier(EmitContext& ctx, spv::Scope scope) {
 void EmitBarrier(EmitContext& ctx) {
     const auto execution{spv::Scope::Workgroup};
     const auto memory{spv::Scope::Workgroup};
+    // (hookshot) On the Vulkan memory model (a program on the staged matrix route, EmitContext::DefineMatrixRoute) a barrier
+    // makes the shared memory written before it available, and visible after it, only when it says so: the GLSL450 model
+    // did that implicitly, and the program's own shared memory exchange between invocations relies on it
+    const auto visibility{ctx.workgroup_non_private ? spv::MemorySemanticsMask::MakeAvailable |
+                                                          spv::MemorySemanticsMask::MakeVisible
+                                                    : spv::MemorySemanticsMask::MaskNone};
     const auto memory_semantics{spv::MemorySemanticsMask::AcquireRelease |
-                                spv::MemorySemanticsMask::WorkgroupMemory};
+                                spv::MemorySemanticsMask::WorkgroupMemory | visibility};
     ctx.OpControlBarrier(ctx.Const(static_cast<u32>(execution)),
                          ctx.Const(static_cast<u32>(memory)),
                          ctx.Const(static_cast<u32>(memory_semantics)));
