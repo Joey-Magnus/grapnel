@@ -37,6 +37,10 @@ extern uint8_t test_mem[1 << 20];
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))
 #define HOS_WRITTEN(p, n) ((void)0)
+#define HOS_SPACE_END (1u << 20)
+static inline void *hos_guest_range(uint64_t a, uint64_t n) {
+    return a < (uint64_t)HOS_SPACE_END && n <= (uint64_t)HOS_SPACE_END - a ? GP(a) : (void *)0;
+}
 extern int hos_trace;
 void hos_log(const char *fmt, ...);
 void hos_fatal(Ctx *c, const char *fmt, ...);
@@ -161,8 +165,6 @@ int main(int argc, char **argv) {
     CHECK(call1(imp__ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm, 0x7008, h2, 0, 0x9000, 5) == 0 && G64(0x7008) == 5);
     CHECK(!memcmp(GP(0x9000), "hello", 5));
     call1(imp__ZN2nn2fs9CloseFileENS0_10FileHandleE, h2, 0, 0, 0, 0);
-    CHECK(OPEN("save:/./slot_00/data.sav", 1) == 0);   /* ("." is the same folder) */
-    call1(imp__ZN2nn2fs9CloseFileENS0_10FileHandleE, G64(0x100), 0, 0, 0, 0);
     CHECK(CREATE("save:/slot_00/data..sav", 0) == 0 && OPEN("save:/slot_00/data..sav", 1) == 0);   /* (dots inside a name) */
     call1(imp__ZN2nn2fs9CloseFileENS0_10FileHandleE, G64(0x100), 0, 0, 0, 0);
     CHECK(TYPE("save:/slot_00") == 0 && G32(0x180) == 0);
@@ -172,8 +174,10 @@ int main(int argc, char **argv) {
 
     /* ---- traversal, absolute parts, Windows separators and colons: refused, nothing outside touched */
     const char *bad[] = {"save:/../../../outside/secret.txt", "save:/slot_00/../../../../outside/secret.txt", "save:/..",
-                         "save:/slot_00/..", "save:/.../x", "save:/. ./x", "save:/slot_00\\..\\..\\x", "save:/C:/x",
-                         "save:/x:stream", "save:/../save/slot_00"};
+                         "save:/slot_00/..", "save:/./slot_00", "save:/slot_00\\..\\..\\x", "save:/C:/x",
+                         "save:/x:stream", "save:/../save/slot_00", "save:/slot_00/a\nb"};
+    /* (".../x" and ". ./x", which Windows trims to "..": refused as Windows builds guest_path_ok, a part ending in a dot
+       or a space; tests/test_fs_links.py) */
     for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
         CHECK(OPEN(bad[i], 1) != 0);
         CHECK(OPEN(bad[i], 3) != 0);

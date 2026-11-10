@@ -10,16 +10,17 @@ either end: a fault, as an access outside the window must be.
 
 The forms rewritten, as the translator writes them (anything else keeps the whole address masked):
     recomp_load64(c,c->x[9] + 2440)          -> recomp_load64_k(c,c->x[9],2440)
+    recomp_store64_sp(c,c->x[9] + 8,..)      -> recomp_store64_sp_k(c,c->x[9],8,..)   (a store of a page-mark group)
     recomp_load64(c,(c->x[31]+80ULL))        -> recomp_load64_k(c,c->x[31],80)
     recomp_ldp64(c,(_b+_o),..) / (_b+_o)+16  -> recomp_ldp64_k(c,_b,_o,..) / recomp_ldp64_k(c,_b,_o+16,..)
       (only where every _o of the function is a constant: `int64_t _o=<number>;`)
 
-install() wraps Lifter.emit_function. A64_NO_ADDR_SPLIT=1 at lift time: not rewritten.
+It runs on the written C files, last (chunks.edit_c, after nx2/oot_patches.py and a64_lift.group_marks): the game's
+patches and the page-mark groups match the lift's exact text, which this changes. A64_NO_ADDR_SPLIT=1 at lift time: not
+rewritten (every address masked whole).
 """
 import os
 import re
-
-import a64_lift
 
 OPS = r"recomp_(?:load|store|ldp|stp)(?:8|16|32|64)(?:_sp)?"
 LIMIT = 1 << 16
@@ -31,7 +32,7 @@ O_DEF = re.compile(r"int64_t _o=([^;]*);")
 CONST = re.compile(r"-?\d+")
 
 
-def split(text):
+def split_function(text):
     def reg(m):
         k = int(m.group(3))
         if k >= LIMIT:
@@ -47,18 +48,28 @@ def split(text):
     return text
 
 
-_installed = False
+HEAD = re.compile(r"\nvoid f_[0-9a-f]+\(")   # (a function's definition: the `_o` test is per function)
 
 
-def install():
-    global _installed
-    if _installed or os.environ.get("A64_NO_ADDR_SPLIT"):
-        return
-    _installed = True
-    base = a64_lift.Lifter.emit_function
+def split(text):
+    """text (a C file of lifted functions, or one function) with its accesses at a base + constant in the _k form"""
+    if "recomp_" not in text:
+        return text
+    starts = [0] + [m.start() + 1 for m in HEAD.finditer(text)] + [len(text)]
+    return "".join(split_function(text[a:b]) for a, b in zip(starts, starts[1:]))
 
-    def emit_function(self, e, texts):
-        text, refs = base(self, e, texts)
-        return split(text), refs
 
-    a64_lift.Lifter.emit_function = emit_function
+def split_files(paths):
+    """split over C files, in place (chunks.edit_c: the lift's last edit). A64_NO_ADDR_SPLIT=1: none. The files changed"""
+    if os.environ.get("A64_NO_ADDR_SPLIT"):
+        return 0
+    changed = 0
+    for path in paths:
+        with open(path, encoding="utf-8", newline="") as f:
+            text = f.read()
+        new = split(text)
+        if new != text:
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(new)
+            changed += 1
+    return changed
