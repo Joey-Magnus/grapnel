@@ -120,6 +120,7 @@ jobs:
       - name: Every test
         if: ${{ !cancelled() }}
         env:
+          CXX: ${{ runner.os == 'Linux' && 'g++' || '' }}
           HOOKSHOT_SPIRV_HEADERS: ${{ github.workspace }}/_deps/spirv-headers/include
           HOOKSHOT_VULKAN_HEADERS: ${{ github.workspace }}/_deps/vulkan-headers/include
         run: python -I -B tests/run_all.py --strict

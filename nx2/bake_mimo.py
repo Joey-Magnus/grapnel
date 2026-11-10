@@ -249,10 +249,10 @@ def spirv_headers():
 
 
 def cxx():
-    want = os.environ.get("BAKE_CXX")
+    want = os.environ.get("BAKE_CXX") or os.environ.get("CXX")
     if want:
         return want
-    for name in ("clang++", "g++", "c++"):
+    for name in ("g++", "clang++", "c++"):
         found = shutil.which(name)
         if found:
             return found
