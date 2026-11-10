@@ -38,15 +38,10 @@ class LaunchHeroTests(unittest.TestCase):
         self.assertIn("Hookshot: Update available:", WINDOW)          # (the footer strip's sentence)
         self.assertIn("Version %s → %s", WINDOW)                      # (the mockup's version chain)
 
-    def test_every_page_of_both_builders_shares_the_chrome(self):
-        """The overhaul: the launcher's frame (green rail + dark footer strip) wraps every page of both builders, and the pages
-        put their action rows on the strip instead of floating."""
-        form = TK[TK.index("def show_form"):TK.index("\n    def path_row")]
-        self.assertIn("self.chrome(f)", form)
-        self.assertIn('style="Go.TButton"', form)
-        prog = TK[TK.index("def show_progress"):TK.index("\n    def tick")]
-        self.assertIn("self.chrome(f)", prog)
-        self.assertIn("self.buttons = tk.Frame(foot, bg=HERO_FOOT)", prog)
+    def test_the_windows_builder_pages_share_the_launcher_chrome(self):
+        """The overhaul: the launcher's frame (green rail + dark footer strip) wraps every page of the Qt builder, and the
+        pages put their action rows on the strip instead of floating. (The Linux builder reaches the same look through its own
+        Slate theme, above: same greens, same page colour.)"""
         self.assertIn("self.chrome_strip = QFrame(self.main)", WINDOW)
         self.assertIn("self.chrome_rail = launch_page.Rail(self.hook)", WINDOW)
         self.assertIn("chrome_on = page is not self.launch_page", WINDOW)

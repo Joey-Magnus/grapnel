@@ -263,6 +263,7 @@ public partial class MainWindow : Window
         PrepareTick.IsChecked = !s.PrepareLater;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
+        FsrTick.IsChecked = s.Fsr;
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
         {
             romfs = s.Romfs;
@@ -285,7 +286,7 @@ public partial class MainWindow : Window
         try
         {
             var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
-                                          Dlss = DlssTick.IsChecked == true,
+                                          Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
                                           PrepareLater = PrepareTick.IsChecked != true };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
@@ -540,6 +541,22 @@ public partial class MainWindow : Window
         RefreshMode();
     }
 
+    /// The game folder or the build files folder on a hard drive: the build works, but much more slowly than on an SSD. Null
+    /// when both are on an SSD (or their drive cannot be told, as on a network share)
+    string? HardDriveWarning()
+    {
+        foreach (var (what, folder) in new[] { ("game folder", OutPath.Text), ("build files folder", Storage.Work) })
+        {
+            if (Disk.Spinning(folder) != true) continue;
+            string root;
+            try { root = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(folder))!.TrimEnd('\\'); }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { root = folder; }
+            return $"The {what} is on a hard drive ({root}). An SSD builds the game much faster: build there if you can.\n\n" +
+                   "Choose OK to build here anyway, or Cancel to choose another folder.";
+        }
+        return null;
+    }
+
     void Dropped(object sender, DragEventArgs e)
     {
         if (runner != null || e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } paths) return;
@@ -685,6 +702,7 @@ public partial class MainWindow : Window
         else if (chosenNup != null) args.AddRange(new[] { "--nup", chosenNup });
         else return;
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
+        if (FsrTick.IsChecked == true) args.Add("--fsr");   // (an --update of the folder keeps it: make_game.py's mark)
         prepareNow = PrepareTick.IsChecked == true;
         Run(tools, ShaderStep.Args(args, prepareNow), dlss: DlssTick.IsChecked == true);
     }
@@ -749,6 +767,10 @@ public partial class MainWindow : Window
     /// dlss: NVIDIA DLSS, its license accepted: NVIDIA's SDK fetched into Storage.NgxSdk first (only what is missing), and built in
     void Run(Tools tools, List<string> args, bool keepRows = false, bool dlss = false)
     {
+        // (a warning, not a stop: the player may have no other folder with the room. An update keeps its rows and its own flow)
+        if (!keepRows && HardDriveWarning() is { } slow &&
+            MessageBox.Show(this, slow, "Hookshot", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
         int? workers;
         try { workers = BuildWorkers.Selected(WorkerBox.SelectedItem); }
         catch (ArgumentException e)
