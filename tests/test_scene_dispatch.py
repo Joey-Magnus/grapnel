@@ -3,6 +3,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_SKIP = {'windows': 'Linux runtime API and Unix session isolation'}
+
 ROOT = Path(__file__).resolve().parents[1]
 STUB = r'''
 #include <stdint.h>

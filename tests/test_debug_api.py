@@ -9,6 +9,8 @@ import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+RUN_ALL_SKIP = {'windows': 'Linux runtime API and Unix session isolation'}
+
 ROOT = Path(__file__).resolve().parents[1]
 
 

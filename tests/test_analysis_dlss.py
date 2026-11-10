@@ -16,6 +16,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+RUN_ALL_SKIP = {'windows': 'Linux runtime API and Unix session isolation'}
+
 if sys.platform != 'linux':
     print('SKIP: Linux-only analysis adapter')
     raise SystemExit(0)

@@ -9,6 +9,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import game_values
 
+RUN_ALL_SKIP = {'windows': 'Linux runtime API and Unix session isolation'}
+
 
 class GameValuesTests(unittest.TestCase):
     def setUp(self):

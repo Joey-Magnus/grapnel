@@ -11,6 +11,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import scene_load
 
+RUN_ALL_SKIP = {'windows': 'Linux runtime API and Unix session isolation'}
+
 
 class Clock:
     now = 100.0

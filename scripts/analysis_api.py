@@ -315,7 +315,7 @@ class HookshotAPI:
         if stage_cache is not None:
             env['RX_VK_STAGE_CACHE'] = '1' if stage_cache else '0'
         if single_page_cache:
-            env['RX_VK_SUBMITTED_CACHE_SINGLE'] = '1'
+            env['RX_VK_SUBMITTED_PAGES'] = '1'
         if profile:
             env.update(HOS_PROFILE='2', HOS_SAMPLE_ALL=str(run / 'stacks.txt'), RX_VK_SLOW_LOG='20')
         if (profile or dlss_timing) and dlss5:
