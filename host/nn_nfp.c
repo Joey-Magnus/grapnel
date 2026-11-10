@@ -1,11 +1,12 @@
 /* nn::nfp: amiibo. The game asks the NFC library for a device, starts a scan,
    mounts the tag and reads its UID, model, common and registration data. On a
    PC there is no NFC reader, so this is a virtual tag: a profile from
-   host/nfp_amiibo.h is presented as soon as a scan starts, and its data is
-   returned in the SDK's own structures. The game then runs the figure's effect
-   itself: a random item for a Zelda series amiibo, Mask 101/102 for the two
-   Ocarina of Time 2026 figures, or its "this amiibo does not work" message for
-   another series.
+   host/nfp_amiibo.h appears a moment after a scan starts, and its data is
+   returned in the SDK's own structures. What the game does with the figure is
+   its own: in this title the Zelda series figures are meant to give a random
+   item and the two Ocarina of Time 2026 figures Mask 101/102, and another
+   series gets its "this amiibo does not work" message. This file only presents
+   the tag; the effect itself is the game's.
 
    HOS_AMIIBO=<profile> (or amiibo=<profile> in hookshot_options.ini) chooses the
    figure: link-oot (the default), zelda-botw, young-link, young-zelda,
