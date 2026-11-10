@@ -20,6 +20,13 @@ import shader_census as sc  # noqa: E402
 import bake  # noqa: E402
 
 CONTROL_SIZE = 0xD8
+TOOL_DIR = ROOT / "work" / "bake-skeleton-tool"
+
+
+def shared_tool_dir():
+    """Reuse the 164-object offline translator across these sequential test cases."""
+    TOOL_DIR.mkdir(parents=True, exist_ok=True)
+    return str(TOOL_DIR)
 
 
 def control(stage, end=0x100):
@@ -198,8 +205,7 @@ class BakeTranslateTests(unittest.TestCase):
             self.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = os.path.join(tmp, "sb-tool-cache")
-            os.makedirs(tool, exist_ok=True)
+            tool = shared_tool_dir()
             tr, rows = bake.translate_seed(seed, bank, tool_dir=tool)
             self.assertTrue(rows, "no program rows from shaderbatch")
             for (idx, inputs), r in sorted(rows.items()):
@@ -260,8 +266,7 @@ class BakeVerifyTests(unittest.TestCase):
             t.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = os.path.join(tmp, "sb-tool-cache")
-            os.makedirs(tool, exist_ok=True)
+            tool = shared_tool_dir()
             bake.translate_seed(seed, bank, tool_dir=tool)
             summary, ok = bake.verify_bank(bank)
             self.assertTrue(summary["manifest"])
@@ -300,8 +305,7 @@ class BakeVerifyTests(unittest.TestCase):
             t.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = os.path.join(tmp, "sb-tool-cache")
-            os.makedirs(tool, exist_ok=True)
+            tool = shared_tool_dir()
             bake.translate_seed(seed, bank, tool_dir=tool, limit=1)
             summary, ok = bake.verify_bank(bank)
             self.assertEqual(summary["seed_programs"], 2)

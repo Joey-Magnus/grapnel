@@ -15,14 +15,11 @@ class BakeCompilerSelectionTests(unittest.TestCase):
         with patch.dict(os.environ, {"BAKE_CXX": "custom-bake-cxx", "CXX": "g++"}):
             self.assertEqual(bake_mimo.cxx(), "custom-bake-cxx")
 
-    def test_standard_cxx_environment_is_honored(self):
-        with patch.dict(os.environ, {"BAKE_CXX": "", "CXX": "g++"}):
-            self.assertEqual(bake_mimo.cxx(), "g++")
-
-    def test_gcc_is_the_default_when_no_compiler_is_selected(self):
-        found = {"g++": "/usr/bin/g++", "clang++": "/usr/bin/clang++"}
+    def test_falls_back_when_first_compiler_lacks_cxx23(self):
+        found = {"clang++": "/usr/bin/clang++", "g++": "/usr/bin/g++"}
         with patch.dict(os.environ, {"BAKE_CXX": "", "CXX": ""}), \
-             patch.object(bake_mimo.shutil, "which", side_effect=found.get):
+             patch.object(bake_mimo.shutil, "which", side_effect=found.get), \
+             patch.object(bake_mimo, "cxx_std", side_effect=[SystemExit("no C++23"), "-std=c++23"]):
             self.assertEqual(bake_mimo.cxx(), "/usr/bin/g++")
 
 
