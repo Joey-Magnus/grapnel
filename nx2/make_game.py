@@ -989,14 +989,17 @@ def clear_folder(path):
 
 
 def drop_stale_objects(work):
+    """Dispatch the system-header cache check for the actual build host."""
+    if LINUX:
+        _drop_stale_linux(work)
+    elif os.name == "nt":
+        _drop_stale_windows(work)
+
+
+def _drop_stale_windows(work):
     """(issue 231) Objects compiled against other system headers are not reused. A first build that compiled with an old Visual Studio's
     stdio.h (before 2015) left its objects in the cache; once the PC was fixed every later build reused them and the link failed on
     __iob_func. The headers the compiler finds are noted, and when they change the compiled objects go"""
-    if LINUX:
-        _drop_stale_linux(work)
-        return
-    if os.name != "nt":
-        return
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import hashlib
     import toolchain
