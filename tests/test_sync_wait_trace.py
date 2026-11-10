@@ -60,6 +60,7 @@ fixture += wait
 fixture += r'''
 int main(void) {
  Obj e={.key=42,.autoclear=1}; waiting=&e;
+ e.signaled=1; assert(event_peek(&e) && !e.signaled); e.signaled=0;
  int enabled=getenv("HOS_SYNC_WAIT_TRACE_MS")!=NULL;
  int filtered=getenv("HOS_SYNC_WAIT_TRACE_THREAD")!=NULL;
  assert(event_wait(&e,0,0)==1 && !e.signaled);
