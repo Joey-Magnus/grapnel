@@ -314,8 +314,8 @@ choices and starts the game again, so progress since your last save is lost.
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
   place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
-- **Stick dead zone:** how far a stick moves before it counts, on each axis. Default is XInput's (about 24%); lower suits
-  a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.
+- **Stick dead zone:** how far a stick moves from center in any direction before it counts. Default is about 24%. Use
+  a lower value for a precise stick or a higher one for a stick that drifts. The game also applies its own dead zone.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
   goes to a controller's heavy and light motors by its frequency.
 - **Motion controls** (Controls tab, Motion page): the controller's gyroscope aims where the game uses motion, as on the Switch. It works with

@@ -72,12 +72,7 @@ static HosMotionSample motion_hist[HOS_MOTION_HISTORY];
 static int motion_head, motion_count, motion_live;
 static volatile LONG gyro_status;   /* 0 no controller, 1 controllers but none with a gyro, 2 one with a gyro */
 
-int32_t hos_stick_axis(int16_t v, int zone);   /* nn_hid.c: the menu's Stick dead zone, as XInput's pads */
-
-static int32_t stick_value(int16_t v, int flip, int zone) {
-    const int32_t a = hos_stick_axis(v, zone);
-    return flip ? -a : a;
-}
+void hos_filter_stick(int16_t x, int16_t y, int zone, int32_t out[2]);   /* nn_hid.c */
 
 /* SDL's controller support started; 0 when it could not be */
 static int pads_start(void) {
@@ -347,11 +342,13 @@ static void pads_poll(void) {
             if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
             const int inv_x = rx_option(16, 0);
             const int inv_y = rx_option(17, 0);
-            const int z = rx_option(11, 0);   /* (the menu's Stick dead zone: nn_hid.c's hos_stick_axis) */
-            const int32_t v[4] = {stick_value(hos_sdl_pad_axis(gc, AX_LX), 0, z),
-                                  stick_value(hos_sdl_pad_axis(gc, AX_LY), 1, z),
-                                  stick_value(hos_sdl_pad_axis(gc, AX_RX), inv_x, z),
-                                  stick_value(hos_sdl_pad_axis(gc, AX_RY), inv_y ? 0 : 1, z)};
+            const int z = rx_option(11, 0);   /* (the menu's Stick dead zone) */
+            int32_t v[4];
+            hos_filter_stick(hos_sdl_pad_axis(gc, AX_LX), hos_sdl_pad_axis(gc, AX_LY), z, v);
+            hos_filter_stick(hos_sdl_pad_axis(gc, AX_RX), hos_sdl_pad_axis(gc, AX_RY), z, v + 2);
+            v[1] = -v[1];   /* SDL's Y axis points down */
+            if (inv_x) v[2] = -v[2];
+            if (!inv_y) v[3] = -v[3];
             for (int k = 0; k < 4; k++)
                 if ((v[k] < 0 ? -v[k] : v[k]) > (s[k] < 0 ? -s[k] : s[k])) s[k] = v[k];
             {   /* (motion: the pad last used; a stick counts by which way it is pushed, not by how far) */
