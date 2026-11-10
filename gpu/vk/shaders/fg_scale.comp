@@ -5,7 +5,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, rgba8) uniform writeonly image2D dst;
-// (and the Insert menu's Cheats/Mods tab's screen filter over it: fx 1 CRT, 2 scanlines, 3 film; strength 0..1; time, seconds, for
+// (and the Insert menu's Screen filter (Gameplay tab) over it: fx 1 CRT, 2 scanlines, 3 film; strength 0..1; time, seconds, for
 // the grain)
 layout(push_constant) uniform P { int mode; float sharp; int fx; float strength; float time; } pc;
 const float PI = 3.14159265;
