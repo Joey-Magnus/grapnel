@@ -20,7 +20,7 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUN_ALL_SKIP = {"windows": "bake_ds uses libzstd.so.1 through ctypes; the Windows runner has no matching library"}
+RUN_ALL_MODULES = ["zstandard"]
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "nx2", "bake_ds"))
 import romenum  # noqa: E402
