@@ -577,11 +577,11 @@ struct UbWord {
 };
 thread_local UbWord ub_words[128];
 uint32_t ub_word_index(uint64_t addr) {
-    // Uniform buffers commonly put the same handle at offsets 512 bytes or a page apart. The low seven word bits
-    // alone mapped those reads to one slot, evicting each other. Keep the full address check in ub_word_hit.
+    // Words 512 bytes or a page apart share the low seven word bits. Add higher bits to separate those strides
+    // while keeping runs of up to 64 words collision-free. Hits still compare the full address in ub_word_hit.
     static const bool linear = getenv("RX_VK_UB_WORD_HASH") && atoi(getenv("RX_VK_UB_WORD_HASH")) == 0;
     const uint64_t word = addr >> 2;
-    return (uint32_t)((linear ? word : word ^ (word >> 7) ^ (word >> 14)) & 127);
+    return (uint32_t)((linear ? word : word + (word >> 7) + (word >> 14)) & 127);
 }
 bool ub_word_hit(uint64_t addr, size_t lim, uint32_t* out) {
     UbWord& w = ub_words[ub_word_index(addr)];
@@ -4278,6 +4278,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_DISCORD) return opts.discord != 0;
         if (id == HOS_OPT_VOLUME) return opts.volume;
         if (id == HOS_OPT_MUTE_BACKGROUND) return opts.mute_background;
+        if (id == HOS_OPT_DISABLE_CAMERA_CENTERING) return opts.disable_camera_centering;
         if (id == HOS_OPT_TEXT_SIZE) return opts.text_size;
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :
