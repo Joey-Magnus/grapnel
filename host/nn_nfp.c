@@ -49,6 +49,13 @@ static NfpAmiibo nfp_custom;              /* HOS_AMIIBO=0x... */
 static uint8_t nfp_uid[10];
 static int nfp_uid_len;
 static uint64_t nfp_activate_event, nfp_deactivate_event;
+static unsigned nfp_scan_id, nfp_mount_logged;
+
+/* The last data returned by each read, so the log shows what the game receives
+   once per figure instead of once per poll. */
+static uint8_t nfp_last_tag_info[NFP_TAG_INFO_SIZE], nfp_last_model_info[NFP_MODEL_INFO_SIZE];
+static uint8_t nfp_last_register_info[NFP_REGISTER_INFO_SIZE], nfp_last_common_info[NFP_COMMON_INFO_SIZE];
+static int nfp_last_tag_valid, nfp_last_model_valid, nfp_last_register_valid, nfp_last_common_valid;
 
 /* The game's application area: one game's 0xD8 bytes on the tag. */
 static int nfp_area_exists;
@@ -168,6 +175,7 @@ static int nfp_read(uint64_t addr, void *data, size_t size) {
 }
 
 static void nfp_scan(void) {
+    nfp_scan_id++;
     if (!nfp_tag) {
         nfp_device_state = NFP_DEV_SEARCH;
         return;
@@ -197,7 +205,14 @@ HLE(_ZN2nn3nfp8FinalizeEv) {
 
 HLE(_ZN2nn3nfp8GetStateEv) { RET(nfp_state); }
 
-HLE(_ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE) { RET(nfp_device_state); }
+HLE(_ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE) {
+    static int last_state = -1;
+    if (last_state != nfp_device_state) {
+        last_state = nfp_device_state;
+        hos_log("nfp: GetDeviceState: %d", nfp_device_state);
+    }
+    RET(nfp_device_state);
+}
 
 HLE(_ZN2nn3nfp9GetNpadIdEPNS_3hid10NpadIdTypeERKNS0_12DeviceHandleE) {
     const uint32_t player1 = 0;   /* NpadIdType_Player1 */
@@ -219,6 +234,11 @@ HLE(_ZN2nn3nfp9GetNpadIdEPjRKNS0_12DeviceHandleE) {
 HLE(_ZN2nn3nfp11ListDevicesEPNS0_12DeviceHandleEPii) {
     uint8_t handle[8] = {0};
     int count = 0;
+    static int logged;
+    if (!logged) {
+        logged = 1;
+        hos_log("nfp: ListDevices -> one device");
+    }
     if ((int)ARG(2) <= 0) {
         nfp_write(ARG(1), &count, sizeof count);
         RET(0);
@@ -241,11 +261,19 @@ HLE(_ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE) {
 }
 
 HLE(_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeE) {
+    if (nfp_mount_logged != nfp_scan_id) {
+        nfp_mount_logged = nfp_scan_id;
+        hos_log("nfp: Mount: model %u, target all%s", (unsigned)ARG(1), nfp_tag ? "" : " (no tag)");
+    }
     nfp_device_state = NFP_DEV_MOUNT;
     RET(0);
 }
 
 HLE(_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE) {
+    if (nfp_mount_logged != nfp_scan_id) {
+        nfp_mount_logged = nfp_scan_id;
+        hos_log("nfp: Mount: model %u, target %u%s", (unsigned)ARG(1), (unsigned)ARG(2), nfp_tag ? "" : " (no tag)");
+    }
     nfp_device_state = NFP_DEV_MOUNT;
     RET(0);
 }
@@ -259,6 +287,14 @@ HLE(_ZN2nn3nfp7UnmountERKNS0_12DeviceHandleE) {
 
 HLE(_ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj) {
     const uint32_t access = (uint32_t)ARG(1);
+    const int existed = nfp_area_exists && nfp_area_id == access;
+    static uint32_t logged_access;
+    static int logged;
+    if (!logged || logged_access != access) {
+        logged = 1;
+        logged_access = access;
+        hos_log("nfp: OpenApplicationArea: access %08x (%s)", access, existed ? "existing" : "new");
+    }
     if (!nfp_area_exists || nfp_area_id != access) {
         /* (a tag that has never held this game's area: an empty one, as a first
            scan has. The game writes it with SetApplicationArea and Flush.) */
@@ -331,6 +367,16 @@ HLE(_ZN2nn3nfp10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE) {
     nfp_load();
     if (nfp_uid_len == 0) nfp_make_uid();
     nfp_tag_info_from_uid(nfp_uid, nfp_uid_len, info);
+    if (!nfp_last_tag_valid || memcmp(info, nfp_last_tag_info, sizeof info)) {
+        uint32_t protocol = 0, type = 0;
+        memcpy(nfp_last_tag_info, info, sizeof info);
+        nfp_last_tag_valid = 1;
+        memcpy(&protocol, info + 32, sizeof protocol);
+        memcpy(&type, info + 36, sizeof type);
+        hos_log("nfp: GetTagInfo: length %u, uid %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x, protocol %u, type %u",
+                info[10], info[0], info[1], info[2], info[3], info[4], info[5], info[6], info[7], info[8], info[9],
+                protocol, type);
+    }
     nfp_write(ARG(0), info, sizeof info);
     RET(0);
 }
@@ -341,6 +387,15 @@ HLE(_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE) {
     nfp_load();
     nfp_date(&year, &month, &day);
     nfp_register_info(info, nfp_tag ? nfp_tag->name : "Hookshot", year, month, day);
+    if (!nfp_last_register_valid || memcmp(info, nfp_last_register_info, sizeof info)) {
+        uint16_t wrote_year = 0;
+        memcpy(nfp_last_register_info, info, sizeof info);
+        nfp_last_register_valid = 1;
+        memcpy(&wrote_year, info + 0x58, sizeof wrote_year);
+        hos_log("nfp: GetRegisterInfo: nickname \"%.40s\", date %04u-%02u-%02u, font %u, mii %02x%02x%02x%02x",
+                (const char *)info + 0x5C, wrote_year, info[0x5A], info[0x5B], info[0x85], info[0], info[1], info[2],
+                info[3]);
+    }
     nfp_write(ARG(0), info, sizeof info);
     RET(0);
 }
@@ -350,6 +405,17 @@ HLE(_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE) {
     int year, month, day;
     nfp_date(&year, &month, &day);
     nfp_common_info(info, year, month, day);
+    if (!nfp_last_common_valid || memcmp(info, nfp_last_common_info, sizeof info)) {
+        uint16_t wrote_year = 0, counter = 0;
+        uint32_t area = 0;
+        memcpy(nfp_last_common_info, info, sizeof info);
+        nfp_last_common_valid = 1;
+        memcpy(&wrote_year, info, sizeof wrote_year);
+        memcpy(&counter, info + 4, sizeof counter);
+        memcpy(&area, info + 8, sizeof area);
+        hos_log("nfp: GetCommonInfo: date %04u-%02u-%02u, counter %u, version %u, area %u", wrote_year, info[2],
+                info[3], counter, info[6], area);
+    }
     nfp_write(ARG(0), info, sizeof info);
     RET(0);
 }
@@ -359,6 +425,14 @@ HLE(_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE) {
     nfp_load();
     if (nfp_tag) nfp_model_info_from_id(nfp_tag->id, info);
     else memset(info, 0, sizeof info);
+    if (!nfp_last_model_valid || memcmp(info, nfp_last_model_info, sizeof info)) {
+        uint16_t numbering = 0;
+        memcpy(nfp_last_model_info, info, sizeof info);
+        nfp_last_model_valid = 1;
+        memcpy(&numbering, info + 4, sizeof numbering);
+        hos_log("nfp: GetModelInfo: character %02x%02x%02x, series %02x, numbering %04x, type %02x", info[0],
+                info[1], info[2], info[3], numbering, info[6]);
+    }
     nfp_write(ARG(0), info, sizeof info);
     RET(0);
 }
