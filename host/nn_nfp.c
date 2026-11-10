@@ -51,6 +51,14 @@ static int nfp_uid_len;
 static uint64_t nfp_activate_event, nfp_deactivate_event;
 static unsigned nfp_scan_id, nfp_mount_logged;
 
+/* A real tag is not on the reader the instant a scan starts: the game draws its
+   "touch the amiibo" prompt, then the figure arrives. Presenting the tag inside
+   StartDetection made the whole read finish before the prompt existed, and the
+   prompt then waited forever. The tag now appears a moment after the scan. */
+enum { NFP_TAG_DELAY_NS = 300000000 };
+static int nfp_scan_pending;
+static int64_t nfp_scan_at;
+
 /* The last data returned by each read, so the log shows what the game receives
    once per figure instead of once per poll. */
 static uint8_t nfp_last_tag_info[NFP_TAG_INFO_SIZE], nfp_last_model_info[NFP_MODEL_INFO_SIZE];
@@ -174,6 +182,16 @@ static int nfp_read(uint64_t addr, void *data, size_t size) {
     return 1;
 }
 
+static void nfp_scan(void);
+
+/* Called from the state queries: the tag is found NFP_TAG_DELAY_NS after the scan
+   started, as if the player had just touched the figure to the reader. */
+static void nfp_poll_scan(void) {
+    if (!nfp_scan_pending || hos_now_ns() - nfp_scan_at < NFP_TAG_DELAY_NS) return;
+    nfp_scan_pending = 0;
+    nfp_scan();
+}
+
 static void nfp_scan(void) {
     nfp_scan_id++;
     if (!nfp_tag) {
@@ -193,12 +211,14 @@ HLE(_ZN2nn3nfp10InitializeEv) {
     nfp_load();
     nfp_state = NFP_STATE_INIT;
     nfp_device_state = NFP_DEV_INIT;
+    nfp_scan_pending = 0;
     hos_log("nfp: initialized");
 }
 
 HLE(_ZN2nn3nfp8FinalizeEv) {
     nfp_state = NFP_STATE_NONE;
     nfp_device_state = NFP_DEV_INIT;
+    nfp_scan_pending = 0;
     nfp_activate_event = nfp_deactivate_event = 0;
     nfp_area_open = 0;
 }
@@ -214,6 +234,7 @@ HLE(_ZN2nn3nfp8GetStateEv) {
 
 HLE(_ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE) {
     static int last_state = -1;
+    nfp_poll_scan();
     if (last_state != nfp_device_state) {
         last_state = nfp_device_state;
         hos_log("nfp: GetDeviceState: %d", nfp_device_state);
@@ -258,18 +279,25 @@ HLE(_ZN2nn3nfp11ListDevicesEPNS0_12DeviceHandleEPii) {
 HLE(_ZN2nn3nfp14StartDetectionERKNS0_12DeviceHandleE) {
     nfp_load();
     hos_log("nfp: StartDetection");
-    nfp_scan();
+    nfp_device_state = NFP_DEV_SEARCH;
+    nfp_scan_pending = 1;
+    nfp_scan_at = hos_now_ns();
     RET(0);
 }
 
 HLE(_ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE) {
     hos_log("nfp: StopDetection");
+    /* Back to Initialized: a mounted tag that is not unmounted is put down too,
+       and the reader is ready for the next scan. The game starts its next
+       operation with StartDetection as soon as it sees this state. */
+    nfp_scan_pending = 0;
     nfp_device_state = NFP_DEV_INIT;
     if (nfp_deactivate_event) hos_system_event_signal(nfp_deactivate_event);
     RET(0);
 }
 
 HLE(_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeE) {
+    nfp_poll_scan();
     if (nfp_mount_logged != nfp_scan_id) {
         nfp_mount_logged = nfp_scan_id;
         hos_log("nfp: Mount: model %u, target all%s", (unsigned)ARG(1), nfp_tag ? "" : " (no tag)");
@@ -279,6 +307,7 @@ HLE(_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeE) {
 }
 
 HLE(_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE) {
+    nfp_poll_scan();
     if (nfp_mount_logged != nfp_scan_id) {
         nfp_mount_logged = nfp_scan_id;
         hos_log("nfp: Mount: model %u, target %u%s", (unsigned)ARG(1), (unsigned)ARG(2), nfp_tag ? "" : " (no tag)");
@@ -341,6 +370,17 @@ HLE(_ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvy) {
     RET(0);
 }
 
+/* Some SDK builds spell the area size `unsigned long` (Pm/Em) rather than
+   `unsigned long long` (Py/Ey). Both are 64-bit and the ABI is the same, but the
+   mangled names differ: without these the import falls to the generic stub,
+   which returns 0 and writes no size. */
+HLE(_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm) {
+    imp__ZN2nn3nfp18GetApplicationAreaEPvPyRKNS0_12DeviceHandleEy(c);
+}
+HLE(_ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvm) {
+    imp__ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvy(c);
+}
+
 /* ApplicationAreaCreateInfo: accessId (u32), initialDataSize (u32), pInitialData */
 static void nfp_create_area(uint64_t info) {
     uint8_t raw[16];
@@ -374,6 +414,7 @@ HLE(_ZN2nn3nfp7RestoreERKNS0_12DeviceHandleE) { RET(0); }
 
 HLE(_ZN2nn3nfp10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE) {
     uint8_t info[NFP_TAG_INFO_SIZE];
+    nfp_poll_scan();
     nfp_load();
     if (nfp_uid_len == 0) nfp_make_uid();
     nfp_tag_info_from_uid(nfp_uid, nfp_uid_len, info);
@@ -432,6 +473,7 @@ HLE(_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE) {
 
 HLE(_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE) {
     uint8_t info[NFP_MODEL_INFO_SIZE];
+    nfp_poll_scan();
     nfp_load();
     if (nfp_tag) nfp_model_info_from_id(nfp_tag->id, info);
     else memset(info, 0, sizeof info);
@@ -539,6 +581,8 @@ HLE(_ZN2nn3nfp3sdk7UnmountERKNS0_12DeviceHandleE) { imp__ZN2nn3nfp7UnmountERKNS0
 HLE(_ZN2nn3nfp3sdk19OpenApplicationAreaERKNS0_12DeviceHandleEj) { imp__ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj(c); }
 HLE(_ZN2nn3nfp3sdk18GetApplicationAreaEPvPyRKNS0_12DeviceHandleEy) { imp__ZN2nn3nfp18GetApplicationAreaEPvPyRKNS0_12DeviceHandleEy(c); }
 HLE(_ZN2nn3nfp3sdk18SetApplicationAreaERKNS0_12DeviceHandleEPKvy) { imp__ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvy(c); }
+HLE(_ZN2nn3nfp3sdk18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm) { imp__ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm(c); }
+HLE(_ZN2nn3nfp3sdk18SetApplicationAreaERKNS0_12DeviceHandleEPKvm) { imp__ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvm(c); }
 HLE(_ZN2nn3nfp3sdk23RecreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE) { imp__ZN2nn3nfp23RecreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE(c); }
 HLE(_ZN2nn3nfp3sdk5FlushERKNS0_12DeviceHandleE) { imp__ZN2nn3nfp5FlushERKNS0_12DeviceHandleE(c); }
 HLE(_ZN2nn3nfp3sdk7RestoreERKNS0_12DeviceHandleE) { imp__ZN2nn3nfp7RestoreERKNS0_12DeviceHandleE(c); }

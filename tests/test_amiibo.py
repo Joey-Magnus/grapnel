@@ -116,9 +116,15 @@ def main():
         "_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE",
         "_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE",
         "_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE",
+        # the SDK spellings the game imports: unsigned long, not unsigned long long
+        "_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm",
+        "_ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvm",
     ):
         check("HLE(" + symbol + ")" in host, "nn_nfp.c has no " + symbol)
-    check("nfp_scan();" in host[host.index("_ZN2nn3nfp14StartDetection"):], "StartDetection does not present a tag")
+    detect = host[host.index("_ZN2nn3nfp14StartDetection"):]
+    check("nfp_device_state = NFP_DEV_SEARCH;" in detect and "nfp_scan_pending = 1;" in detect,
+          "StartDetection does not start a scan")
+    check("nfp_poll_scan();" in detect, "the tag never appears after StartDetection")
     check("HOS_AMIIBO" in host and "HOS_AMIIBO_RANDOM_UID" in host, "nn_nfp.c has no amiibo switches")
     check("amiibo" in host and "nfp_ini_text" in host, "nn_nfp.c does not read amiibo= from the ini")
     check("int amiibo = 0;" in menu_h, "vk_menu.h has no amiibo option")

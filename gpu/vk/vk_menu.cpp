@@ -467,10 +467,10 @@ const char* tx_deadzone(int v) {
 }
 // (hookshot) The virtual amiibo a scan presents: the profiles of host/nfp_amiibo.h, in its order (host/nn_nfp.c
 // reads the row as amiibo=<index>; HOS_AMIIBO=<profile> overrides it for a run)
-constexpr int kAmiiboCount = 7;
+constexpr int kAmiiboCount = 8;
 const char* tx_amiibo(int v) {
     static const char* t[] = {"Link (OoT)", "Zelda (BotW)", "Young Link (Smash)", "Zelda (Smash)",
-                              "Young Link (OoT 2026)", "Young Zelda (OoT 2026)", "Mario (not supported)"};
+                              "Young Link (OoT 2026)", "Young Zelda (OoT 2026)", "Mario (not supported)", "None"};
     return (unsigned)v < kAmiiboCount ? t[v] : t[0];
 }
 const char* hn_amiibo(int v, int variant) {
@@ -482,6 +482,7 @@ const char* hn_amiibo(int v, int variant) {
         "The 2026 Ocarina of Time Young Link figure: Mask 101, the blocky Young Link mask.",
         "The 2026 Ocarina of Time Young Zelda figure: Mask 102, the blocky Young Zelda mask.",
         "Mario: the game says this amiibo does not work.",
+        "No virtual tag: the game waits for a real NFC reader.",
     };
     if (variant > 0) return nullptr;
     return t[v < 0 ? 0 : v >= kAmiiboCount ? 0 : v];
