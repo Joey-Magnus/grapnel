@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("foreground", "script-background", "headless", "noactivate", "live-background",
          "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off",
-         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty")
+         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty", "debug-handoff")
 
 
 def block(text, marker):
@@ -108,6 +108,8 @@ void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpecte
              "-I" + str(folder), str(ROOT / "tests/input_background_test.c"), "-o", str(exe)])
         for case in ((a.case,) if a.case else CASES):
             case_env = dict(env)
+            if case == "debug-handoff":
+                case_env["HOS_INPUT_EXCLUSIVE"] = "1"
             if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame"):
                 case_env["HOS_INPUT_SCRIPT"] = "0:A+LUP/200"
             if case in ("frame-hold", "live-frame", "reuse-frame"):

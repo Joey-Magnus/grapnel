@@ -27,6 +27,7 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_input_background.py": ["--cc", "gcc"],
     "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
     "tests/test_display_startup_failure.py": ["--cxx", "{cxx}"],
     "tests/test_frame_wait_bounds.py": ["--cxx", "{cxx}"],
@@ -119,6 +120,12 @@ MODULES = {
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
+    "tests/test_game_values.py": ({"windows"}, "Linux runtime API and Unix session isolation"),
+    "tests/test_event_play.py": ({"windows"}, "Linux runtime API and Unix session isolation"),
+    "tests/test_scene_load.py": ({"windows"}, "Linux runtime API and Unix session isolation"),
+    "tests/test_scene_dispatch.py": ({"windows"}, "Linux runtime API and Unix session isolation"),
+    "tests/test_debug_api.py": ({"windows"}, "Linux runtime API and Unix session isolation"),
+    "tests/test_analysis_dlss.py": ({"windows"}, "Linux runtime API and Unix session isolation"),
     "tests/test_precompile_compute_guard.py": ({"linux"}, "Windows structured exceptions"),
     # (the game: these run the lifted code of a real dump against Unicorn)
     "nx2/test_insn.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
