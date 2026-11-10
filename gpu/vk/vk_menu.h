@@ -62,6 +62,7 @@ struct Options {
     int discord = 1;   // (hookshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
     int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
+    int amiibo = 0;       // (hookshot) the virtual amiibo a scan presents (host/nn_nfp.c, host/nfp_amiibo.h): 0 Link (OoT), 1 Zelda (BotW), 2 Young Link (Smash), 3 Zelda (Smash), 4 Young Link (OoT 2026), 5 Young Zelda (OoT 2026), 6 Mario (not supported)
 };
 extern Options opts;
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
