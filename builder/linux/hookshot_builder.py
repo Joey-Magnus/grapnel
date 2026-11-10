@@ -406,7 +406,7 @@ class Builder(tk.Tk):
         w, h = self.px(900), self.px(560)
         self.geometry("%dx%d" % (w, h))
         self.resizable(False, False)
-        rail_w, rail_h = self.px(220), h
+        rail_w, rail_h = self.px(250), h
         rail = tk.Canvas(f, width=rail_w, height=rail_h, bg=GREEN_TOP, highlightthickness=0, bd=0)
         rail.pack(side="left", fill="y")
         gradient(rail, rail_w, rail_h, GREEN_TOP, GREEN_BOT)
@@ -417,8 +417,8 @@ class Builder(tk.Tk):
             step = max(1, round(art_px.width() / self.px(200)))
             self.rail_art = art_px.subsample(step, step) if step > 1 else art_px   # (kept as an attribute: the canvas holds a weak reference)
             rail.create_image(rail_w // 2, self.px(150), image=self.rail_art)
-        rail.create_text(rail_w // 2, self.px(320), text="Hookshot Launcher " + (game or ""), fill=INK_WHITE,
-                         font=("Helvetica", self.px(13), "bold"))
+        rail.create_text(rail_w // 2, self.px(300), text="Hookshot Launcher", fill=INK_WHITE, font=("Helvetica", -self.px(13), "bold"))
+        rail.create_text(rail_w // 2, self.px(324), text=game or "", fill=INK_SOFT, font=("Helvetica", -self.px(12)))
         self.hero = hero = tk.Canvas(f, width=w - rail_w, height=h, bg=FIELD_BOT, highlightthickness=0, bd=0)
         hero.pack(side="left", fill="both", expand=True)
         self.hero_w, self.hero_h = w - rail_w, h
@@ -434,13 +434,13 @@ class Builder(tk.Tk):
             gradient(hero, self.hero_w, self.hero_h, FIELD_TOP, FIELD_BOT)
         hero.create_rectangle(0, 0, self.hero_w, self.px(88), fill=HERO_BAND, outline=HERO_BAND)   # (the scrim band, as the mockup draws it)
         hero.create_rectangle(0, self.hero_h - self.px(40), self.hero_w, self.hero_h, fill=HERO_FOOT, outline=HERO_FOOT)
-        hero.create_text(self.px(24), self.px(30), anchor="w", text="Build & Update", fill=INK_WHITE, font=("Helvetica", self.px(24), "bold"))
+        hero.create_text(self.px(24), self.px(30), anchor="w", text="Build & Update", fill=INK_WHITE, font=("Helvetica", -self.px(24), "bold"))
         self.launch_version = tk.StringVar(value="Version " + game if game else "This folder has no game built in it yet")
         self.version_id = hero.create_text(self.px(25), self.px(64), anchor="w", text=self.launch_version.get(), fill=INK_SOFT,
-                                           font=("Helvetica", self.px(13)))
+                                           font=("Helvetica", -self.px(13)))
         self.launch_version.trace_add("write", lambda *_: hero.itemconfig(self.version_id, text=self.launch_version.get()))
         hero.create_text(self.hero_w // 2, self.px(200), text="Ocarina of Time: %s" % ("Ready" if ready else "not built in this folder yet"),
-                         fill=INK_WHITE, font=("Helvetica", self.px(15), "bold"))
+                         fill=INK_WHITE, font=("Helvetica", -self.px(15), "bold"))
         cx, cy = self.hero_w // 2, self.px(280)
         self.disc = hero.create_oval(cx - self.px(48), cy - self.px(48), cx + self.px(48), cy + self.px(48),
                                      fill=DISC if ready else DISC_OFF, outline=DISC_LINE, width=2)
@@ -453,10 +453,10 @@ class Builder(tk.Tk):
             hero.tag_bind(self.disc, "<Leave>", lambda e: hero.itemconfig(self.disc, fill=DISC))
         self.launch_status = tk.StringVar(value="Checking for updates...")
         self.status_id = hero.create_text(self.px(24), self.hero_h - self.px(20), anchor="w", text=self.launch_status.get(),
-                                          fill=INK_WHITE, font=("Helvetica", self.px(13)))
+                                          fill=INK_WHITE, font=("Helvetica", -self.px(13)))
         self.launch_status.trace_add("write", lambda *_: hero.itemconfig(self.status_id, text=self.launch_status.get()))
         link = hero.create_text(self.hero_w - self.px(20), self.hero_h - self.px(20), anchor="e", text="Open the game folder",
-                                fill=LINK_SOFT, font=("Helvetica", self.px(13)))
+                                fill=LINK_SOFT, font=("Helvetica", -self.px(13)))
         hero.tag_bind(link, "<Button-1>", lambda e: subprocess.Popen(["xdg-open", folder]))
         self.launch_update = ttk.Button(hero, text="Update", command=lambda: self.begin_update(folder))
         self.update_id = hero.create_window(self.hero_w - self.px(20), self.px(30), window=self.launch_update, anchor="ne", width=self.px(96))
