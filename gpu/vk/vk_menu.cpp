@@ -31,6 +31,8 @@
 #include "vk_startup_paint.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #include "vk_dlss.h"
+#include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
+#include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
 #include "vk_reflex.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
@@ -49,11 +51,11 @@ enum MenuTab {
     TAB_GRAPHICS = 0,
     TAB_GAMEPLAY = 1,
     TAB_CONTROLS = 2,
-    TAB_MODS = 3,   // (Cheats/Mods: the free camera, the screen filters)
+    TAB_DEBUG = 3,   // (the OoT debug tools of #785, a tab of their own)
     TAB_COUNT = 4,
-    TAB_MOTION = TAB_COUNT   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
-                             // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
+    TAB_MOTION = 4   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row opens)
 };
+static_assert(TAB_COUNT == menu_hit::kTabs, "the tab strip's slots (vk_menu_hit.h)");
 
 struct Row {
     MenuTab tab;
@@ -83,6 +85,16 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_hdr(int v) { return v == 1 ? "Expanded" : v == 2 ? "Native (the game's)" : "Off"; }
+const char* tx_nits(int v) {
+    static char b[24];
+    snprintf(b, sizeof b, "%d nits", v);
+    return b;
+}
+const char* tx_fps_cap(int v) {
+    static const char* const t[] = {"60 (the console's)", "90", "120", "144", "165", "240"};
+    return t[v < 0 ? 0 : v > 5 ? 5 : v];
+}
 // (hookshot) Motion controls: the choice, and whether a connected controller has a gyroscope (host/pad_sdl.c). Either can be
 // chosen whatever is connected: a pad plugged in later is read when it comes
 const char* tx_gyro(int v) {
@@ -124,13 +136,18 @@ const char* hn_reflex(int v, int variant) {
     if (variant < 0) return reflex_available() ? t[std::clamp(v, 0, 2)] : none;
     return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
 }
-// The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run; the menu
-// shows (and steps from) what runs, dlss_mode(), and keeps the saved choice for a PC where it can
+// The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 3.1
+// only where vk_fsr3.cpp says it does; the menu shows (and steps from) what runs, and keeps the saved choice for a PC where it
+// can
 namespace ur = upscaler_rows;
-int upscaler() { return dlss_mode(); }
+/// One bit per upscaler that runs here (upscaler_rows.h bit). Each backend caches its own answer, so this costs nothing
+unsigned upscalers_available() {
+    return ur::bit(ur::GAME) | ur::dlss_bits(dlss_why() == DLSS_OK) | (fsr3::supported() ? ur::bit(ur::FSR3) : 0u);
+}
+int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : dlss_mode(); }
 const char* tx_upscaler(int) {
-    static const char* t[] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA"};
-    return t[std::clamp(upscaler(), 0, 2)];
+    static const char* t[] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1"};
+    return t[std::clamp(upscaler(), 0, ur::kUpscalers - 1)];
 }
 /// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS and DLAA are not offered
 const char* hn_upscaler(int v, int variant) {
@@ -140,6 +157,8 @@ const char* hn_upscaler(int v, int variant) {
         "themselves can trail for now.",
         "NVIDIA's, the 3D at full size with its edges smoothed; the slowest. Softer than the game's own: set Sharpness to "
         "around 80%. Things that move by themselves can trail for now.",
+        "AMD's, from a smaller 3D, on any GPU: built from AMD's own shaders. Things that move by themselves can trail for "
+        "now.",
     };
     static const char* const why[DLSS_WHY_COUNT] = {
         nullptr,
@@ -152,10 +171,10 @@ const char* hn_upscaler(int v, int variant) {
     };
     // (now: the value shown and what runs here; every one: each value, and the game's own with each reason)
     int w = 0;
-    if (variant < 0) v = std::clamp(upscaler(), 0, 2), w = (int)dlss_why();
+    if (variant < 0) v = std::clamp(upscaler(), 0, ur::kUpscalers - 1), w = (int)dlss_why();
     else if (v == ur::GAME) w = variant;
     else if (variant > 0) return nullptr;
-    v = std::clamp(v, 0, 2);
+    v = std::clamp(v, 0, ur::kUpscalers - 1);
     if (w >= DLSS_WHY_COUNT) return nullptr;
     if (v != ur::GAME || !why[w]) return t[v];
     static char b[DLSS_WHY_COUNT][256];
@@ -204,11 +223,11 @@ const char* tx_percent(int v) {
 struct Out {
     uint32_t w, h;
 };
-constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}};
+constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}};
 constexpr int kLastOutput = std::size(kOutputs) - 1;
 int output_choice(int v) { return v >= 0 && v <= kLastOutput ? v : 0; }
 // Display the sizes from smallest to largest while keeping the IDs used by saved settings.
-constexpr int kOutputOrder[] = {3, 0, 1, 2};
+constexpr int kOutputOrder[] = {3, 0, 1, 2, 4};
 static_assert(std::size(kOutputOrder) == std::size(kOutputs));
 int step_output_choice(int id, int dir) {
     const int* pos = std::find(std::begin(kOutputOrder), std::end(kOutputOrder), output_choice(id));
@@ -232,7 +251,7 @@ const char* tx_resolution(int v) {
     const int up = upscaler();
     if (up == ur::DLAA) return "Native (DLAA)";
     if (!ur::percent(v)) return "Auto (dynamic)";
-    if (const char* mode = up == ur::DLSS ? ur::dlss_mode_name(v) : nullptr) {
+    if (const char* mode = ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
         snprintf(b, sizeof b, "%s (%d%%)", mode, ur::percent(v));
         return b;
     }
@@ -243,8 +262,8 @@ const char* tx_resolution(int v) {
 }
 /// The Render resolution: the value chosen, for the Upscaler shown (every one: each value with each Upscaler)
 const char* hn_resolution(int v, int variant) {
-    const int up = variant < 0 ? std::clamp(upscaler(), 0, 2) : variant;
-    if (up > 2) return nullptr;
+    const int up = variant < 0 ? std::clamp(upscaler(), 0, ur::kUpscalers - 1) : variant;
+    if (up >= ur::kUpscalers) return nullptr;
     if (up == ur::DLAA)
         return "DLAA draws the 3D at full size: nothing to set here. Choose DLSS or the game's own upscaler to draw it "
                "smaller.";
@@ -259,13 +278,23 @@ const char* hn_resolution(int v, int variant) {
         default: return nullptr;   // (not one of DLSS's steps: the row moves to one)
         }
     }
+    if (up == ur::FSR3) {
+        switch (p) {
+        case 0: return "The game lowers it when the GPU is busy, and FSR follows.";
+        case 67: return "FSR's Quality mode, 1.5x: its sharpest.";
+        case 58: return "FSR's Balanced mode, 1.7x.";
+        case 50: return "FSR's Performance mode, 2x: faster, and softer.";
+        case 33: return "FSR's Ultra Performance mode, 3x: its fastest, and its softest.";
+        default: return nullptr;   // (not one of FSR's steps: the row moves to one)
+        }
+    }
     if (!p) return "The game lowers it when the GPU is busy.";
     if (p == 100) return "The 3D at the output's full size: the sharpest, and the slowest.";
     return "A steady size: lower is faster, and softer.";
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(dlss_why() == DLSS_OK)) ||
+    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
@@ -287,8 +316,6 @@ const char* tx_screen_filter(int v) {
     static const char* t[] = {"Off", "CRT", "Scanlines", "Film"};
     return t[std::min(std::max(v, 0), 3)];
 }
-// (the Cheats/Mods tab's free camera: live, not saved, a mirror of free_camera, which the Cheats page sets too)
-int mod_free_camera = 0;
 const char* tx_gpu(int v) {
     static char buf[300];
     const int idx = v - 1;
@@ -311,12 +338,14 @@ std::string mic_want;      // (the chosen microphone's name, cut to kMicNameKept
 bool mic_missing = false;  // (mic_want is not plugged in: the row's last entry, 2 + mic_listed, stands for it)
 int mic_listed = 0;        // (the microphones as the host last listed them)
 bool can_mic() { return host && host->mic_count && host->mic_name && host->mic_select; }
+size_t text_char_start(const std::string& text, size_t at) {
+    while (at > 0 && at < text.size() && ((unsigned char)text[at] & 0xc0) == 0x80) at--;
+    return at;
+}
 std::string mic_key(const char* name) {
     std::string k(name ? name : "");
     if (k.size() <= kMicNameKept) return k;
-    size_t cut = kMicNameKept;
-    while (cut > 0 && ((unsigned char)k[cut] & 0xC0) == 0x80) cut--;   // (not in the middle of a UTF-8 character)
-    return k.substr(0, cut);
+    return k.substr(0, text_char_start(k, kMicNameKept));
 }
 const char* tx_mic(int v) {
     static char buf[160];
@@ -356,6 +385,11 @@ const char* tx_stick_dead_zone(int v) {
 const char* tx_audio_output(int v) {
     static const char* t[] = {"Auto", "Stereo", "5.1"};
     return (unsigned)v < 3 ? t[v] : t[0];
+}
+// (hookshot) the motion's deadzone: the console's three zero-drift modes, the rate under which the pad counts as still
+const char* tx_deadzone(int v) {
+    static const char* t[] = {"Low", "Standard", "High"};
+    return t[v < 0 ? 0 : v > 2 ? 2 : v];
 }
 const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
@@ -417,6 +451,9 @@ MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself co
 MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
 /// Frame generation: how many frames are made for each of the game's
 const char* hn_framegen(int v, int variant) {
+    // (2x: by AMD FSR 3.1 where it runs, from the scene's depth and motion: vk_framegen.cpp. Variant 1 is that text)
+    if (v == 2 && (variant < 0 ? fsr3fi::frames_wanted() != 0 : variant == 1))
+        return "One made frame between each two of the game's, by AMD FSR 3.1 from the scene's depth and motion.";
     if (variant > 0) return nullptr;
     if (v <= 0) return "Only the game's own frames: no added delay.";
     if (v == 1) return "A frame for each of the display's refreshes: none made when the game keeps up. Frame pacing does not apply.";
@@ -429,7 +466,8 @@ MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stu
 MENU_HINTS(hn_output_res, 0, "The game's own size.",
            "The sharpest on a 2560x1440 screen: nothing to scale to the window.",
            "The sharpest on a 3840x2160 screen. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
-           "The sharpest on a 1920x1080 screen: the HUD and text pixel for pixel, nothing to scale to the window.")
+           "The sharpest on a 1920x1080 screen: the HUD and text pixel for pixel, nothing to scale to the window.",
+           "The sharpest on a 5120x1440 ultrawide screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.")
 /// The Window scaling filter: its filter, or that none is needed at this window's size
 const char* hn_filter(int v, int variant) {
     static const char* const t[] = {"The plain copy.", "Sharper.", "Sharper still; can ring on edges."};
@@ -441,7 +479,7 @@ const char* hn_filter(int v, int variant) {
 /// Sharpness: with DLSS or DLAA, the amount that suits them
 const char* hn_sharpness(int v, int variant) {
     static const char* const dlss = "DLSS and DLAA look softer than the game's own upscaler: around 80% suits them.";
-    const bool with_dlss = variant < 0 ? upscaler() != ur::GAME : variant == 1;
+    const bool with_dlss = variant < 0 ? upscaler() == ur::DLSS || upscaler() == ur::DLAA : variant == 1;
     if (variant > 1) return nullptr;
     return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
 }
@@ -469,7 +507,7 @@ MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the botto
            "Bindings of your own, from the Controls page.")
 
 Row rows[] = {
-    // Graphics (the Upscaler only in a build with DLSS: row_shown)
+    // Graphics (the Upscaler only in a build with DLSS, or where AMD FSR 3.1 runs: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Sets the scaling rows, frame generation and memory limits for a GPU with that much memory. The Upscaler stays yours.",
      hn_preset},
@@ -481,13 +519,24 @@ Row rows[] = {
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
+    {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
+     "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
+     "the paper white and its highlights up to the peak. Native: the game's own HDR, told the display's peak and paper white.",
+     nullptr, false, true},
+    {TAB_GRAPHICS, "HDR paper white", &opts.hdr_white, 80, 400, 10, tx_nits,
+     "How bright the picture's white is with HDR on. Around 200 for a normal room; higher in a bright one.", nullptr, false, true},
+    {TAB_GRAPHICS, "HDR peak brightness", &opts.hdr_peak, 400, 4000, 100, tx_nits,
+     "The brightest highlights with HDR on: set it to your display's peak brightness.", nullptr, false, true},
+    {TAB_GRAPHICS, "Frame rate cap", &opts.fps_cap, 0, 5, 1, tx_fps_cap,
+     "The most frames a second the game runs at. Past 60 the game keeps real time (Game speed follows the clock). Takes a restart.",
+     nullptr, true, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
      hn_output_res, true},
-    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, 2, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
+    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
      hn_upscaler},
     {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
      "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
@@ -523,6 +572,9 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
+    {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
+     "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
+     true},
 
     // Controls (11 rows; the Motion row opens the 6 TAB_MOTION rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -544,7 +596,9 @@ Row rows[] = {
     {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
     {TAB_MOTION, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
-     "Aiming and looking with the controller's gyroscope where the game uses motion, as on the Switch.", hn_gyro, false, true},
+     "Aims and looks with the controller's gyroscope where the game uses motion, as on the Switch. Works with Switch Pro "
+     "controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one.", hn_gyro,
+     false, true},
     {TAB_MOTION, "Motion sensitivity X", &opts.gyro_sens_x, 10, 600, 10, tx_percent,
      "How far the aim moves left and right for a given turn of the controller. 100% is the console's own.", nullptr, false,
      true},
@@ -564,26 +618,31 @@ Row rows[] = {
      "Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts."},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
-    {TAB_MODS, "Free camera", &mod_free_camera, 0, 1, 1, tx_onoff,
-     "Fly the camera with your usual controls; Page Up / Page Down or R / L change its height. The HUD is hidden meanwhile.", nullptr, false, true},
-    {TAB_MODS, "Screen filter", &opts.filter, 0, 3, 1, tx_screen_filter,
+    // (the Debug tab's screen filters, before its two rows below)
+    {TAB_DEBUG, "Screen filter", &opts.filter, 0, 3, 1, tx_screen_filter,
      "A look for the whole picture: CRT (curved glass, scanlines and a shadow mask), Scanlines alone, or Film (warm grade, "
      "grain and vignette). Changes at once.", nullptr, false, true},
-    {TAB_MODS, "Filter strength", &opts.filter_strength, 0, 100, 10, tx_percent, "How strong the screen filter is.", nullptr, false, true},
-    // (Restart, Quit and Cheats stay the table's last three rows: kRestartRow, kQuitRow and kCheatsRow count back from its end)
+    {TAB_DEBUG, "Filter strength", &opts.filter_strength, 0, 100, 10, tx_percent, "How strong the screen filter is.", nullptr, false, true},
+    // (Restart and Quit, then the Debug tab's two rows, stay the table's last four: kRestartRow, kQuitRow and kCheatsRow count back
+    // from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
      "Starts the game again. Save your progress first. Press Enter or the bottom face button twice to restart. Esc or the "
      "right face button cancels."},
     {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
      "Save your progress first. Press Enter or the bottom face button twice to quit. Esc or the right face button cancels."},
-    {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
-     "Open the private gameplay tools."},
+    {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
+     "Testing tools: no-clip flight, a free camera, teleport, Link's age, the inventory, the clock and heart protection. Off "
+     "puts flight, the free camera and heart protection away.", nullptr, false, true},
+    {TAB_DEBUG, "Open debug tools", nullptr, 0, 0, 0, nullptr,
+     "Flight, free camera, teleport, age, inventory, the clock and heart protection."},
 };
-constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;
-constexpr int kQuitRow = kCheatsRow - 1;
-constexpr int kRestartRow = kCheatsRow - 2;
+constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;   // (the Debug tab's Open debug tools)
+constexpr int kQuitRow = kCheatsRow - 2;
+constexpr int kRestartRow = kCheatsRow - 3;
 const Row* pending = nullptr;   // (Restart or Quit: shows Confirm until its second press)
-bool cheats_enabled = false;
+bool cheats_env = false;   // (HOS_OOT_CHEATS=1: on whatever the Debug tab says)
+/// The debug tools: the Debug tab's row, or HOS_OOT_CHEATS=1
+bool cheats_on() { return cheats_env || opts.debug_tools; }
 std::atomic<int> protect_hearts{-1};
 // -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
 std::atomic<int> player_flight{-1};
@@ -671,7 +730,7 @@ constexpr int kRows = sizeof rows / sizeof rows[0];
 constexpr int kMenuWidth = menu_hit::kWidth;   // (at a scale of 1: 720 lines)
 
 int cur_tab = TAB_GRAPHICS;
-int tab_selected[TAB_MOTION + 1] = {};   // (the strip's tabs and the Motion page's)
+int tab_selected[TAB_COUNT + 1] = {0, 0, 0, 0, 0};   // (and the Motion page's)
 bool is_motion_row(const Row& r) { return r.tab == TAB_CONTROLS && !r.value && !strcmp(r.name, "Motion"); }
 
 // ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
@@ -727,9 +786,9 @@ std::string restart_line(HDC dc, int width) {
     return line;
 }
 
-/// A row on its tab: the Cheats one only with cheats on, the Upscaler only in a build with DLSS
+/// A row on its tab: Open debug tools only with the tools on, the Upscaler only in a build with DLSS or where AMD FSR 3.1 runs
 bool row_shown(int i) {
-    return (i != kCheatsRow || cheats_enabled) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built())) &&
+    return (i != kCheatsRow || cheats_on()) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built(), fsr3::supported())) &&
            (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
 }
 int tab_row_count(int t) {
@@ -762,7 +821,7 @@ bool menu_refresh = false;
 int marquee_pos = 0, marquee_max = 0;
 int64_t marquee_next = 0;
 constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // (ns)
-// (hookshot) the mouse (menu_tick): the tab strip's part under the cursor (a tab 0 to 2, 3 the previous, 4 the next; -1
+// (hookshot) the mouse (menu_tick): the tab strip's part under the cursor (a tab 0 to TAB_COUNT - 1, TAB_COUNT the previous, TAB_COUNT + 1 the next; -1
 // none); paint_menu's record of each shown row's value's left edge (as with its arrows, whether shown or not) and of the
 // rows a slider's track was drawn on; the slider held with the left button (its row in the tab, -1 none)
 int hover_tab = -1;
@@ -892,7 +951,7 @@ void save() {
     }
     if (FILE* f = fopen(ini_path().c_str(), "w")) {
         for (const Row& r : rows)
-            if (r.value && r.value != &mod_free_camera) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
+            if (r.value) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load)
@@ -912,7 +971,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
-    if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, true);
+    if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, upscalers_available());
     if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
     if (r.value == &opts.output_res) {   // (smallest to largest: kOutputOrder)
         v = step_output_choice(*r.value, dir);
@@ -937,7 +996,6 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         }
     }
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
-    if (r.value == &mod_free_camera) free_camera.store(mod_free_camera);   // (the Cheats/Mods tab: live, not saved)
     {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
         int now[mr::kMax];
         restart_values(now);
@@ -1157,7 +1215,6 @@ void fill(HDC dc, int x, int y, int w, int h, COLORREF c) {
     DeleteObject(b);
 }
 void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
-    mod_free_camera = free_camera.load();   // (the Cheats page may have set it)
     fill(dc, 0, 0, (int)w, (int)h, RGB(16, 20, 18));
     fill(dc, 0, 0, (int)w, 2 * s, RGB(96, 176, 112));
     SetBkMode(dc, TRANSPARENT);
@@ -1365,18 +1422,18 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     fill(dc, 0, tab_y, (int)w, tab_h, RGB(22, 28, 25));
     HFONT small_font = font(12 * s, FW_SEMIBOLD);
     SelectObject(dc, small_font);
-    SetTextColor(dc, hover_tab == 103 ? RGB(210, 225, 215) : RGB(110, 135, 120));   // (lighter under the cursor: a click goes there)
+    SetTextColor(dc, hover_tab == TAB_COUNT ? RGB(210, 225, 215) : RGB(110, 135, 120));   // (lighter under the cursor: a click goes there)
     TextOutA(dc, 16 * s, tab_y + 8 * s, "[Q / LB]", 8);
     const char* rb_hint = "[E / RB]";
     SIZE rbsz{};
     GetTextExtentPoint32A(dc, rb_hint, (int)strlen(rb_hint), &rbsz);
-    SetTextColor(dc, hover_tab == 104 ? RGB(210, 225, 215) : RGB(110, 135, 120));
+    SetTextColor(dc, hover_tab == TAB_COUNT + 1 ? RGB(210, 225, 215) : RGB(110, 135, 120));
     TextOutA(dc, (int)w - 16 * s - rbsz.cx, tab_y + 8 * s, rb_hint, (int)strlen(rb_hint));
     HFONT tab_font = font(13 * s, FW_BOLD);
     SelectObject(dc, tab_font);
-    const char* const tab_titles[TAB_COUNT] = {"GRAPHICS", "GAMEPLAY", "CONTROLS", "CHEATS/MODS"};
+    const char* const tab_titles[TAB_COUNT] = {"GRAPHICS", "GAMEPLAY", "CONTROLS", "DEBUG"};
     const int center_start = menu_hit::kTabSide * s;
-    const int tab_slot_w = menu_hit::tab_slot_w(s, (int)w, TAB_COUNT);
+    const int tab_slot_w = menu_hit::tab_slot_w(s, (int)w);
     for (int t = 0; t < TAB_COUNT; t++) {
         const bool active = t == (cur_tab == TAB_MOTION ? TAB_CONTROLS : cur_tab);   // (the Motion page: under Controls)
         int slot_x = center_start + t * tab_slot_w;
@@ -1436,16 +1493,26 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         std::string v = framed(label);
         if (width(v) > room && arrows) {   // (slides: the longest piece from marquee_pos that fits)
             size_t start = label.size();   // (the last start that still shows the name's end)
-            while (start > 0 && width(framed(label.substr(start - 1))) <= room) start--;
+            while (start > 0) {
+                const size_t previous = text_char_start(label, start - 1);
+                if (width(framed(label.substr(previous))) > room) break;
+                start = previous;
+            }
             marquee_max = (int)start;
-            const size_t from = (size_t)std::min(marquee_pos, marquee_max);
-            size_t n = label.size() - from;
-            while (n > 1 && width(framed(label.substr(from, n))) > room) n--;
-            v = framed(label.substr(from, n));
+            const size_t from = text_char_start(label, (size_t)std::min(marquee_pos, marquee_max));
+            size_t end = label.size();
+            while (end > from && width(framed(label.substr(from, end - from))) > room) {
+                const size_t previous = text_char_start(label, end - 1);
+                if (previous == from) break;
+                end = previous;
+            }
+            v = framed(label.substr(from, end - from));
         } else if (width(v) > room) {   // (not selected: cut with "...")
             std::string t = label;
             while (t.size() > 1 && width(v) > room) {
-                t.pop_back();
+                const size_t previous = text_char_start(t, t.size() - 1);
+                if (!previous) break;
+                t.resize(previous);
                 while (!t.empty() && t.back() == ' ') t.pop_back();
                 v = t + "...";
             }
@@ -1657,8 +1724,8 @@ void menu_init() {
     for (auto& count : item_counts) count.store(-1, std::memory_order_relaxed);
     bool has_options = false;
     const char* cheats = getenv("HOS_OOT_CHEATS");
-    cheats_enabled = cheats && !strcmp(cheats, "1");
-    if (cheats_enabled) {
+    cheats_env = cheats && !strcmp(cheats, "1");
+    if (cheats_env) {
         const char* hearts = getenv("HOS_OOT_PROTECT_HEARTS");
         protect_hearts.store(hearts && !strcmp(hearts, "1"));
     }
@@ -1738,9 +1805,14 @@ void menu_set_gpu_count(int count) {
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
-int menu_heart_protection() { return protect_hearts.load(std::memory_order_relaxed); }
-int menu_player_flight() { return cheats_enabled ? player_flight.load(std::memory_order_relaxed) : -1; }
-int menu_free_camera() { return free_camera.load(std::memory_order_relaxed); }
+// (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
+// host's own HOS_OOT_PROTECT_HEARTS)
+int menu_heart_protection() {
+    const int v = protect_hearts.load(std::memory_order_relaxed);
+    return cheats_on() || v < 0 ? v : 0;
+}
+int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_order_relaxed) : -1; }
+int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
@@ -1798,7 +1870,7 @@ void menu_option_set(int id, int value) {
         return;
     }
     if (id == HOS_OPT_CHEAT_FLIGHT) {
-        if (cheats_enabled) {
+        if (cheats_on()) {
             int expected = value ? 0 : 1;
             player_flight.compare_exchange_strong(expected, value != 0, std::memory_order_relaxed);
         }
@@ -2174,8 +2246,8 @@ void menu_tick() {
         if (mouse) {   // (the mouse: see the top of this file)
             const int count = tab_row_count(cur_tab);
             const menu_hit::Hit hit = menu_hit::options(mx, my, scale, mw, mh, TAB_COUNT, count, row_value_l, row_slider);
-            const int ht = hit.part == menu_hit::kTab ? hit.index : hit.part == menu_hit::kTabPrev ? 103
-                         : hit.part == menu_hit::kTabNext ? 104 : -1;   // (past the tabs' own indices)
+            const int ht = hit.part == menu_hit::kTab ? hit.index : hit.part == menu_hit::kTabPrev ? TAB_COUNT
+                         : hit.part == menu_hit::kTabNext ? TAB_COUNT + 1 : -1;
             if (ht != hover_tab) hover_tab = ht, changed = true;
             int& sel = tab_selected[cur_tab];
             const bool on_row = hit.part == menu_hit::kRow || hit.part == menu_hit::kSlider;
@@ -2231,6 +2303,7 @@ void menu_tick() {
         }
         if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
+        else if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false;
         // (the tabs: LB and RB, Q and E, or Tab; from the Motion page, as from Controls)
@@ -2239,6 +2312,7 @@ void menu_tick() {
         else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;
         const int tab_count = tab_row_count(cur_tab);
         int& selected = tab_selected[cur_tab];
+        if (selected >= tab_count) selected = tab_count - 1;   // (a row gone since: Open debug tools with the tools turned off)
         if (press[1]) selected = (selected + tab_count - 1) % tab_count, changed = true;
         if (press[2]) selected = (selected + 1) % tab_count, changed = true;
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
