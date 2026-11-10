@@ -3,7 +3,13 @@
    The game's code reads data from outside (a save from someone else, above all). Should a crafted file ever take the
    process over, the sandbox keeps it from the player's other files: it reads the system's libraries and settings, its own
    folder, the GPU's and the input devices, and writes only its saves, its own state files, the drivers' shader caches and
-   the temporary folder. Unix sockets: only the display's (Wayland, X11) and the sound server's (PipeWire, PulseAudio).
+   the temporary folder. Unix sockets: only the display's (Wayland, X11), the sound server's (PipeWire, PulseAudio) and
+   Discord's (the status, host/discord_rpc.c).
+
+   Nothing it can write is loaded or run by a later start: the game folder is read-only but for its state files (data the
+   game checks), and of the saves folder ($XDG_DATA_HOME/hookshot) only save/, cache/, temp/ and the player's settings
+   files are writable, not the folder itself, where the builder's updates (builder/, which an update offer runs) and a
+   DLSS library (ngx/, vk_dlss.cpp) may lie.
 
    It is applied at start, before the window's renderer and before any save is read, from the game's thread; with
    Landlock ABI 8 (Linux 6.18) to every thread of the process at once (the window's main thread was started first),
@@ -123,10 +129,15 @@ static void parent_of(const char *path, char *out, size_t cap) {
 
 /* The game folder's own state files: written in place, never created there (a process that could create files in its folder
    could also put a library or a settings file there for the next start to load: the folder is read-only otherwise).
-   Missing ones are made now, empty: each reader takes an empty file as none. The options file starts as the menu writes it. */
+   Missing ones are made now, empty: each reader takes an empty file as none (gpu/vk/vk_menu.cpp's options too).
+   (prompts/: the button prompts made for the pad's controls, host/prompts.c; only where the folder was built with them) */
 static const char *const state_files[] = {"hookshot_options.ini", "mkw_vk_pipelines.bin", "hookshot_pipelines.bin",
-                                          "hookshot_programs.bin", "hookshot_programs.bin.lock", "hookshot_prepared.bin",
-                                          "hookshot_log.txt", NULL};
+                                          "hookshot_programs.bin", "hookshot_programs.bin.lock", "hookshot_programs.idx",
+                                          "hookshot_prepared.bin", "hookshot_computes.bin", "hookshot_pipeline_states.bin",
+                                          "hookshot_log.txt", "prompts/Common.bntx.zs", "prompts/Common.key", NULL};
+/* the saves folder's: the file system's mounts (host/nn_fs.c), folders; the player's settings kept there, files */
+static const char *const user_dirs[] = {"save", "cache", "temp", NULL};
+static const char *const user_files[] = {"present.txt", "mouse_sens.txt", NULL};
 
 void hos_sandbox_apply(const char *game_dir, const char *user_dir) {
     const char *off = getenv("HOS_SANDBOX");
@@ -173,6 +184,10 @@ void hos_sandbox_apply(const char *game_dir, const char *user_dir) {
         allowf(R_READ, "r", "%s/.local/share/fonts", home, NULL);
         allowf(R_READ, "r", "%s/.fonts", home, NULL);
         allowf(R_READ, "r", "%s/.config/pulse", home, NULL);   /* (PulseAudio's cookie) */
+        allowf(R_READ, "r", "%s/.config/pipewire", home, NULL);
+        allowf(R_READ, "r", "%s/.asoundrc", home, NULL);
+        allowf(R_READ, "r", "%s/.icons", home, NULL);   /* (the pointer's theme: SDL, libdecor) */
+        allowf(R_READ, "r", "%s/.local/share/icons", home, NULL);
         allowf(R_READ, "r", "%s/.Xauthority", home, NULL);
     }
     allow(getenv("XAUTHORITY"), R_READ, "r");
@@ -187,16 +202,36 @@ void hos_sandbox_apply(const char *game_dir, const char *user_dir) {
         snprintf(p, sizeof p, "%s/%s", game_dir, state_files[i]);
         if (access(p, F_OK) != 0) {
             const int fd = open(p, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
-            if (fd >= 0) {
-                if (!strcmp(state_files[i], "hookshot_options.ini") && write(fd, "options_version=3\n", 18) != 18) {}
-                close(fd);
-            }
+            if (fd >= 0) close(fd);
         }
         struct stat st;
         if (lstat(p, &st) == 0 && S_ISREG(st.st_mode)) allow(p, R_READ | R_FILE_WRITE, NULL);
     }
-    note("w", "<game folder>/hookshot_options.ini,*.bin caches,hookshot_log.txt");
-    allow(user_dir, RW, "rw");
+    note("w", "<game folder>/hookshot_options.ini,*.bin caches,hookshot_log.txt,prompts/Common.*");
+    /* (DLSS's data folder, gpu/vk/vk_dlss.cpp, made now as it would be at its start: read-only, as the rest of the folder) */
+    snprintf(p, sizeof p, "%s/ngx", game_dir);
+    mkdir(p, 0755);
+    /* the saves folder: read; its mounts' folders written (made now, as the game makes them); the settings files written in place
+       (present.txt made empty: its reader takes that as none; mouse_sens.txt only when there, as it is moved into the menu) */
+    allow(user_dir, R_READ, "r");
+    for (int i = 0; user_dirs[i]; i++) {
+        snprintf(p, sizeof p, "%s/%s", user_dir, user_dirs[i]);
+        mkdir(p, 0755);
+        allow(p, RW, NULL);
+    }
+    for (int i = 0; user_files[i]; i++) {
+        snprintf(p, sizeof p, "%s/%s", user_dir, user_files[i]);
+        if (i == 0 && access(p, F_OK) != 0) {
+            const int fd = open(p, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+            if (fd >= 0) close(fd);
+        }
+        struct stat st;
+        if (lstat(p, &st) == 0 && S_ISREG(st.st_mode)) allow(p, R_READ | R_FILE_WRITE, NULL);
+    }
+    note("rw", "<saves>/{save,cache,temp}/,present.txt,mouse_sens.txt");
+    /* the DLSS and FSR 4 libraries' own folders, when named (gpu/vk/vk_dlss.cpp, vk_fsr4.cpp) */
+    allow(getenv("RX_VK_DLSS_DIR"), R_READ | R_EXEC, "rx");
+    allow(getenv("RX_VK_FSR_DIR"), R_READ | R_EXEC, "rx");
 
     /* the drivers' shader caches (NVIDIA, Mesa's), made if missing; the temporary folder; shared memory */
     if (cache_dir[0]) {
@@ -231,7 +266,13 @@ void hos_sandbox_apply(const char *game_dir, const char *user_dir) {
         allow_prefixed(run, "wayland-", R_READ | LL_RESOLVE_UNIX, NULL);
         allow_prefixed(run, "pipewire-", R_READ | LL_RESOLVE_UNIX, NULL);
         allowf(R_READ | LL_RESOLVE_UNIX, NULL, "%s/pulse", run, NULL);
-        note("unix", "$XDG_RUNTIME_DIR/{wayland-*,pipewire-*,pulse/}");
+        /* (Discord's, host/discord_rpc.c: its own, Flatpak's and Snap's) */
+        allow_prefixed(run, "discord-ipc-", R_READ | LL_RESOLVE_UNIX, NULL);
+        snprintf(p, sizeof p, "%s/app/com.discordapp.Discord", run);
+        allow_prefixed(p, "discord-ipc-", R_READ | LL_RESOLVE_UNIX, NULL);
+        snprintf(p, sizeof p, "%s/snap.discord", run);
+        allow_prefixed(p, "discord-ipc-", R_READ | LL_RESOLVE_UNIX, NULL);
+        note("unix", "$XDG_RUNTIME_DIR/{wayland-*,pipewire-*,pulse/,discord-ipc-*}");
     }
 
     /* the test harness's and a debugging session's own paths */
@@ -254,6 +295,9 @@ void hos_sandbox_apply(const char *game_dir, const char *user_dir) {
     }
     hos_log("sandbox: Landlock ABI %ld on, %s, %d rules (TCP %s):%s", abi,
             flags ? "every thread" : "the game's thread and those it starts", nrules, abi >= 4 ? "none" : "not limited", summary);
+    /* (the play files of the pipeline cache, gpu/vk/vk_draw.cpp, are new files in the game folder, which cannot be made now:
+       what play makes goes into mkw_vk_pipelines.bin, written in place, as before them. Before the renderer starts) */
+    if (!getenv("RX_VK_PLAY_CACHE")) setenv("RX_VK_PLAY_CACHE", "0", 1);
 
     /* HOS_SANDBOX_PROBE=<path>[:<path>...]: each path opened for reading and for writing (nothing written) and a new file
        "<path>.sandbox-probe" made beside it (removed again when it could be), with what the kernel answered */
