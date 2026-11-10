@@ -269,7 +269,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
 | | Microphone | Off, Default, or each microphone by name | Default |
-| | Amiibo | Link (OoT), Zelda (BotW), Young Link (Smash), Zelda (Smash), Young Link (OoT 2026), Young Zelda (OoT 2026), Mario (not supported) | Link (OoT) |
+| | Amiibo | Link (OoT), Zelda (BotW), Young Link (Smash), Zelda (Smash), Young Link (OoT 2026), Young Zelda (OoT 2026), Mario (not supported), None | Link (OoT) |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
 | | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
@@ -336,9 +336,10 @@ choices and starts the game again, so progress since your last save is lost.
   back. On Linux (SDL2) two microphones with the same name cannot be told apart: the first is used. Windows must allow desktop apps to use the microphone
   (Settings, Privacy & security, Microphone). `HOS_MIC_LOG=1` logs what the game reads, a line a second.
 - **Amiibo** is the figure a scan presents when the game's amiibo function asks for one. No NFC reader is needed: the
-  tag appears at once. A Zelda series figure gives a random item Link has already found; the two 2026 Ocarina of Time
-  figures give Mask 101 (Young Link) and Mask 102 (Young Zelda); Mario shows the game's "this amiibo does not work"
-  message. `HOS_AMIIBO=<profile>` overrides the row for a run (`link-oot`, `zelda-botw`, `young-link`, `young-zelda`,
+  tag appears a moment after the game starts looking, as a figure being tapped does. The game itself decides what a
+  figure does: its Zelda series figures are meant to give a random item Link has already found, the two 2026 Ocarina of
+  Time figures Mask 101 (Young Link) and Mask 102 (Young Zelda), and Mario its "this amiibo does not work" message.
+  None presents no tag, so the game waits for a real reader. `HOS_AMIIBO=<profile>` overrides the row for a run (`link-oot`, `zelda-botw`, `young-link`, `young-zelda`,
   `oot-young-link`, `oot-young-zelda`, `mario`, `none`, or a 16-hex-digit id such as `0x01000000034b0902`).
   `HOS_AMIIBO_RANDOM_UID=1` gives each scan a new UID, for a game's once-a-day rule. The 2026 figures' retail ids are
   not public yet; their two profiles use the series' next numbering, and the real id can be given with `HOS_AMIIBO=0x...`.
