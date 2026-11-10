@@ -1,14 +1,18 @@
 """Self-update the packaged macOS builder from the project's latest GitHub release."""
+import hashlib
+import hmac
 import json
 import os
 import posixpath
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
-from urllib.parse import urlsplit
 import zipfile
+from urllib.parse import urlsplit
 
 API = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest"
 ASSET = "HookshotBuilder-macos-arm64.app.zip"
@@ -28,18 +32,34 @@ def _get(url, limit):
     return data
 
 
-def _download(url, destination):
+def _download(url, destination, expected_digest=None, expected_size=None):
+    expected_hash = None
+    if expected_digest is not None:
+        match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", expected_digest)
+        if match is None:
+            raise RuntimeError("GitHub returned an unsupported macOS builder checksum.")
+        expected_hash = match.group(1).lower()
+    if expected_size is not None and (type(expected_size) is not int or expected_size < 0 or
+                                      expected_size > MAX_DOWNLOAD):
+        raise RuntimeError("GitHub returned an invalid macOS builder size.")
+
     request = urllib.request.Request(url, headers={"User-Agent": "HookshotBuilder-macOS"})
     total = 0
+    digest = hashlib.sha256()
     with urllib.request.urlopen(request, timeout=60) as response, open(destination, "wb") as output:
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
             total += len(chunk)
-            if total > MAX_DOWNLOAD:
+            if total > MAX_DOWNLOAD or expected_size is not None and total > expected_size:
                 raise RuntimeError("The macOS builder download is larger than expected.")
             output.write(chunk)
+            digest.update(chunk)
+    if expected_size is not None and total != expected_size:
+        raise RuntimeError("The macOS builder download is incomplete.")
+    if expected_hash is not None and not hmac.compare_digest(digest.hexdigest(), expected_hash):
+        raise RuntimeError("The macOS builder download failed its SHA-256 check.")
 
 
 def latest_release():
@@ -49,10 +69,14 @@ def latest_release():
     asset = next((item for item in release.get("assets", []) if item.get("name") == ASSET), None)
     if not release.get("tag_name") or asset is None or not asset.get("browser_download_url"):
         raise RuntimeError("The latest release does not include the macOS builder.")
+    asset_digest = asset.get("digest")
+    if asset_digest is not None and (not isinstance(asset_digest, str) or
+                                     not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", asset_digest)):
+        raise RuntimeError("GitHub returned an unsupported macOS builder checksum.")
     url = urlsplit(asset["browser_download_url"])
     if url.scheme != "https" or url.hostname != "github.com":
         raise RuntimeError("GitHub returned an unexpected macOS builder download link.")
-    return release["tag_name"], asset["browser_download_url"]
+    return release["tag_name"], asset["browser_download_url"], asset_digest, asset.get("size")
 
 
 def _safe_extract(archive, destination):
@@ -118,13 +142,13 @@ def start(app_path, expected_tag, pid):
     if not os.access(parent, os.W_OK | os.X_OK):
         raise RuntimeError("HookshotBuilder.app is in a protected folder. Move it to Applications in your user folder, then update.")
 
-    tag, url = latest_release()
+    tag, url, digest, size = latest_release()
     if expected_tag and tag != expected_tag:
         raise RuntimeError("GitHub offered %s, not %s. Try again in a few minutes." % (tag, expected_tag))
     work = tempfile.mkdtemp(prefix=".hookshot-update-", dir=parent)
     try:
         archive = os.path.join(work, ASSET)
-        _download(url, archive)
+        _download(url, archive, digest, size)
         _safe_extract(archive, work)
         staged = os.path.join(work, "HookshotBuilder.app")
         if not os.path.isfile(os.path.join(staged, "Contents", "Info.plist")):
@@ -134,7 +158,7 @@ def start(app_path, expected_tag, pid):
         if check.returncode:
             raise RuntimeError("The downloaded builder app failed its code-signature check: %s" %
                                (check.stderr.strip() or check.stdout.strip()))
-        subprocess.Popen([os.path.realpath(os.sys.executable), "-c", _INSTALLER, app_path, staged, str(pid)],
+        subprocess.Popen([os.path.realpath(sys.executable), "-c", _INSTALLER, app_path, staged, str(pid)],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
     except Exception:
