@@ -2163,8 +2163,17 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
                 FINE_N(FC_UBO_OVERLAY, 1);
                 return {cur->stream, at, n};
             }
-        // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
-        static const bool snapshot = getenv("RX_VK_UB_SNAPSHOT") != nullptr;
+        // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later.
+        // hookshot-deck: on by default without buffer mirrors (integrated GPUs). There a pool binding is the game's own
+        // memory, which it rewrites right after the submit while the GPU still runs: the Steam Deck drew giant HUD hearts,
+        // white and orange slabs and stretched geometry in 8-10 of 40 gameplay screenshots, none of 40 with the copy.
+        // A mirror is synced at the submit, so it needs no copy. RX_VK_UB_SNAPSHOT=0: the pool, as before)
+        static const bool snapshot = [] {
+            const char* e = getenv("RX_VK_UB_SNAPSHOT");
+            const bool on = e ? atoi(e) != 0 || !*e : !memory_mirrors_on();
+            logf("vk: uniform buffers %s (RX_VK_UB_SNAPSHOT=%d)", on ? "copied as submitted" : "bound in place", on ? 1 : 0);
+            return on;
+        }();
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
