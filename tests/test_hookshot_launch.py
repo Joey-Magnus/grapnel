@@ -27,7 +27,8 @@ def game(folder):
         "printf 'LD_LIBRARY_PATH=%s\\n' \"${LD_LIBRARY_PATH-UNSET}\"\n"
         "printf 'HOOKSHOT_TOOLS=%s\\n' \"${HOOKSHOT_TOOLS-UNSET}\"\n"
         "printf 'PYTHONPATH=%s\\n' \"${PYTHONPATH-UNSET}\"\n"
-        "printf 'HOME=%s\\n' \"$HOME\"\n",
+        "printf 'HOME=%s\\n' \"$HOME\"\n"
+        "printf 'HOOKSHOT_PROFILE=%s\\n' \"${HOOKSHOT_PROFILE-UNSET}\"\n",
         encoding="utf-8",
     )
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
@@ -72,6 +73,38 @@ class LaunchTests(unittest.TestCase):
         self.assertIn("HOOKSHOT_TOOLS=UNSET", lines)
         self.assertIn("PYTHONPATH=UNSET", lines)
         self.assertIn("HOME=%s" % os.environ["HOME"], lines)
+
+    def test_the_profile_the_launcher_chose_last_is_played(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
+            root = Path(tmp)
+            folder = root / "game"
+            game(folder)
+            ini = root / "builder.ini"
+            profile = "5a3c9e1f0b7d24680000000000000002"
+            data = root / "data"
+            (data / "hookshot").mkdir(parents=True)
+            (data / "hookshot" / "profiles.txt").write_text("# list\n%s Link\n" % profile.upper(), encoding="utf-8")
+            ini.write_text("out=%s\nprofile=%s\n" % (folder, profile), encoding="utf-8")
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale",
+                                                             XDG_DATA_HOME=str(data)),
+                                 text=True, capture_output=True, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertIn("HOOKSHOT_PROFILE=%s" % profile, ran.stdout.splitlines())
+            # (removed from the list since: the default profile, not an empty save folder of the removed one)
+            (data / "hookshot" / "profiles.txt").write_text("# list\n", encoding="utf-8")
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), XDG_DATA_HOME=str(data)),
+                                 text=True, capture_output=True, check=False)
+            self.assertIn("HOOKSHOT_PROFILE=UNSET", ran.stdout.splitlines())
+            # (a user folder beside the game, which the game has not moved yet, is the one with the list)
+            (folder / "user").mkdir()
+            (folder / "user" / "profiles.txt").write_text("%s Link\n" % profile, encoding="utf-8")
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), XDG_DATA_HOME=str(data)),
+                                 text=True, capture_output=True, check=False)
+            self.assertIn("HOOKSHOT_PROFILE=%s" % profile, ran.stdout.splitlines())
+            ini.write_text("out=%s\n" % folder, encoding="utf-8")
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale"),
+                                 text=True, capture_output=True, check=False)
+            self.assertIn("HOOKSHOT_PROFILE=UNSET", ran.stdout.splitlines())
 
     def test_play_starts_the_game_in_bin_not_the_launcher(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
