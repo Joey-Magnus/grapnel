@@ -205,6 +205,16 @@ HLE(_ZN2nn3nfp9GetNpadIdEPNS_3hid10NpadIdTypeERKNS0_12DeviceHandleE) {
     RET(0);
 }
 
+/* SDK 22's NpadIdType is a typedef to uint32_t, so the game imports the output as
+   unsigned int* (EPj) rather than the enum's old mangled name. Without this the
+   generic stub returned without writing, and the game could not map the NFC
+   device to a controller. */
+HLE(_ZN2nn3nfp9GetNpadIdEPjRKNS0_12DeviceHandleE) {
+    const uint32_t player1 = 0;   /* NpadIdType_Player1 */
+    nfp_write(ARG(0), &player1, sizeof player1);
+    RET(0);
+}
+
 /* DeviceHandle is 8 bytes (an id and 4 reserved bytes): one device, id 0. */
 HLE(_ZN2nn3nfp11ListDevicesEPNS0_12DeviceHandleEPii) {
     uint8_t handle[8] = {0};
@@ -431,6 +441,7 @@ HLE(_ZN2nn3nfp3sdk8FinalizeEv) { imp__ZN2nn3nfp8FinalizeEv(c); }
 HLE(_ZN2nn3nfp3sdk8GetStateEv) { imp__ZN2nn3nfp8GetStateEv(c); }
 HLE(_ZN2nn3nfp3sdk14GetDeviceStateERKNS0_12DeviceHandleE) { imp__ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE(c); }
 HLE(_ZN2nn3nfp3sdk9GetNpadIdEPNS_3hid10NpadIdTypeERKNS0_12DeviceHandleE) { imp__ZN2nn3nfp9GetNpadIdEPNS_3hid10NpadIdTypeERKNS0_12DeviceHandleE(c); }
+HLE(_ZN2nn3nfp3sdk9GetNpadIdEPjRKNS0_12DeviceHandleE) { imp__ZN2nn3nfp9GetNpadIdEPjRKNS0_12DeviceHandleE(c); }
 HLE(_ZN2nn3nfp3sdk11ListDevicesEPNS0_12DeviceHandleEPii) { imp__ZN2nn3nfp11ListDevicesEPNS0_12DeviceHandleEPii(c); }
 HLE(_ZN2nn3nfp3sdk14StartDetectionERKNS0_12DeviceHandleE) { imp__ZN2nn3nfp14StartDetectionERKNS0_12DeviceHandleE(c); }
 HLE(_ZN2nn3nfp3sdk13StopDetectionERKNS0_12DeviceHandleE) { imp__ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE(c); }

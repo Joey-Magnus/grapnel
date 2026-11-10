@@ -112,6 +112,7 @@ def main():
         "_ZN2nn3nfp14StartDetectionERKNS0_12DeviceHandleE",
         "_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE",
         "_ZN2nn3nfp10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE",
+        "_ZN2nn3nfp9GetNpadIdEPjRKNS0_12DeviceHandleE",
         "_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE",
         "_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE",
         "_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE",
