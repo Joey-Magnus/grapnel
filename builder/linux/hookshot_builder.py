@@ -890,9 +890,15 @@ class Builder(tk.Tk):
         rail_w, h = px(250), px(560)
         rail = tk.Canvas(parent, width=rail_w, height=h, background=GREEN_TOP, highlightthickness=0, borderwidth=0)
         gradient(rail, rail_w, h, GREEN_TOP, GREEN_BOT)
-        self.rail_art = self.logo(px(190), over=mix(GREEN_TOP, GREEN_BOT, 150.0 / 560))
-        if self.rail_art is not None:
-            rail.create_image(rail_w // 2, px(150), image=self.rail_art)
+        try:
+            art = tk.PhotoImage(master=self, file=os.path.join(ROOT, "assets", "hookshot.png"))
+            step = max(1, round(art.width() / px(190)))
+            self.rail_art = art.subsample(step, step) if step > 1 else art   # (Tk 9 averages subsample with the alpha, so the
+            rail.create_image(rail_w // 2, px(150), image=self.rail_art)      #  art lays over the rail's bands, no patch)
+        except (tk.TclError, OSError):
+            self.rail_art = self.logo(px(190), over=mix(GREEN_TOP, GREEN_BOT, 1 - 150.0 / 560))   # (an older Tk: the flattened copy)
+            if self.rail_art is not None:
+                rail.create_image(rail_w // 2, px(150), image=self.rail_art)
         return rail, rail_w
 
     def show_launch(self, folder):

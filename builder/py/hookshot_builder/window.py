@@ -683,6 +683,7 @@ class Window(QWidget):
                                      "Hookshot Builder")
 
         body = QWidget(self.main)
+        self.body_frame = body
         body.setGeometry(20 + 240 + 16, 64 + 16, 960 - (20 + 240 + 16) - 20, 600 - (64 + 16) - 14)   # (its last 46px ride the strip)
         self.pages = QStackedLayout(body)
         self.files_page = self._files_page()
@@ -974,9 +975,13 @@ class Window(QWidget):
 
     def show_page(self, page):
         self.pages.setCurrentWidget(page)
-        chrome_on = page is not self.launch_page   # (the launch page draws its own rail and strip, as the mockup draws them)
-        self.chrome_strip.setVisible(chrome_on)
+        chrome_on = page is not self.launch_page   # (the launch page draws its own rail and strip, as the mockup draws them: for
+        self.chrome_strip.setVisible(chrome_on)    #  it the body takes the whole width back, or the page would squeeze inside)
         self.chrome_rail.setVisible(chrome_on)
+        if chrome_on:
+            self.body_frame.setGeometry(20 + 240 + 16, 80, 960 - (20 + 240 + 16) - 20, 600 - 80 - 14)
+        else:
+            self.body_frame.setGeometry(64, 80, 960 - 128, 600 - 80 - 14)
 
     def set_step(self, on):
         self.step_pill.set(on)
