@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = (ROOT / "builder" / "py" / "hookshot_builder" / "launch_page.py").read_text(encoding="utf-8")
 WINDOW = (ROOT / "builder" / "py" / "hookshot_builder" / "window.py").read_text(encoding="utf-8")
+TK = (ROOT / "builder" / "linux" / "hookshot_builder.py").read_text(encoding="utf-8")
 
 
 def body_of(source, start_marker, end_marker):
@@ -44,6 +45,22 @@ class LaunchHeroTests(unittest.TestCase):
             self.assertIn(made_up, body)
         for game_data in (".nup", ".nca", ".xci", "work/", "image.bin"):
             self.assertNotIn(game_data, body)
+
+    def test_the_linux_tk_launcher_draws_the_same_page(self):
+        """builder/linux (the AppImage's Tk builder) shows the same design from the same rule: the hero comes from the player's
+        folder, the footer says it in the mockup's words, and no hero picture of the game sits anywhere under builder/."""
+        start = TK.index("def hero_image")
+        body = TK[start:TK.index("\n\n", start)]
+        self.assertIn("os.path.join(folder, HERO_FILE)", body)
+        self.assertIn('HERO_FILE = "hookshot_hero.png"', TK)
+        show = TK[TK.index("def show_launch"):TK.index("\n    def begin_update")]
+        for piece in ("hero_image(folder)", "Build & Update", "Ocarina of Time:", "Hookshot Launcher"):
+            self.assertIn(piece, show)
+        apply_ = TK[TK.index("def apply_launch"):TK.index("\n    def show_launch")]
+        self.assertIn("Hookshot: Version %s (Built & Installed, Ready to play)", apply_)
+        self.assertIn("Version %s -> %s", apply_)
+        shipped = [p for p in (ROOT / "builder").rglob("*") if p.is_file() and p.name.lower().startswith("hero")]
+        self.assertEqual(shipped, [])
 
 
 if __name__ == "__main__":
