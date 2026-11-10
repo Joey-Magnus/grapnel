@@ -41,6 +41,7 @@
 #include "vk_fsr4.h"
 #include "vk_temporal.h"
 #include "vk_reflex.h"
+#include "vk_antilag.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
@@ -150,6 +151,14 @@ const char* hn_reflex(int v, int variant) {
     static const char* const none = "Not available here: it needs an NVIDIA GPU whose driver has VK_NV_low_latency2.";
     if (variant < 0) return reflex_available() ? t[std::clamp(v, 0, 2)] : none;
     return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
+}
+const char* tx_antilag(int v) { return antilag_available() && v ? "On" : "Off"; }
+/// Anti-Lag 2: on the value, or that it is not available here (the row shows Off)
+const char* hn_antilag(int v, int variant) {
+    static const char* const t[] = {"The game as without it.", "The driver delays each frame's start for less latency."};
+    static const char* const none = "Not available here: it needs an AMD GPU whose driver has VK_AMD_anti_lag.";
+    if (variant < 0) return antilag_available() ? t[v ? 1 : 0] : none;
+    return variant == 0 ? t[v ? 1 : 0] : variant == 1 ? none : nullptr;
 }
 // The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 3.1
 // only where vk_fsr3.cpp says it does, FSR 4 and its native AA only where fsr4_why() does; the menu shows (and steps from)
@@ -335,7 +344,8 @@ const char* hn_resolution(int v, int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
+    return (value == &opts.reflex && !reflex_available()) || (value == &opts.antilag && !antilag_available()) ||
+           (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
@@ -553,7 +563,14 @@ const char* hn_sharpness(int v, int variant) {
     return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
 }
 MENU_HINTS(hn_handheld, 0, "Docked: the Output resolution's size.", "Lower resolutions, lighter on the GPU.")
-MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera takes the screen's shape, wider or narrower. The HUD is still stretched.")
+MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera takes the screen's shape, wider or narrower. The HUD keeps its 16:9 shape in the middle.")
+const char* tx_wide_menus(int v) {
+    static const char* t[] = {"Full width", "Centred, blurred sides", "Centred, black bars"};
+    return t[std::min(std::max(v, 0), 2)];
+}
+MENU_HINTS(hn_wide_menus, 0, "The menus stretched over the whole screen, as before.",
+           "The menus in the middle 16:9; beside them, what the game draws there, out of focus.",
+           "The menus in the middle 16:9; black beside them.")
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_fps, 0, nullptr, "With frame generation on, the game's own rate too.")
 MENU_HINTS(hn_menu_size, 0, "Large in fullscreen on a screen of 1080 lines or more while a controller is in use, else Medium.",
@@ -606,6 +623,8 @@ Row rows[] = {
      nullptr, true, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
+    {TAB_GRAPHICS, "AMD Anti-Lag 2", &opts.antilag, 0, 1, 1, tx_antilag,
+     "AMD GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_antilag},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
@@ -620,10 +639,18 @@ Row rows[] = {
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.", hn_sharpness},
+    // (the screen filter: after the window's scaling filter and the sharpen, in the same pass. Not the Quality preset's)
+    {TAB_GRAPHICS, "Screen filter", &opts.filter, 0, 3, 1, tx_screen_filter,
+     "A look for the whole picture: CRT (curved glass, scanlines and a shadow mask), Scanlines alone, or Film (warm grade, "
+     "grain and vignette). Changes at once.", nullptr, false, true},
+    {TAB_GRAPHICS, "Filter strength", &opts.filter_strength, 0, 100, 10, tx_percent, "How strong the screen filter is.", nullptr, false, true},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_onoff,
      "Runs the game as if the console were undocked. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
      "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
+    {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
+     "With Ultrawide: the pause, item and map menus, and what shows beside them. Loading screens and pre-rendered movies, "
+     "which draw no world either, get the same sides. Changes at once.", hn_wide_menus},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},
@@ -730,11 +757,6 @@ Row rows[] = {
     {TAB_DEBUG, "Sampler cache", &opts.sampler_cache, 0, 1, 1, tx_onoff,
      "What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no "
      "lock. Helps while the game streams textures. Applies after restart.", nullptr, true},
-    // (the Gameplay tab's screen filters: after its other rows, before Restart and Quit below)
-    {TAB_GAMEPLAY, "Screen filter", &opts.filter, 0, 3, 1, tx_screen_filter,
-     "A look for the whole picture: CRT (curved glass, scanlines and a shadow mask), Scanlines alone, or Film (warm grade, "
-     "grain and vignette). Changes at once.", nullptr, false, true},
-    {TAB_GAMEPLAY, "Filter strength", &opts.filter_strength, 0, 100, 10, tx_percent, "How strong the screen filter is.", nullptr, false, true},
     // (Restart and Quit stay the table's last two: kRestartRow and kQuitRow count back from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
      "Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B "
