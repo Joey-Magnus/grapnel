@@ -28,6 +28,7 @@ done
 rm -rf "$STAGE"
 mkdir -p "$SOURCE" "$ROOT/tools"
 git archive --format=tar HEAD | tar -xf - -C "$SOURCE"
+printf '%s\n' "${HOOKSHOT_BUILDER_VERSION:-$(git describe --tags --always)}" > "$SOURCE/VERSION"
 cp -R "$DEPS/python" "$DEPS/sdl2" "$DEPS/ffmpeg" "$DEPS/wgpu-native" "$DEPS/licenses" "$ROOT/tools/"
 cp LICENSE "$ROOT/LICENSE"
 

@@ -26,6 +26,8 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
 import linux_update  # noqa: E402  (the release check and the part download)
+if sys.platform == "darwin":
+    import macos_update  # noqa: E402  (the native .app self-updater)
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
 import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
@@ -894,6 +896,10 @@ class Builder(tk.Tk):
 
         def run():
             try:
+                if sys.platform == "darwin" and not folder:
+                    macos_update.start(os.environ.get("HOOKSHOT_APP_PATH"), self.update_tag or self.latest, os.getpid())
+                    self.lines.put(("mac-update-ready", ""))
+                    return
                 if not fetched:
                     root = linux_update.running_root()
                     if root is None:
@@ -1068,6 +1074,8 @@ class Builder(tk.Tk):
                         self.stage_text.set(v)
                 elif kind == "do-build":
                     self.start_make_update(v)
+                elif kind == "mac-update-ready":
+                    self.destroy()
                 elif kind == "update-error":
                     if hasattr(self, "stage_text"):
                         self.stage_text.set(v + " Your game folder is unchanged.")

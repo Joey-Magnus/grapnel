@@ -44,6 +44,10 @@ def main():
     # this fixture: stop at its first normal window assignment, with a marker.
     loop = function(display, "void hos_display_loop(void)")
     loop = loop[:loop.index("    vk_window.window = window;")] + "    ++visible_window_started;\n}\n"
+    # The cut is inside the macOS guard around the Vulkan window assignment.
+    # Close it so the extracted fixture remains valid C on every runner.
+    if loop.count("#ifndef __APPLE__") > loop.count("#endif"):
+        loop += "#endif\n"
     app_main = function(host, "int main(int argc, char **argv)").replace("int main(", "int app_main(", 1)
     actual = "\n\n".join([function(display, "int hos_display_init(void)"),
                              function(display, "void hos_display_start(void)"), loop, app_main])

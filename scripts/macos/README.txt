@@ -18,3 +18,9 @@ watch the build progress. For command-line use, run:
 Add --jobs 2 (or another suitable value) to limit parallel compiler memory use.
 The output folder contains the built game. Keep this builder package available
 if you later use the builder's --update option.
+
+The app checks GitHub for the latest stable builder release when it starts. If a
+newer builder is available, choose “Update builder”; the app downloads and
+verifies the release, replaces the current app after it closes, and reopens it.
+For automatic updates, keep the app in a folder you can write to, such as
+Applications in your user folder.
