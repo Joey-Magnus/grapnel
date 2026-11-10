@@ -38,6 +38,20 @@ class LaunchHeroTests(unittest.TestCase):
         self.assertIn("Hookshot: Update available:", WINDOW)          # (the footer strip's sentence)
         self.assertIn("Version %s → %s", WINDOW)                      # (the mockup's version chain)
 
+    def test_every_page_of_both_builders_shares_the_chrome(self):
+        """The overhaul: the launcher's frame (green rail + dark footer strip) wraps every page of both builders, and the pages
+        put their action rows on the strip instead of floating."""
+        form = TK[TK.index("def show_form"):TK.index("\n    def path_row")]
+        self.assertIn("self.chrome(f)", form)
+        self.assertIn('style="Go.TButton"', form)
+        prog = TK[TK.index("def show_progress"):TK.index("\n    def tick")]
+        self.assertIn("self.chrome(f)", prog)
+        self.assertIn("self.buttons = tk.Frame(foot, bg=HERO_FOOT)", prog)
+        self.assertIn("self.chrome_strip = QFrame(self.main)", WINDOW)
+        self.assertIn("self.chrome_rail = launch_page.Rail(self.hook)", WINDOW)
+        self.assertIn("chrome_on = page is not self.launch_page", WINDOW)
+        self.assertIn("self.chrome_rail.setVisible(chrome_on)", WINDOW)
+
     def test_the_preview_fakes_a_built_folder_not_a_game(self):
         """HOOKSHOT_UI_PREVIEW=launch invents the names a built folder keeps; nothing is read from a dump (no game in CI)."""
         body = body_of(WINDOW, "def preview_game_folder", "\n    # ================= 1: game files")

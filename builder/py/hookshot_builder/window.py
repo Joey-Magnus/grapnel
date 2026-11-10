@@ -663,8 +663,27 @@ class Window(QWidget):
         self.step_pill.setParent(head)
         self.step_pill.move((960 - self.step_pill.width()) // 2, 12)
 
+        # the launcher page's chrome for every page: a dark strip along the foot that each page lays its action row on, and the
+        # green rail at the left (the launch page draws its own pair inside, so the chrome stands down for it)
+        self.chrome_strip = QFrame(self.main)
+        self.chrome_strip.setObjectName("strip")
+        self.chrome_strip.setGeometry(0, 540, 960, 60)
+        self.chrome_strip.setStyleSheet("#strip { background:#0C0E12; }")
+        hair = QFrame(self.chrome_strip)
+        hair.setGeometry(0, 0, 960, 1)
+        hair.setStyleSheet("background:#18FFFFFF;")
+        self.chrome_rail = launch_page.Rail(self.hook)
+        self.chrome_rail.setParent(self.main)
+        self.chrome_rail.setGeometry(20, 80, 240, 448)
+        try:
+            found = core.Tools.find()
+        except Exception:
+            found = None
+        self.chrome_rail.set_caption("Hookshot Builder %s" % found.version if found is not None and getattr(found, "version", "") else
+                                     "Hookshot Builder")
+
         body = QWidget(self.main)
-        body.setGeometry(64, 64 + 16, 960 - 128, 600 - 64 - 16 - 34)
+        body.setGeometry(20 + 240 + 16, 64 + 16, 960 - (20 + 240 + 16) - 20, 600 - (64 + 16) - 14)   # (its last 46px ride the strip)
         self.pages = QStackedLayout(body)
         self.files_page = self._files_page()
         self.build_page = self._build_page()
@@ -798,8 +817,8 @@ class Window(QWidget):
         self.storage_row = holder(vbox(hbox(None, self.storage_note, None), 8, hbox(None, self.free_button, 18, show, None)))
         self.storage_row.hide()
         col = vbox(None, hbox(None, Glyph("ready"), None), 24 - 20, hbox(None, self.ready_title, None), hbox(None, self.ready_note, None),
-                   28, hbox(None, self.play_button, 12, self.open_button, None), 22,
-                   hbox(None, self.desktop_tick, 18, self.start_tick, None), 26, self.storage_row, None)
+                   22, hbox(None, self.desktop_tick, 18, self.start_tick, None), 26, self.storage_row, None,
+                   14, hbox(None, self.open_button, 12, self.play_button))   # (the action row rides the chrome strip)
         return holder(col)
 
     def _launch_page(self):
@@ -955,6 +974,9 @@ class Window(QWidget):
 
     def show_page(self, page):
         self.pages.setCurrentWidget(page)
+        chrome_on = page is not self.launch_page   # (the launch page draws its own rail and strip, as the mockup draws them)
+        self.chrome_strip.setVisible(chrome_on)
+        self.chrome_rail.setVisible(chrome_on)
 
     def set_step(self, on):
         self.step_pill.set(on)
