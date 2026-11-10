@@ -36,6 +36,9 @@ PAGE, GREEN_TOP, GREEN_BOT = "#14161A", "#006701", "#001F00"
 FIELD_TOP, FIELD_BOT, HERO_BAND, HERO_FOOT = "#14291F", "#0B1014", "#1C1E22", "#101216"
 DISC, DISC_HOT, DISC_OFF, DISC_LINE = "#3F434A", "#50555E", "#23262B", "#5A5F66"
 INK_WHITE, INK_SOFT, LINK_BLUE, LINK_SOFT = "#FFFFFF", "#A2A9B3", "#B9C8FF", "#C8CCD2"
+FIELD_BG, FIELD_LINE, BAR_TRACK = "#0B0D10", "#2C313A", "#1B1F24"
+BTN_BG, BTN_HOVER, BLUE = "#23272E", "#2C313A", "#4B70F0"
+GO, GO_HOVER, GO_INK = "#5FB08A", "#70C09A", "#06150E"
 HERO_FILE = "hookshot_hero.png"
 
 
@@ -182,7 +185,10 @@ class Builder(tk.Tk):
         super().__init__()
         self.title("Hookshot Builder")
         self.apply_scale()
+        self.apply_theme()
         self.minsize(self.px(620), self.px(420))
+        self.geometry("%dx%d" % (self.px(900), self.px(560)))   # (every page draws for this size: the launcher's 900x560)
+        self.resizable(False, False)
         self.cfg = load_config()
         self.proc = None
         self.lines = queue.Queue()
@@ -237,52 +243,121 @@ class Builder(tk.Tk):
     def px(self, n):
         return int(round(n * self.scale))
 
+    def apply_theme(self):
+        """The launcher page's dark skin, everywhere: ttk's clam in the launcher palette, blue progress, a green Go button."""
+        st = ttk.Style(self)
+        st.theme_use("clam")
+        st.configure(".", background=PAGE, foreground=INK_SOFT, fieldbackground=FIELD_BG, bordercolor=FIELD_LINE,
+                     lightcolor=FIELD_LINE, darkcolor=FIELD_LINE, focuscolor=FIELD_LINE, troughcolor=BAR_TRACK)
+        st.configure("TFrame", background=PAGE)
+        st.configure("TLabelframe", background=PAGE, bordercolor=FIELD_LINE)
+        st.configure("TLabelframe.Label", background=PAGE, foreground=INK_SOFT)
+        st.configure("TLabel", background=PAGE, foreground=INK_SOFT)
+        st.configure("TButton", background=BTN_BG, foreground=INK_WHITE, activebackground=BTN_HOVER, activeforeground=INK_WHITE,
+                     bordercolor=FIELD_LINE, focusthickness=0)
+        st.map("TButton", background=[("active", BTN_HOVER)])
+        st.configure("Go.TButton", background=GO, foreground=GO_INK, activebackground=GO_HOVER, activeforeground=GO_INK,
+                     font=("Helvetica", -self.px(14), "bold"))
+        st.map("Go.TButton", background=[("active", GO_HOVER)])
+        st.configure("TCheckbutton", background=PAGE, foreground=INK_WHITE, indicatormargin=self.px(6))
+        st.map("TCheckbutton", indicatorcolor=[("selected", BLUE), ("!selected", FIELD_BG)])
+        st.configure("TRadiobutton", background=PAGE, foreground=INK_SOFT)
+        st.map("TRadiobutton", foreground=[("selected", INK_WHITE)], indicatorcolor=[("selected", BLUE), ("!selected", FIELD_BG)])
+        st.configure("TEntry", insertcolor=INK_WHITE, selbackground=BLUE, selectionbackground=BLUE)
+        st.configure("TCombobox", background=BTN_BG, foreground=INK_WHITE, arrowcolor=INK_SOFT, selectbackground=FIELD_BG,
+                     selectforeground=INK_WHITE)
+        st.map("TCombobox", fieldbackground=[("readonly", FIELD_BG)], foreground=[("readonly", INK_WHITE)])
+        st.configure("Horizontal.TProgressbar", background=BLUE, troughcolor=BAR_TRACK, bordercolor=BAR_TRACK,
+                     lightcolor=BAR_TRACK, darkcolor=BAR_TRACK)
+        self.configure(bg=PAGE)
+
+    def make_rail(self, parent):
+        """The green rail every page starts with: its gradient, the hookshot, and room for the page to add its own caption."""
+        rail_w, h = self.px(250), self.px(560)
+        rail = tk.Canvas(parent, width=rail_w, height=h, bg=GREEN_TOP, highlightthickness=0, bd=0)
+        gradient(rail, rail_w, h, GREEN_TOP, GREEN_BOT)
+        art = os.path.join(ROOT, "assets", "hookshot.png")
+        self.rail_art = None
+        if os.path.isfile(art):
+            art_px = tk.PhotoImage(file=art)
+            step = max(1, round(art_px.width() / self.px(200)))
+            self.rail_art = art_px.subsample(step, step) if step > 1 else art_px   # (kept as an attribute: the canvas holds a weak reference)
+            rail.create_image(rail_w // 2, self.px(150), image=self.rail_art)
+        return rail, rail_w
+
+    def chrome(self, page):
+        """The launcher's frame for the other pages too: the rail at the left, the dark body, and the dark footer strip along
+        the foot. A page grids its widgets into body and puts its status line and main action in foot."""
+        rail, rail_w = self.make_rail(page)
+        page.columnconfigure(1, weight=1)
+        page.rowconfigure(0, weight=1)
+        rail.grid(row=0, column=0, sticky="ns")
+        rail.create_text(rail_w // 2, self.px(300), text="Hookshot Builder", fill=INK_WHITE, font=("Helvetica", -self.px(13), "bold"))
+        self.rail_tag = rail.create_text(rail_w // 2, self.px(324), text=self.tools or "", fill=INK_SOFT, font=("Helvetica", -self.px(12)))
+        self.rail_canvas = rail
+        rail.create_text(rail_w // 2, self.px(492), text=(self.cfg.get("out") or "").replace(os.path.expanduser("~"), "~"),
+                         fill="#9FBEA4", font=("Helvetica", -self.px(11)))
+        body = tk.Frame(page, bg=PAGE)
+        body.grid(row=0, column=1, sticky="nsew")
+        foot = tk.Frame(page, bg=HERO_FOOT)
+        foot.grid(row=1, column=0, columnspan=2, sticky="ew")
+        return rail, body, foot
+
     # ---- the form ----
     def show_form(self):
         self.title("Hookshot Builder")
         if self.page:
             self.page.destroy()
-        f = self.page = ttk.Frame(self)
-        f.pack(fill="both", expand=True, pady=self.px(8))
-        f.columnconfigure(1, weight=1)
-        ttk.Label(f, text="Hookshot", font=("TkDefaultFont", 16, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", **self.pad)
-        ttk.Label(f, text="Turns your own copy of Ocarina of Time into a game folder you can start on PC.").grid(
-            row=1, column=0, columnspan=3, sticky="w", **self.pad)
+        f = self.page = tk.Frame(self, bg=PAGE)
+        f.pack(fill="both", expand=True)
+        rail, body, foot = self.chrome(f)
+        body.columnconfigure(0, weight=1)
+        head = tk.Frame(body, bg=PAGE)
+        head.grid(row=0, column=0, sticky="w", padx=self.px(20), pady=(self.px(16), 0))
+        tk.Label(head, text="Build your game", bg=PAGE, fg=INK_WHITE, font=("Helvetica", -self.px(22), "bold")).pack(anchor="w")
+        tk.Label(head, text="Turns your own copy of Ocarina of Time into a game folder you can start on PC.", bg=PAGE,
+                 fg=INK_SOFT, font=("Helvetica", -self.px(13))).pack(anchor="w", pady=(2, 0))
+        row = 1
         if game_ready(self.cfg.get("out")):
-            ttk.Button(f, text="Play the game built in %s" % self.cfg["out"], command=lambda: self.play_and_close(self.cfg["out"])).grid(
-                row=2, column=0, columnspan=3, sticky="we", **self.pad)
-        ttk.Label(f, text="Game files", font=("TkDefaultFont", 10, "bold")).grid(row=3, column=0, sticky="w", **self.pad)
-        kinds = ttk.Frame(f)
-        kinds.grid(row=3, column=1, columnspan=2, sticky="w")
-        ttk.Radiobutton(kinds, text=".nup file", value="nup", variable=self.kind, command=self.show_form).pack(side="left")
-        ttk.Radiobutton(kinds, text="romfs and exefs", value="folders", variable=self.kind, command=self.show_form).pack(side="left", padx=self.px(12))
-        row = 4
-        if self.kind.get() == "nup":
-            self.path_row(f, row, ".nup file", self.nup, lambda: self.pick_file(self.nup))
-        else:
-            self.path_row(f, row, "romfs", self.romfs, lambda: self.pick_dir(self.romfs))
+            ttk.Button(body, text="Play the game built in %s" % self.cfg["out"],
+                       command=lambda: self.play_and_close(self.cfg["out"])).grid(row=row, column=0, sticky="we",
+                       padx=self.px(20), pady=(self.px(10), 0))
             row += 1
-            self.path_row(f, row, "exefs", self.exefs, lambda: self.pick_dir(self.exefs))
+        files = ttk.Labelframe(body, text="  GAME FILES  ")
+        files.grid(row=row, column=0, sticky="we", padx=self.px(20), pady=(self.px(10), 0))
         row += 1
-        ttk.Label(f, textvariable=self.check_text, wraplength=self.px(560)).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
+        files.columnconfigure(1, weight=1)
+        kinds = ttk.Frame(files)
+        kinds.grid(row=0, column=0, columnspan=3, sticky="w", **self.pad)
+        ttk.Radiobutton(kinds, text=".nup file", value="nup", variable=self.kind, command=self.show_form).pack(side="left")
+        ttk.Radiobutton(kinds, text="romfs and exefs", value="folders", variable=self.kind, command=self.show_form).pack(
+            side="left", padx=self.px(12))
+        r = 1
+        if self.kind.get() == "nup":
+            self.path_row(files, r, ".nup file", self.nup, lambda: self.pick_file(self.nup))
+        else:
+            self.path_row(files, r, "romfs", self.romfs, lambda: self.pick_dir(self.romfs))
+            r += 1
+            self.path_row(files, r, "exefs", self.exefs, lambda: self.pick_dir(self.exefs))
+        r += 1
+        self.path_row(files, r, "Save the game to", self.out, lambda: self.pick_dir(self.out))
+        r += 1
+        ttk.Label(files, textvariable=self.check_text, wraplength=self.px(480)).grid(row=r, column=0, columnspan=3, sticky="w", **self.pad)
+        opts = ttk.Labelframe(body, text="  OPTIONS  ")
+        opts.grid(row=row, column=0, sticky="we", padx=self.px(20), pady=(self.px(10), 0))
         row += 1
-        self.path_row(f, row, "Save the game to", self.out, lambda: self.pick_dir(self.out))
-        row += 1
-        ttk.Label(f, text="Language").grid(row=row, column=0, sticky="w", **self.pad)
-        ttk.Combobox(f, textvariable=self.language, values=[n for _, n in make_game.LANGUAGES], state="readonly").grid(
-            row=row, column=1, sticky="w", **self.pad)
-        row += 1
-        ttk.Checkbutton(f, text="Prepare shaders now (unticked: at the game's first start, behind a black window)",
-                        variable=self.prepare).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
-        row += 1
-        ttk.Label(f, text="Takes about 45 minutes and needs 45 GB.").grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
-        row += 1
-        ttk.Label(f, textvariable=self.space_text).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
-        row += 1
-        ttk.Label(f, textvariable=self.status, wraplength=self.px(560)).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
-        row += 1
-        self.build_button = ttk.Button(f, text="Build", command=self.build)
-        self.build_button.grid(row=row, column=0, columnspan=3, sticky="we", padx=self.px(12), pady=self.px(12))
+        opts.columnconfigure(1, weight=1)
+        ttk.Label(opts, text="Language").grid(row=0, column=0, sticky="w", **self.pad)
+        ttk.Combobox(opts, textvariable=self.language, values=[n for _, n in make_game.LANGUAGES], state="readonly").grid(
+            row=0, column=1, sticky="w", **self.pad)
+        ttk.Checkbutton(opts, text="Prepare shaders now (unticked: at the game's first start, behind a black window)",
+                        variable=self.prepare).grid(row=1, column=0, columnspan=3, sticky="w", **self.pad)
+        ttk.Label(opts, text="Takes about 45 minutes and needs 45 GB.").grid(row=2, column=0, columnspan=3, sticky="w", **self.pad)
+        ttk.Label(opts, textvariable=self.space_text).grid(row=3, column=0, columnspan=3, sticky="w", **self.pad)
+        tk.Label(foot, textvariable=self.status, bg=HERO_FOOT, fg=INK_SOFT, wraplength=self.px(600),
+                 font=("Helvetica", -self.px(13))).pack(side="left", padx=self.px(16), pady=self.px(10))
+        self.build_button = ttk.Button(foot, text="Build", style="Go.TButton", command=self.build)
+        self.build_button.pack(side="right", padx=self.px(16), pady=self.px(8))
         self.out.trace_add("write", lambda *a: self.update_space())
         self.update_space()
         self.apply_mode()
@@ -406,17 +481,8 @@ class Builder(tk.Tk):
         w, h = self.px(900), self.px(560)
         self.geometry("%dx%d" % (w, h))
         self.resizable(False, False)
-        rail_w, rail_h = self.px(250), h
-        rail = tk.Canvas(f, width=rail_w, height=rail_h, bg=GREEN_TOP, highlightthickness=0, bd=0)
+        rail, rail_w = self.make_rail(f)
         rail.pack(side="left", fill="y")
-        gradient(rail, rail_w, rail_h, GREEN_TOP, GREEN_BOT)
-        art = os.path.join(ROOT, "assets", "hookshot.png")
-        self.rail_art = None
-        if os.path.isfile(art):
-            art_px = tk.PhotoImage(file=art)
-            step = max(1, round(art_px.width() / self.px(200)))
-            self.rail_art = art_px.subsample(step, step) if step > 1 else art_px   # (kept as an attribute: the canvas holds a weak reference)
-            rail.create_image(rail_w // 2, self.px(150), image=self.rail_art)
         rail.create_text(rail_w // 2, self.px(300), text="Hookshot Launcher", fill=INK_WHITE, font=("Helvetica", -self.px(13), "bold"))
         rail.create_text(rail_w // 2, self.px(324), text=game or "", fill=INK_SOFT, font=("Helvetica", -self.px(12)))
         self.hero = hero = tk.Canvas(f, width=w - rail_w, height=h, bg=FIELD_BOT, highlightthickness=0, bd=0)
@@ -572,21 +638,25 @@ class Builder(tk.Tk):
         self.compile_started = None
         self.times = None
         self.shaders_later = False
-        f = self.page = ttk.Frame(self)
-        f.pack(fill="both", expand=True, pady=self.px(8))
-        f.columnconfigure(0, weight=1)
-        f.rowconfigure(5, weight=1)
-        self.heading = ttk.Label(f, text=title, font=("TkDefaultFont", 16, "bold"))
-        self.heading.grid(row=0, column=0, sticky="w", **self.pad)
-        ttk.Label(f, text="This takes a while, and your PC stays usable.").grid(row=1, column=0, sticky="w", **self.pad)
-        ttk.Label(f, textvariable=self.stage_text).grid(row=2, column=0, sticky="w", **self.pad)
-        self.bar = ttk.Progressbar(f, maximum=1.0, mode="determinate")
-        self.bar.grid(row=3, column=0, sticky="we", **self.pad)
-        ttk.Label(f, textvariable=self.time_text).grid(row=4, column=0, sticky="w", **self.pad)
-        self.log = tk.Text(f, height=12, wrap="none", font=("TkFixedFont", 9))
-        self.log.grid(row=5, column=0, sticky="nsew", **self.pad)
-        self.buttons = ttk.Frame(f)
-        self.buttons.grid(row=6, column=0, sticky="e", **self.pad)
+        f = self.page = tk.Frame(self, bg=PAGE)
+        f.pack(fill="both", expand=True)
+        rail, body, foot = self.chrome(f)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(5, weight=1)
+        self.heading = tk.Label(body, text=title, bg=PAGE, fg=INK_WHITE, font=("Helvetica", -self.px(22), "bold"))
+        self.heading.grid(row=0, column=0, sticky="w", padx=self.px(20), pady=(self.px(16), 0))
+        ttk.Label(body, text="This takes a while, and your PC stays usable.").grid(row=1, column=0, sticky="w", padx=self.px(20))
+        ttk.Label(body, textvariable=self.stage_text, font=("TkDefaultFont", 12, "bold")).grid(row=2, column=0, sticky="w",
+                                                                                              padx=self.px(20), pady=(self.px(8), 0))
+        self.bar = ttk.Progressbar(body, maximum=1.0, mode="determinate")
+        self.bar.grid(row=3, column=0, sticky="we", padx=self.px(20), pady=self.px(8))
+        ttk.Label(body, textvariable=self.time_text).grid(row=4, column=0, sticky="w", padx=self.px(20))
+        self.log = tk.Text(body, height=12, wrap="none", font=("TkFixedFont", -self.px(10)), bg=FIELD_BG, fg=INK_SOFT,
+                           insertbackground=INK_WHITE, relief="flat", highlightthickness=1, highlightbackground=FIELD_LINE,
+                           highlightcolor=FIELD_LINE)
+        self.log.grid(row=5, column=0, sticky="nsew", padx=self.px(20), pady=(self.px(6), self.px(12)))
+        self.buttons = tk.Frame(foot, bg=HERO_FOOT)
+        self.buttons.pack(side="right", padx=self.px(16))
         ttk.Button(self.buttons, text="Cancel", command=self.cancel).pack(side="right")
         self.stage_text.set("Starting")
         self.tick()
@@ -611,6 +681,11 @@ class Builder(tk.Tk):
                     self.check_text.set(v)
                 elif kind == "latest":
                     self.latest = v or None
+                    if getattr(self, "rail_tag", None) is not None:
+                        try:
+                            self.rail_canvas.itemconfigure(self.rail_tag, text=self.latest or self.tools or "")
+                        except tk.TclError:
+                            self.rail_tag = None
                     self.apply_mode()
                 elif kind == "note":
                     if hasattr(self, "stage_text"):
