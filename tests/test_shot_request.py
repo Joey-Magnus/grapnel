@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPLAY = ROOT / "gpu" / "vk" / "vk_replay.cpp"
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 FIXTURE = r'''
 #include <cstdio>

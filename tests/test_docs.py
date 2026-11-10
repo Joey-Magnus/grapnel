@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 PYTHON_COMMAND = re.compile(r"\bpython(?:3)?\s+(?:-I\s+)?(?:-B\s+)?([A-Za-z0-9_./\\-]+\.py)\b")
 POWERSHELL_COMMAND = re.compile(r"\bpowershell\s+-File\s+([A-Za-z0-9_./\\-]+\.ps1)\b")
+RUN_ALL_MODULES = ["mcp"]
 
 
 def tracked_markdown():

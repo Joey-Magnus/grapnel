@@ -18,6 +18,7 @@ try:
     import mcp  # noqa: F401
 except ModuleNotFoundError as exc:   # (the runner reports the missing package unless --strict; direct runs say so)
     raise SystemExit(f"SKIP: {exc}")
+RUN_ALL_MODULES = ["mcp"]
 
 RUNNER = ROOT / "scripts" / "mcp_scenario.py"
 FAKE = ROOT / "tests" / "fake_game.py"
