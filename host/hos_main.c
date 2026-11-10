@@ -706,6 +706,7 @@ static const OotDestination oot_destinations[] = {   /* (generated: work/oot-tel
      "InsideGanonCastle", "Entrance", "Dm_SY_BancChangeArrive_InsideGanonCastle_01"},   /* Ganon's Castle */
 };
 #define OOT_AGE_ACTION 999   /* (the Cheats page's Age row) */
+#define OOT_STATE_ACTION 998   /* (test runs, the live input's "!cheat 998": the state line below; no menu row sends it) */
 #define OOT_TELEPORT_ACTION 1000   /* (pouch edits use 200 to 348) */
 #define OOT_GAMEDATA_SLOT 0x84c9e180ULL   /* GameDataMgr, as ReserveBancChange's readers load it */
 #define OOT_EVENTMGR_SLOT 0x84c9e090ULL   /* EventMgr, as SeqOneShotRequestEvent loads it */
@@ -935,6 +936,20 @@ static void oot_teleport_followup(Ctx *c) {
             events && recomp_load64(c, events + 104) ? 1 : 0);
 }
 
+/* (test runs: scripts/pipeline_tour.py) One line of what a script needs to know before its next step: the map, whether an event
+   (a cutscene, a map change's) is playing, whether a map is loading, Link's age. Only logged when asked, through the live input */
+static void oot_log_state(Ctx *c) {
+    char current[80], next[80];
+    int loading = 0, child = 1;
+    oot_gamedata_string(c, 0x1d6189dau, current, sizeof current);   /* Sequence_CurrentBanc */
+    oot_gamedata_string(c, 0xee27bf71u, next, sizeof next);         /* Sequence_ReservedNextBanc */
+    oot_gamedata_bool(c, 0xef2b60c2u, &loading);                    /* Sequence_IsLoadingBanc */
+    oot_gamedata_bool(c, 0xcea220d3u, &child);                      /* Sequence_IsChildhood */
+    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+    hos_log("cheats: state: map \"%s\", reserved \"%s\", event playing %d, loading %d, %s", current, next,
+            events && recomp_load64(c, events + 104) ? 1 : 0, loading, child ? "child" : "adult");
+}
+
 static uint64_t oot_gameplay_view(Ctx *c) {
     const uint64_t singleton = recomp_load64(c, 0x84ca6bc0ULL);
     const uint64_t manager = singleton ? recomp_load64(c, singleton) : 0;
@@ -999,6 +1014,8 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     oot_player_speed(c, components);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
+    } else if (action == OOT_STATE_ACTION) {
+        oot_log_state(c);
     } else if (action == OOT_AGE_ACTION) {
         oot_toggle_age(c, actor);
     } else if (action >= OOT_TELEPORT_ACTION) {
