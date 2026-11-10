@@ -203,7 +203,14 @@ HLE(_ZN2nn3nfp8FinalizeEv) {
     nfp_area_open = 0;
 }
 
-HLE(_ZN2nn3nfp8GetStateEv) { RET(nfp_state); }
+HLE(_ZN2nn3nfp8GetStateEv) {
+    static int last_state = -1;
+    if (last_state != nfp_state) {
+        last_state = nfp_state;
+        hos_log("nfp: GetState: %d", nfp_state);
+    }
+    RET(nfp_state);
+}
 
 HLE(_ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE) {
     static int last_state = -1;
@@ -250,11 +257,13 @@ HLE(_ZN2nn3nfp11ListDevicesEPNS0_12DeviceHandleEPii) {
 
 HLE(_ZN2nn3nfp14StartDetectionERKNS0_12DeviceHandleE) {
     nfp_load();
+    hos_log("nfp: StartDetection");
     nfp_scan();
     RET(0);
 }
 
 HLE(_ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE) {
+    hos_log("nfp: StopDetection");
     nfp_device_state = NFP_DEV_INIT;
     if (nfp_deactivate_event) hos_system_event_signal(nfp_deactivate_event);
     RET(0);
@@ -279,6 +288,7 @@ HLE(_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE) {
 }
 
 HLE(_ZN2nn3nfp7UnmountERKNS0_12DeviceHandleE) {
+    hos_log("nfp: Unmount");
     nfp_device_state = NFP_DEV_ACTIVE;
     nfp_area_open = 0;
     if (nfp_deactivate_event) hos_system_event_signal(nfp_deactivate_event);
@@ -441,9 +451,11 @@ HLE(_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE) {
    when a tag appears or goes away. The game waits on it with nn::os. */
 HLE(_ZN2nn3nfp19AttachActivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE) {
     nfp_activate_event = ARG(0);
+    hos_log("nfp: AttachActivateEvent %#llx (state %d)", (unsigned long long)nfp_activate_event, nfp_device_state);
     if (nfp_activate_event) {
         hos_system_event_init(nfp_activate_event, 1);
-        if (nfp_device_state == NFP_DEV_ACTIVE || nfp_device_state == NFP_DEV_MOUNT)
+        /* (the virtual tag is always there: a late attach must not miss the event) */
+        if (nfp_tag || nfp_device_state == NFP_DEV_ACTIVE || nfp_device_state == NFP_DEV_MOUNT)
             hos_system_event_signal(nfp_activate_event);
     }
     RET(0);
@@ -451,6 +463,7 @@ HLE(_ZN2nn3nfp19AttachActivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandl
 
 HLE(_ZN2nn3nfp21AttachDeactivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE) {
     nfp_deactivate_event = ARG(0);
+    hos_log("nfp: AttachDeactivateEvent %#llx (state %d)", (unsigned long long)nfp_deactivate_event, nfp_device_state);
     if (nfp_deactivate_event) {
         hos_system_event_init(nfp_deactivate_event, 1);
         if (nfp_device_state == NFP_DEV_DEACTIVE) hos_system_event_signal(nfp_deactivate_event);
@@ -459,6 +472,7 @@ HLE(_ZN2nn3nfp21AttachDeactivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHan
 }
 
 HLE(_ZN2nn3nfp29AttachAvailabilityChangeEventEPNS_2os15SystemEventTypeE) {
+    hos_log("nfp: AttachAvailabilityChangeEvent %#llx", (unsigned long long)ARG(0));
     if (!ARG(0)) return;
     hos_system_event_init(ARG(0), 1);
     hos_system_event_signal(ARG(0));
