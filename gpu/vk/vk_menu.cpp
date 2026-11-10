@@ -626,11 +626,11 @@ Row rows[] = {
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's "
      "buttons."},
-    // (the Debug tab's screen filters, before its two rows below)
-    {TAB_DEBUG, "Screen filter", &opts.filter, 0, 3, 1, tx_screen_filter,
+    // (the Gameplay tab's screen filters: after its other rows, before Restart and Quit below)
+    {TAB_GAMEPLAY, "Screen filter", &opts.filter, 0, 3, 1, tx_screen_filter,
      "A look for the whole picture: CRT (curved glass, scanlines and a shadow mask), Scanlines alone, or Film (warm grade, "
      "grain and vignette). Changes at once.", nullptr, false, true},
-    {TAB_DEBUG, "Filter strength", &opts.filter_strength, 0, 100, 10, tx_percent, "How strong the screen filter is.", nullptr, false, true},
+    {TAB_GAMEPLAY, "Filter strength", &opts.filter_strength, 0, 100, 10, tx_percent, "How strong the screen filter is.", nullptr, false, true},
     // (Restart and Quit, then the Debug tab's two rows, stay the table's last four: kRestartRow, kQuitRow and kCheatsRow count back
     // from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
