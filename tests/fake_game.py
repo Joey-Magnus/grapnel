@@ -83,6 +83,8 @@ def main():
                 say(f"vk: present 7 written to {out}")
             except FileNotFoundError:
                 pass
+            except PermissionError:   # (the server is replacing the file: read it next time round)
+                pass
         time.sleep(0.01)
 
 
