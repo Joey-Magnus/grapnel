@@ -31,3 +31,43 @@ It still requires its focused rerun and integrated build/full-suite checks.
 No Vulkan runtime timeline, resize/failure or game/image/performance proof yet.
 Do not install this as a verified speedup. Added CPU/GPU overlap can add bounded
 latency and cannot overcome total GPU work exceeding the8.33ms120-FPS budget.
+
+## Concurrency audit and accepted-present telemetry
+
+The worker never acquires replay_mu. Recorder foreign_wait snapshots only W,
+not unpublished producer bytes or future producer progress; the decoder executes
+vkCmd calls without taking replay_mu/native.mu/dev.present_mu. Native slot waits
+therefore do not require producer progress to release an existing worker job.
+The source submission passes vkEndCommandBuffer/queue-submit recorder boundaries
+before the job is published. Its per-slot reuse signal was already enqueued by
+the worker before busy is cleared.
+
+Concrete audit fixes: native image replacement now uses the renderer's existing
+device_wait_idle_locked helper, including its present_queue_mu exclusion. Starting
+native output drains the previous interpolation jobs first. A frame already chosen
+for inline/deferred interpolation cannot also enter native output during a menu
+setting transition. With a separate present queue, present_out releases
+present_mu before the external Present call; with one queue it remains serialized.
+The private layer queue lease covers the actual API operation, not its model wait.
+
+RX_VK_ASYNC_PRESENT_LOG=/absolute/path.csv enables a separate worker trace. Each
+row identifies its source frame and monotonic host timestamps for source-call,
+enqueue, worker start, actual vkQueuePresent begin/return and worker completion,
+plus acceptance and VkResult. Throughput uses accepted present_end_ns intervals;
+worker_ns-queued_ns measures worker queueing, queued_ns-source_ns includes capture
+and backpressure, and present_end_ns-source_ns is host source-to-acceptance delay.
+These are neither display scanout timestamps nor input-to-photon latency. Hidden
+or failed presents remain rows with accepted=0 and possibly zero call timestamps.
+Opt-in logging flushes each row; keep it enabled in both sides of timed comparisons.
+
+Extended production tests cover framegen-to-native drain, hidden-output counters,
+failed-capture rejection, monotonic slot reuse and CSV source-ID/timestamp order.
+They passed after the telemetry/counter changes. A fresh build is running; the
+small final framegen-admission guard was added after that build began, so rebuild
+that translation unit before treating its artifact as the final revision.
+
+Final concurrency/telemetry revision rebuilt successfully after the admission
+change: eight seconds, zero compiler failures, renderer linked. No gameplay test
+was launched. Build evidence: work/build-concurrency-final.log. The recorder
+interaction conclusions above are source/lock-order analysis, not a live race or
+Vulkan validation result; those acceptance checks remain required.

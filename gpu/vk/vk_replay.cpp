@@ -3071,7 +3071,8 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         interpolated = framegen_on() && tex && fg_inline &&
                        framegen_record(r.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample), sw,
                                        sh, crop);
-        native_async = present_async_record(r.cmd, src, tex ? tex->format : VK_FORMAT_UNDEFINED, sw, sh, crop);
+        native_async = present_async_record(r.cmd, (fg_after || interpolated) ? VK_NULL_HANDLE : src,
+                                            tex ? tex->format : VK_FORMAT_UNDEFINED, sw, sh, crop);
         texture_frame(completed());
         full_barrier(r.cmd);
         presents++;
@@ -3166,7 +3167,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             submit_recording(g, false);
         }
         if (interpolated) framegen_queue(value);
-        else if (native_async) present_async_queue(r.submitted);
+        else if (native_async) present_async_queue(r.submitted, presents);
         else menu_note_frame(true);   // (the FPS counter's, as frame generation's thread counts what it shows)
         {   // (RX_VK_WAIT_GPU=<frames>: the replay no further ahead of the GPU than that)
             static uint64_t values[8];
@@ -3598,7 +3599,7 @@ struct PresentStageSample {
     }
 };
 std::mutex present_image_mu;
-static VkResult present_out(uint32_t index, std::unique_lock<std::mutex>& qk);
+static VkResult present_out(uint32_t index, std::unique_lock<std::mutex>& qk, NativePresentSync* sync = nullptr);
 thread_local PendingPresent* present_defer_into = nullptr;
 void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, NativePresentSync* sync) {
     StageTrace trace("present_image", 0);
@@ -3830,7 +3831,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         present_defer_into->swapchain = dev.swapchain;
         return;
     }
-    res = present_out(index, qk);
+    res = present_out(index, qk, sync);
     stages.mark(PresentStageSample::Present);
     trace.mark("present");
     stages.shown = res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR;
@@ -3861,7 +3862,7 @@ bool present_commit(const PendingPresent& p) {
     return true;
 }
 
-static VkResult present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
+static VkResult present_out(uint32_t index, std::unique_lock<std::mutex>& qk, NativePresentSync* sync) {
     VkResult res;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.pNext = reflex_present_id(nullptr);   // (NVIDIA Reflex: the frame's present id, and its present's markers)
@@ -3879,10 +3880,15 @@ static VkResult present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     if (dev.present_queue) {
         qk.unlock();
         std::lock_guard pq(dev.present_queue_mu);
+        if (sync) sync->present_begin_ns = prof_now();
         res = vkQueuePresentKHR(dev.present_queue, &pi);
+        if (sync) sync->present_end_ns = prof_now();
     } else {
+        if (sync) sync->present_begin_ns = prof_now();
         res = vkQueuePresentKHR(dev.queue, &pi);
+        if (sync) sync->present_end_ns = prof_now();
     }
+    if (sync) sync->present_result = res;
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
     reflex_presented();
     if (res < 0 && res != VK_ERROR_OUT_OF_DATE_KHR) {   // (a present that failed: said, a few times)

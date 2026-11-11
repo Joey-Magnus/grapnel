@@ -14,10 +14,14 @@ struct NativePresentSync {
     bool read_submitted = false;
     bool native_pq = false;
     bool shown = false;
+    uint64_t source_frame = 0;
+    int64_t source_ns = 0, queued_ns = 0, worker_ns = 0;
+    int64_t present_begin_ns = 0, present_end_ns = 0, finished_ns = 0;
+    VkResult present_result = VK_NOT_READY;
 };
 bool present_async_record(VkCommandBuffer cmd, VkImage src, VkFormat format, uint32_t w, uint32_t h, const int crop[4]);
 NativePresentSync* present_async_pending();
-void present_async_queue(bool submitted);
+void present_async_queue(bool submitted, uint64_t source_frame);
 void present_async_release(NativePresentSync& sync);
 
 /// Records the frame's processing into the present's recording (src: the window texture's view, sw x sh, the crop
