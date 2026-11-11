@@ -1,4 +1,5 @@
 """Compile the real sampler handoff with deterministic signal completion schedules."""
+import argparse
 from pathlib import Path
 import shutil
 import subprocess
@@ -6,10 +7,18 @@ import sys
 import tempfile
 import unittest
 
+RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_SKIP = {"windows": "Linux sampler signals and nonlocal-jump assembly"}
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('cc'), 'Linux C compiler required')
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument("--cc", default="cc")
+args, remaining = parser.parse_known_args()
+sys.argv = [sys.argv[0], *remaining]
+
+@unittest.skipUnless(sys.platform.startswith('linux') and shutil.which(args.cc), 'Linux C compiler required')
 class SampleOwnershipTests(unittest.TestCase):
     def test_delayed_handler_cannot_complete_a_new_request(self):
         source = (ROOT / 'host/posix/prof.c').read_text()
@@ -91,7 +100,7 @@ int main(void) {
         with tempfile.TemporaryDirectory() as directory:
             c = Path(directory) / 'sample.c'; exe = c.with_suffix('')
             c.write_text(prefix + globals + function + harness)
-            subprocess.run(['cc', '-std=c11', '-O2', '-pthread', str(c), '-o', str(exe)], check=True)
+            subprocess.run([args.cc, '-std=c11', '-O2', '-pthread', str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=10)
 
 

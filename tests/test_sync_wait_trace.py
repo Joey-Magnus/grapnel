@@ -1,8 +1,15 @@
 """Exercise production event wait tracing without changing signal/auto-clear semantics."""
 import os
+import argparse
 from pathlib import Path
 import subprocess
 import tempfile
+
+RUN_ALL_ARGS = ["--cc", "gcc"]
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--cc", default="cc")
+args = parser.parse_args()
 
 root = Path(__file__).resolve().parents[1]
 source = (root / 'host/nn_os_sync.c').read_text()
@@ -78,8 +85,8 @@ int main(void) {
 with tempfile.TemporaryDirectory() as tmp:
     folder = Path(tmp)
     (folder/'test.c').write_text(fixture)
-    subprocess.run(['gcc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(folder/'test.c'),'-o',str(folder/'test')],check=True)
+    subprocess.run([args.cc,'-std=c11','-O2','-Wall','-Wextra','-Werror',str(folder/'test.c'),'-o',str(folder/'test.exe')],check=True)
     env = {k:v for k,v in os.environ.items() if not k.startswith('HOS_SYNC_WAIT_TRACE')}
     for extra in ({}, {'HOS_SYNC_WAIT_TRACE_MS':'20'}, {'HOS_SYNC_WAIT_TRACE_MS':'20','HOS_SYNC_WAIT_TRACE_THREAD':'other'}):
-        subprocess.run([str(folder/'test')],env={**env,**extra},check=True)
+        subprocess.run([str(folder/'test.exe')],env={**env,**extra},check=True)
 print('PASS: disabled clock path, filtering, signal correlation, timeout, auto/manual clear and unlocked logging')

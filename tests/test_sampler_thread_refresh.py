@@ -1,14 +1,21 @@
 """Late-created workers and exited/reused TIDs must replace the sampler's old list."""
+import argparse
 from pathlib import Path
 import os
 import shutil
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cc", "gcc"]
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--cc", default="cc")
+args = parser.parse_args()
+
 root = Path(__file__).resolve().parents[1]
 source = (root/'host/posix/prof.c').read_text()
 helper = source[source.index('static int sample_all_refresh('):source.index('static DWORD WINAPI sample_all_thread(')]
-compiler = shutil.which('gcc') or shutil.which('clang')
+compiler = args.cc
 if not compiler:
     raise SystemExit('SKIP: C compiler unavailable')
 fixture = r'''

@@ -1,4 +1,5 @@
 """Interrupt the real nonlocal-jump assembly after rsp changes, without game data."""
+import argparse
 from pathlib import Path
 import shutil
 import platform
@@ -8,7 +9,15 @@ import tempfile
 import unittest
 
 
-@unittest.skipUnless(sys.platform.startswith('linux') and platform.machine() == 'x86_64' and shutil.which('cc'), 'Linux C compiler required')
+RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_SKIP = {"windows": "Linux sampler signals and nonlocal-jump assembly"}
+
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument("--cc", default="cc")
+args, remaining = parser.parse_known_args()
+sys.argv = [sys.argv[0], *remaining]
+
+@unittest.skipUnless(sys.platform.startswith('linux') and platform.machine() == 'x86_64' and shutil.which(args.cc), 'Linux C compiler required')
 class LongjmpUnwindTests(unittest.TestCase):
     def test_signal_at_stack_switch(self):
         source = (Path(__file__).resolve().parents[1] / 'host/hos_setjmp.c').read_text().split('#else', 1)[1]
@@ -46,7 +55,7 @@ int main(void) {
                 with self.subTest(name=name):
                     c=Path(directory)/(name+'.c'); exe=c.with_suffix('')
                     c.write_text(prefix+fn+suffix)
-                    subprocess.run(['cc','-O2','-fasynchronous-unwind-tables',str(c),'-o',str(exe)],check=True)
+                    subprocess.run([args.cc,'-O2','-fasynchronous-unwind-tables',str(c),'-o',str(exe)],check=True)
                     result=subprocess.run([str(exe)],timeout=10)
                     self.assertEqual(result.returncode, 0 if name=='fixed' else -11)
 

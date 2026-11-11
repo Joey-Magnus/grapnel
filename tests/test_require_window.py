@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cc", "gcc"]
+
 ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / 'host/rx_backend.c').read_text()
 start = source.index('int rx_start(void *hwnd) {')
@@ -48,6 +50,6 @@ parser.add_argument('--cc', default='clang')
 a = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='require-window-') as tmp:
     p = Path(tmp); (p / 'test.c').write_text(fixture)
-    subprocess.run([a.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', str(p/'test.c'), '-o', str(p/'test')], check=True)
-    subprocess.run([str(p/'test')], check=True)
+    subprocess.run([a.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', str(p/'test.c'), '-o', str(p/'test.exe')], check=True)
+    subprocess.run([str(p/'test.exe')], check=True)
 print('required window rejects offscreen fallback; optional offscreen start preserved')

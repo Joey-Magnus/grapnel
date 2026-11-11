@@ -2,12 +2,16 @@
 import json
 import importlib.util
 import os
+import argparse
 from pathlib import Path
 import socket
+import sys
 import subprocess
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+
+RUN_ALL_ARGS = ["--cc", "gcc"]
 
 RUN_ALL_SKIP = {'windows': 'Linux runtime API and Unix session isolation'}
 
@@ -15,9 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cc", default="cc")
+    args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='hookshot-api-test-') as tmp:
         exe = Path(tmp) / 'fixture'
-        subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
+        subprocess.run([args.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
                         '-I' + str(ROOT / 'host'), str(ROOT / 'host/hos_debug.c'),
                         str(ROOT / 'tests/debug_api_fixture.c'), '-o', str(exe)], check=True)
         name = 'hookshot-test-' + uuid.uuid4().hex
@@ -271,7 +278,7 @@ def main():
                     raise AssertionError('invalid memory read accepted')
                 except ValueError:
                     pass
-            cli = subprocess.run(['python3', str(ROOT / 'scripts/analysis_api.py'), 'read-memory', str(session),
+            cli = subprocess.run([sys.executable, str(ROOT / 'scripts/analysis_api.py'), 'read-memory', str(session),
                                   '0x0', '8'], capture_output=True, text=True, check=True)
             assert json.loads(cli.stdout)['data_hex'] == 'a5' * 8
             api.control('exclusive')

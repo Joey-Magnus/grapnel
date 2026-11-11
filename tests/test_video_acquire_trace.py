@@ -1,10 +1,17 @@
 """Check disabled tracing and distinguish repeats/skips from decoder delivery time."""
 import importlib.util
 import os
+import argparse
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+
+RUN_ALL_ARGS = ["--cc", "gcc"]
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--cc", default="cc")
+args = parser.parse_args()
 
 root = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('video_trace', root/'scripts/analyze_video_acquires.py')
@@ -41,7 +48,7 @@ for bad in ('video-acquire: start_ns=1', row.replace('lock_ns=2000000', 'lock_ns
         pass
     else:
         raise AssertionError('Invalid timing accepted')
-compiler = shutil.which('gcc') or shutil.which('clang')
+compiler = args.cc
 if not compiler:
     raise SystemExit('SKIP: C compiler unavailable')
 fixture = r'''

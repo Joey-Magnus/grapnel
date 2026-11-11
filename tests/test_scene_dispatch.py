@@ -1,7 +1,10 @@
 """Exercise the production guest-call adapter with an authored context and callee."""
+import argparse
 from pathlib import Path
 import subprocess
 import tempfile
+
+RUN_ALL_ARGS = ["--cc", "gcc"]
 
 RUN_ALL_SKIP = {'windows': 'Linux runtime API and Unix session isolation'}
 
@@ -316,12 +319,15 @@ int main(void) {
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cc", default="cc")
+    args = parser.parse_args()
     source = (ROOT / 'host/hos_debug_guest.c').read_text().replace('#include "hos.h"', STUB)
     with tempfile.TemporaryDirectory() as temp:
         path = Path(temp) / 'check.c'
         path.write_text(source + MAIN)
         exe = path.with_suffix('')
-        subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
+        subprocess.run([args.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
                         '-I' + str(ROOT / 'host'), str(path), '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
     print('PASS: production guest string adapter preserves context, builds guest pointers and gates build/thread')
