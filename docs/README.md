@@ -1,6 +1,6 @@
 # Hookshot field guide
 
-![Hookshot: a field guide to your next adventure, with a gold hook emblem above a forest landscape.](assets/field-guide-cover.svg)
+<img src="../assets/hookshot.png" alt="Hookshot" width="160">
 
 **Build your game. Find your footing. Keep exploring.**
 

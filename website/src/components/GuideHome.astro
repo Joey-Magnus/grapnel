@@ -1,0 +1,32 @@
+---
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') + '/';
+const guides = [
+  { n: '01', icon: 'compass', title: 'Start your journey', text: 'From your own game files to your first steps in Kokiri Forest.', href: 'getting-started', footer: 'Installation guide' },
+  { n: '02', icon: 'sliders', title: 'Make it your own', text: 'Find the right balance of clarity, performance, and controls.', href: 'graphics-and-controls', footer: 'Graphics & controls' },
+  { n: '03', icon: 'book', title: 'Keep your progress', text: 'Update your build, back up your saves, and pick up where you left off.', href: 'updates-and-saves', footer: 'Updates & saves' },
+];
+const paths = {
+  compass: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM16 8l-2 6-6 2 2-6 6-2Z',
+  sliders: 'M4 7h5m4 0h7M4 17h10m4 0h2M9 4v6m4-6v6M14 14v6m4-6v6',
+  book: 'M12 5v16M3 4c4-1 7 0 9 2 2-2 5-3 9-2v15c-4-1-7 0-9 2-2-2-5-3-9-2V4Z',
+};
+---
+<div class="home-content not-content">
+  <div class="section-heading"><p class="eyebrow">THE ESSENTIALS</p><h2>Choose your next step</h2><p>A little less setup. A little more adventure.</p></div>
+  <div class="quest-grid">
+    {guides.map((g) => <a class="quest-card" href={`${base}guides/${g.href}/`}>
+      <div class="quest-card-top"><span class="quest-icon"><svg viewBox="0 0 24 24" width="25" height="25" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d={paths[g.icon as keyof typeof paths]} /></svg></span><span class="quest-number">{g.n}</span></div>
+      <h3>{g.title}</h3><p>{g.text}</p><div class="quest-link">{g.footer}<span aria-hidden="true">↗</span></div>
+    </a>)}
+  </div>
+  <section class="help-board" aria-labelledby="help-title">
+    <div class="help-board-intro"><p class="eyebrow">A HAND ALONG THE WAY</p><h2 id="help-title">Lost in the woods?</h2><p>Answers from real reports, with the context that matters. Know what is a workaround and what is still being investigated.</p><a href={`${base}guides/common-issues/`}>Explore all 11 answers <span aria-hidden="true">→</span></a></div>
+    <div class="help-questions">
+      <a href={`${base}guides/common-issues/#gohma-walks-into-a-wall-or-stops-attacking`}><span><span class="status-badge workaround">WORKAROUND</span><strong>Gohma won’t attack?</strong></span><span aria-hidden="true">↗</span></a>
+      <a href={`${base}guides/common-issues/#the-hud-ghosts-or-shimmers-with-frame-generation`}><span><span class="status-badge workaround">WORKAROUND</span><strong>Ghosting with frame generation?</strong></span><span aria-hidden="true">↗</span></a>
+      <a href={`${base}guides/common-issues/#the-game-closes-immediately-after-play`}><span><span class="status-badge investigating">INVESTIGATING</span><strong>Game closes after pressing Play?</strong></span><span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+  <section class="community-strip"><div><p class="eyebrow">BUILT BY THE COMMUNITY</p><h2>Every discovery helps.</h2><p>Share a useful report, contribute a pipeline list, or improve the guide.</p></div><a class="button-secondary" href={`${base}guides/reporting-and-contributing/`}>Join the effort <span aria-hidden="true">→</span></a></section>
+  <aside class="own-copy-note"><span aria-hidden="true">◇</span><p><strong>Your game. Your computer.</strong> Hookshot builds locally from your own supported copy. Game files, keys, executables, and saves are not included with these docs.</p></aside>
+</div>
