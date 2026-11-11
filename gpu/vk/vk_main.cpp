@@ -241,6 +241,24 @@ bool pick_device() {
     return true;
 }
 
+}  // namespace
+/// (hookshot) The presenter thread (vk_replay.cpp): RX_VK_PRESENT_THREAD=0/1 over the default, on on Linux, off on Windows, where
+/// nothing was run with it (its queue there would be a compute family's, the arrangement RX_VK_PRESENT_QUEUE has, off on Windows
+/// for issue 1161)
+bool presenter_wanted() {
+    static const bool v = [] {
+        const char* e = getenv("RX_VK_PRESENT_THREAD");
+#ifdef _WIN32
+        const bool by_default = false;
+#else
+        const bool by_default = true;
+#endif
+        return e ? atoi(e) != 0 : by_default;
+    }();
+    return v;
+}
+namespace {
+
 bool create_device() {
     uint32_t n = 0;
     vkEnumerateDeviceExtensionProperties(dev.physical, nullptr, &n, nullptr);
@@ -355,10 +373,9 @@ bool create_device() {
     // (hookshot) The presenter thread's own queue (vk_replay.cpp; RX_VK_PRESENT_THREAD=0: none): a second queue of the replay's
     // family (NVIDIA's has 16), else a queue of a compute-only family (RADV: one graphics queue), its family's next free one. A
     // device without either presents on the game's thread, as before
-    const char* pt_env = getenv("RX_VK_PRESENT_THREAD");
-    const bool presenter_wanted = pt_env && atoi(pt_env) != 0;   // (off by default: no queue made for it)
+    const bool presenter_on = presenter_wanted();   // (off: no queue made for it)
     uint32_t presenter_family = UINT32_MAX, presenter_index = 0;
-    if (presenter_wanted) {   // (presenter_queue.h: never a queue another part of the renderer takes)
+    if (presenter_on) {   // (presenter_queue.h: never a queue another part of the renderer takes)
         std::vector<QueueFamilyInfo> qf(n);
         for (uint32_t i = 0; i < n; i++) qf[i] = {(uint32_t)families[i].queueFlags, families[i].queueCount};
         if (!presenter_queue_pick(qf.data(), n, dev.queue_family, compute_family, presenter_family, presenter_index))
@@ -581,7 +598,7 @@ bool create_device() {
         logf("vk: the presenter thread's queue: family %u, queue %u%s; waits for its presents to be shown: %s", presenter_family,
              presenter_index, presenter_family == dev.queue_family ? " (the replay's family)" : " (a compute family)",
              dev.present_wait ? "yes (VK_KHR_present_wait)" : "no");
-    } else if (presenter_wanted) {
+    } else if (presenter_on) {
         logf("vk: no second queue for the presenter thread: presents on the game's thread");
     }
     if (dev.buffer_marker) buffer_markers_init();
