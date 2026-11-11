@@ -34,11 +34,34 @@ export class ProgressBoard extends HTMLElement {
     this.form.addEventListener('reset', () => queueMicrotask(() => { this.limit = 20; this.renderResults(); }), options);
     this.region('more').addEventListener('click', () => { this.limit += 20; this.renderResults(); }, options);
     this.region('refresh').addEventListener('click', () => this.refresh(), options);
+    window.addEventListener('hashchange', () => this.openProblemSearch(), options);
+    // A repeated click on the same fragment does not emit hashchange.
+    document.addEventListener('click', event => {
+      const target = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[data-problem-search]') : null;
+      if (target && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0 &&
+          new URL(target.href).pathname === location.pathname && location.hash === '#problem-search') {
+        event.preventDefault();
+        this.openProblemSearch();
+      }
+    }, options);
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && Date.now() - this.lastAttempt >= REFRESH_MS) void this.refresh();
     }, options);
     this.timer = setInterval(() => { if (!document.hidden) void this.refresh(); }, REFRESH_MS);
+    this.openProblemSearch();
     void this.refresh();
+  }
+  openProblemSearch() {
+    if (location.hash !== '#problem-search') return;
+    (this.form.elements.namedItem('view') as RadioNodeList).value = 'reports';
+    for (const name of ['status', 'platform', 'area', 'version']) {
+      (this.form.elements.namedItem(name) as HTMLSelectElement).value = '';
+    }
+    this.limit = 20;
+    this.renderResults();
+    const input = this.form.elements.namedItem('query') as HTMLInputElement;
+    input.focus({ preventScroll: true });
+    input.scrollIntoView({ block: 'center' });
   }
   disconnectedCallback() {
     this.events?.abort(); this.controller?.abort(); clearInterval(this.timer);

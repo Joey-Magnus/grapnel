@@ -1,5 +1,13 @@
 # Local validation — November 11, 2026
 
+## Search-button follow-up
+
+Added a shared-header “Search for your problem” link, including a full-width mobile row. It targets the search
+input, selects reported problems, clears restrictive filters and focuses the field, including repeated clicks
+on the same fragment. Default and fork-preview build/check passed with 14 pages and 691/692 local links/assets
+respectively. All four existing website test files passed; generated HTML checks found the header link on all
+14 pages and its input anchor on the progress page. Browser visual and interaction review remains unavailable.
+
 Implementation is applied locally on `docs/starlight-preview`, based on
 `ce09826e2f7b0d204ecf8971ff4f94e0510eb41f`, the existing documentation PR #2083 branch.
 These checks were performed before committing or pushing. The user subsequently authorized a commit and push to

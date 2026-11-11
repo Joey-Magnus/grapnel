@@ -18,10 +18,11 @@ const endpoint = feedEndpoint(process.env.DOCS_PROGRESS_FEED_URL, base);
   </div>
   <p data-warning class="progress-warning" role="status" hidden></p>
   <p data-coverage class="progress-note">Includes open reports and proposed changes, recent closed items, and published releases.</p>
-  <h2>Browse the work</h2>
+  <h2>Search for your problem</h2>
+  <p class="progress-note" id="problem-search-help">Describe what went wrong to find similar reports and any reviewed workarounds. You can also browse features, changes and releases below.</p>
   <form role="search" aria-label="Search project progress">
     <label class="progress-search">Search problems, features and updates
-      <input type="search" name="query" placeholder="Try “controller”, “Linux” or an issue number" autocomplete="off" />
+      <input id="problem-search" type="search" name="query" aria-describedby="problem-search-help" placeholder="Try “black screen”, “controller” or an issue number" autocomplete="off" />
     </label>
     <fieldset class="progress-views"><legend>Show</legend>
       {[
@@ -68,6 +69,7 @@ const endpoint = feedEndpoint(process.env.DOCS_PROGRESS_FEED_URL, base);
   progress-board :is(button, input, select, summary, a):focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
   .progress-warning { border-left: 3px solid var(--gold); padding: .75rem 1rem; background: var(--panel); }
   .progress-search { display: grid; gap: .4rem; margin-top: 1.4rem; font-weight: 700; }
+  #problem-search { scroll-margin-top: calc(var(--sl-nav-height) + 1rem); }
   progress-board input[type='search'], progress-board select { min-width: 0; width: 100%; color: var(--sl-color-white); background: var(--sl-color-bg); border: 1px solid var(--sl-color-gray-3); border-radius: .3rem; padding: .65rem; min-height: 44px; font-weight: 400; }
   .progress-views { border: 0; padding: 0; margin: 1rem 0; display: flex; flex-wrap: wrap; gap: .5rem; }
   .progress-views legend { margin-bottom: .4rem; }
