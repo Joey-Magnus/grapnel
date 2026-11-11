@@ -2789,13 +2789,15 @@ bool nvn_vertex_input(VertexInput& vi, const NvnState& s, const Shader::Info& in
         uint32_t end = 0;
         for (const Attr& a : streams[st]) end = std::max(end, a.offset + a.size);
         if (cached.on) {
+            // (whole strides, as below: wgpu's Metal back end reads the last element of a shorter binding as zeros)
+            const auto whole = [&](uint64_t n) { return stride ? (n + stride - 1) / stride * stride : n; };
             uint64_t bytes;
-            if (cached.indirect) bytes = std::max<uint64_t>(vs.size, end);
+            if (cached.indirect) bytes = whole(std::max<uint64_t>(vs.size, end));
             else if (!stride) bytes = end;
-            else if (instanced) bytes = (uint64_t)(base_instance + instances - 1) * stride + end;
-            else if (!cached.indexed) bytes = (uint64_t)(cached.first + cached.count - 1) * stride + end;
-            else bytes = std::max<uint64_t>(vs.size, end);
-            bytes = std::min<uint64_t>((bytes + 3) & ~3ull, std::max<uint64_t>((vs.size + 3) & ~3ull, (end + 3) & ~3ull));
+            else if (instanced) bytes = (uint64_t)(base_instance + instances) * stride;
+            else if (!cached.indexed) bytes = (uint64_t)(cached.first + cached.count) * stride;
+            else bytes = whole(std::max<uint64_t>(vs.size, end));
+            bytes = std::min<uint64_t>((bytes + 3) & ~3ull, std::max<uint64_t>((whole(vs.size) + 3) & ~3ull, (end + 3) & ~3ull));
             if (vs.addr & 3) {
                 count("nc_align");
                 return false;
@@ -2824,7 +2826,10 @@ bool nvn_vertex_input(VertexInput& vi, const NvnState& s, const Shader::Info& in
         }
         const uint64_t first = instanced ? base_instance : v0;
         const uint64_t n_el = instanced ? instances : (uint64_t)v1 - v0 + 1;
-        uint64_t bytes = stride ? (n_el - 1) * stride + end : end;
+        // (whole strides, the last element's too: wgpu's Metal back end counts a binding's elements as size / stride, so
+        // a binding of (n - 1) * stride + end bytes, valid in WebGPU, read its last vertex as zeros. The title's
+        // composite quad (4 vertices of 16 bytes, 8 used: 56 bytes) then lost a triangle, and the logo half the screen)
+        uint64_t bytes = stride ? n_el * stride : end;
         bytes = (bytes + 3) & ~3ull;
         if (bytes > (64ull << 20)) return false;
         const uint64_t off = stream_ro.alloc(bytes, 16);
