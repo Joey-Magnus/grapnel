@@ -94,14 +94,15 @@ class LaunchTests(unittest.TestCase):
             self.assertIn("HOOKSHOT_PROFILE=UNSET", ran.stdout.splitlines())
 
     def test_a_folder_given_starts_without_home(self):
-        # (a systemd unit or a bare env: no HOME, no XDG_CONFIG_HOME. The ini is looked for all the same, under set -u)
+        # (a systemd unit or a bare env: no HOME, no XDG_CONFIG_HOME. No ini then, and set -u does not stop the start)
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
             folder = Path(tmp) / "game"
             game(folder)
             env = {k: v for k, v in self.env().items() if k not in ("HOME", "XDG_CONFIG_HOME", "HOOKSHOT_LAUNCH_CONFIG")}
-            ran = subprocess.run([str(LAUNCH), str(folder)], env=env, text=True, capture_output=True, check=False)
+            ran = subprocess.run(["sh", "-x", str(LAUNCH), str(folder)], env=env, text=True, capture_output=True, check=False)
             self.assertEqual(ran.returncode, 0, ran.stderr)
             self.assertIn("HOME=", ran.stdout.splitlines())
+            self.assertNotIn("/.config", ran.stderr)   # (the trace: no ini under the file system's root was looked for)
 
     def test_play_starts_the_game_in_bin_not_the_launcher(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:

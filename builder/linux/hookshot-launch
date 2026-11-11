@@ -10,9 +10,11 @@ set -eu
 ini_path() {
     if [ -n "${HOOKSHOT_LAUNCH_CONFIG:-}" ]; then
         printf '%s\n' "$HOOKSHOT_LAUNCH_CONFIG"
-    else
-        printf '%s\n' "${XDG_CONFIG_HOME:-${HOME:-}/.config}/hookshot/builder.ini"
-    fi
+    elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        printf '%s\n' "$XDG_CONFIG_HOME/hookshot/builder.ini"
+    elif [ -n "${HOME:-}" ]; then
+        printf '%s\n' "$HOME/.config/hookshot/builder.ini"
+    fi   # (neither: no ini, rather than one under /.config)
 }
 
 # the last <name>= line, as the builder keeps the last value it wrote
