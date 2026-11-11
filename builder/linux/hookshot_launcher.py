@@ -698,6 +698,14 @@ class Launcher(object):
         self.state = "stopped"
         self.draw()
 
+    def dismiss(self):
+        """(an update that stopped, left as it is: Check for updates and Update Available come back, as on Windows)"""
+        if self.state != "stopped":
+            return
+        self.state = "idle"
+        self.show_details(False)
+        self.draw()
+
     def retry(self):
         work = self.work
         self.state = "idle"
@@ -1025,7 +1033,7 @@ class Launcher(object):
             self.bar_fill(x0, top, x1, top + u(38), work.fraction, work.bar())
         elif update and self.state == "stopped":
             self.links(cx, bottom - u(8), [("Show details" if not self.details else "Hide details", lambda: self.show_details(not self.details)),
-                                           (self.copied or "Copy error log", self.copy_details)])
+                                           (self.copied or "Copy error log", self.copy_details), ("Dismiss", self.dismiss)])
             y = bottom - u(16) - u(8) - u(38)
             self.button(x0, y, x1, y + u(38), "Update stopped", STOP, press=self.retry, tip="Try again")
             top = self.wrapped(x0, y - u(8), work.error.rstrip(".") + ". " + KEPT, "LsWhy", WHY, u(235), anchor="sw", lines=5)
