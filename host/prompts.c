@@ -1,7 +1,7 @@
-/* (hookshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf,
-   every icon in a text: dialogue, the control hints, menus) made from prompts/<face>/External.bfotf in the game folder,
-   which nx2/prompt_assets.py draws per controller face at build time, and served from the data folder's prompts/ (what this
-   player's controls make belongs to this PC: host/hos_data.c), with each Switch button's icon pointed at the icon of
+/* (hookshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf, every
+   icon in a text: dialogue, the control hints, menus) made from prompts/<face>/External.bfotf in the game folder, which
+   nx2/prompt_assets.py draws per controller face at build time, and served from the game folder's cache/prompts/ (made again
+   whenever the face or the controls change, so a cache: host/hos_data.c), with each Switch button's icon pointed at the icon of
    the pad input bound to it (host/nn_hid.c's controls, the menu's Layout preset and Controls page). So the icons say which
    button to press on this pad, custom controls too.
 
@@ -40,10 +40,13 @@ static const char *const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", 
 static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045,
                                                0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063, 0xE061};
 
-/* the data folder's prompts/, made, with its separator: what this player's face and controls make goes there */
+/* the game folder's cache/prompts/, made, with its separator: what this player's face and controls make goes there. 0 when it
+   cannot be made: then nothing is written (not into the current folder) and the game keeps its own icons */
 static int made_dir(char *out, size_t cap) {
-    if (!hos_data_path(out, cap, "prompts")) return 0;
+    if (!hos_game_file(out, cap, "cache/prompts")) return 0;
     CreateDirectoryA(out, NULL);
+    const DWORD a = GetFileAttributesA(out);
+    if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return 0;
     const size_t n = strlen(out);
     return n + 1 < cap && (out[n] = '/', out[n + 1] = 0, 1);
 }
@@ -351,11 +354,11 @@ static int build_textures(char *out, size_t cap) {
         }
     }
     char keypath[MAX_PATH], made[MAX_PATH];
-    if (!made_dir(made, sizeof made)) made[0] = 0;
+    const int have = made_dir(made, sizeof made);
     snprintf(out, cap, "%sCommon.bntx.zs", made);
     snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
     snprintf(keypath, sizeof keypath, "%sCommon.key", made);
-    const int ok = write_patched(path, out, keypath, h, runs, nruns);
+    const int ok = have && write_patched(path, out, keypath, h, runs, nruns);
     hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
             ok ? "" : ": could not be written");
     free(runs);
@@ -462,11 +465,11 @@ static int build_layouts(char *out, size_t cap) {
     int ok = 0;
     if (nruns) {
         char keypath[MAX_PATH], made[MAX_PATH];
-        if (!made_dir(made, sizeof made)) made[0] = 0;
+        const int have = made_dir(made, sizeof made);
         snprintf(out, cap, "%sCommon.blarc.zs", made);
         snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
         snprintf(keypath, sizeof keypath, "%sCommon.blarc.key", made);
-        ok = write_patched(path, out, keypath, h, runs, nruns);
+        ok = have && write_patched(path, out, keypath, h, runs, nruns);
         hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d, the ocarina hint %s%s", place[0], place[1], place[2],
                 place[3], xs ? "spread" : "as is", ok ? "" : ": could not be written");
     }
@@ -500,9 +503,9 @@ static int build(char *out, size_t cap) {
     const int bound = bind_font(b + 8, (size_t)n - 8);
     for (long i = 8; i < n; i += 4) wr32le(b + i, rd32le(b + i) ^ key);
     char made[MAX_PATH];
-    if (!made_dir(made, sizeof made)) made[0] = 0;
+    const int have = made_dir(made, sizeof made);
     snprintf(out, cap, "%sExternal.bfotf.zs", made);
-    const int ok = write_zstd_raw(out, b, (size_t)n);
+    const int ok = have && write_zstd_raw(out, b, (size_t)n);
     free(b);
     hos_log("prompts: %s icons, %d buttons on this pad's controls%s", faces[face], bound, ok ? "" : ": could not be written");
     return ok;

@@ -236,9 +236,9 @@ record it again, and make a new tour list. The folder's layout stays the same.
 
 ## The options file
 
-`hookshot_options.ini`, in the game folder, holds the Insert menu's rows as `<key>=<number>`: the row's name in lower
-case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution, which is `output_res`.
-`gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=4`,
+`hookshot_options.ini`, in the data folder (`host/hos_data.c`), holds the Insert menu's rows as `<key>=<number>`: the
+row's name in lower case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution,
+which is `output_res`. `gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=4`,
 `microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>` and `key_<button>`:
 the README's [Controls](../readme.md#controls)). A value outside a row's range is clamped when it is read. Where the
 number is not the obvious one:

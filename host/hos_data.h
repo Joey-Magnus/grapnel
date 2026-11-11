@@ -1,5 +1,5 @@
 /* The game's data folder (host/hos_data.c): where what belongs to the player is kept, apart from the game folder the builder
-   makes: the saves and the settings (hookshot_options.ini, hookshot_env.txt, language.txt). %LOCALAPPDATA%\Hookshot on Windows,
+   makes: the saves and the settings (hookshot_options.ini, hookshot_env.txt). %LOCALAPPDATA%\Hookshot on Windows,
    $XDG_DATA_HOME/hookshot (~/.local/share/hookshot) on Linux; --user <folder> names another; a run given its image.bin (a
    development run) uses "user" in the current folder. The shader and pipeline caches stay with the game, in its folder's cache/
    (it can be deleted), and the logs in its logs/. Paths are UTF-8. */

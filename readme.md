@@ -192,15 +192,16 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
   deletes them when you want. The build files folder can be moved before a build (**Change**, **Default**).
 - The game's data folder holds what is yours: `%LOCALAPPDATA%\Hookshot` on Windows, `~/.local/share/hookshot` on Linux
   (`$XDG_DATA_HOME/hookshot` when that is set). In it are your saves (`save`) and the settings (`hookshot_options.ini`,
-  `hookshot_env.txt`, and `language.txt` when you change the language there), so deleting or rebuilding the game folder
-  loses none of them. `--user <folder>` puts them somewhere else ([command line
-  arguments](#running-the-game-from-the-command-line)).
+  `hookshot_env.txt`), so deleting or rebuilding the game folder loses none of them. `--user <folder>` puts them
+  somewhere else ([command line arguments](#running-the-game-from-the-command-line)).
 - The game folder has two folders of its own the game writes: `cache`, the shader and pipeline caches (several GB, made
   for this version and this graphics card), and `logs`, `hookshot_log.txt` and the runs before it. `cache` can be
   deleted at any time: the next start prepares the shaders again (minutes on some PCs). Each game folder keeps its own,
   so a release and the nightly side by side do not undo each other's.
 - The first start of a build from before moves its files to these places (the saves from its `user` folder too) and
-  leaves `files-moved.txt` in the game folder saying where they went.
+  leaves `files-moved.txt` in the game folder saying where they went. If the old `user` folder was copied but could not
+  be deleted whole (a file in use or read-only), what is left is renamed `user.moved`: delete it once the game shows your
+  saves.
   The same folder has `ngx`, where DLSS's runtime can be put (see NVIDIA DLSS below), and on Linux the builder's own
   `builder` folder, with its installed updates. `--user` does not move those.
   To carry on with a save from an emulator (Lichii, Eglantine, Orchid, ...) or NX2navi, or to take yours there, see
@@ -224,7 +225,7 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
 | Windows, NVIDIA: stutter every start in places you have seen, after the shaders were prepared | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines into it). In the NVIDIA Control Panel, Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself |
-| The game is in the wrong language | Change the code in `language.txt` in the game folder (a `language.txt` in the data folder wins over it). The file lists them all |
+| The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
 you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files.

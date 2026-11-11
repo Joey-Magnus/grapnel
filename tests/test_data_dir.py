@@ -11,7 +11,11 @@ chose and the saves' folder. The program is copied into game folders built in a 
   language.txt (the builder's) stays, and the prompts made from the player's controls are deleted;
 - a file already where it goes is not written over: the game folder's copy stays where it is;
 - when a save entry cannot move (one of that name is there already), the saves stay in <game>/user together;
-- the game in bin/: the files come from the folder above it, the one with image.bin.
+- the game in bin/: the files come from the folder above it, the one with image.bin;
+- across file systems (the data folder on another drive, where a rename fails: /dev/shm against /tmp here), the saves are
+  copied and deleted; an entry that cannot be copied brings back the ones that went (all or none); a link is never copied
+  through, so the saves stay with it and the folder it points to is untouched; an original that cannot be deleted after its
+  copy leaves <game>/user renamed user.moved, so the next start keeps the data folder.
 
 python -I -B tests/test_data_dir.py [--cc gcc]
 """
@@ -72,6 +76,7 @@ def game_folder(root, built, in_bin=False):
         "mkw_vk_pipelines_play_3.bin": "play", "hookshot_programs.bin": "programs", "hookshot_programs.idx": "index",
         "hookshot_programs.bin.lock": "", "hookshot_pipelines.bin": "notes", "hookshot_prepared.bin": "prepared",
         "hookshot_shaders.bin": "seed", "hookshot_pipeline_states_shipped.bin": "shipped",
+        "hookshot_pipelines.bin.running": "1\n", "mkw_vk_pipelines_play_4.bin.tmp": "cut short",
     }
     for name, text in files.items():
         (root / name).write_text(text)
@@ -82,6 +87,72 @@ def game_folder(root, built, in_bin=False):
     (root / "user" / "save" / "0100" / "file").write_text("my save")
     (root / "user" / "mouse_sens.txt").write_text("1.5\n")
     return exe
+
+
+def other_fs(tmp, built):
+    """The cross-drive cases: the data folder on another file system than the game folder, so every save is a copy and delete"""
+    shm = Path("/dev/shm")
+    if not shm.is_dir() or not os.access(shm, os.W_OK) or os.stat(shm).st_dev == os.stat(tmp).st_dev:
+        print("cross-file-system cases skipped: no /dev/shm on another file system than %s" % tmp)
+        return
+    as_root = hasattr(os, "geteuid") and os.geteuid() == 0   # (permissions do not stop root: those cases need another user)
+    with tempfile.TemporaryDirectory(prefix="hookshot-data-dir-", dir=shm) as other:
+        other = Path(other)
+
+        # a plain copy and delete: everything arrives, <game>/user is gone
+        game = tmp / "e" / "game"
+        exe = game_folder(game, built)
+        data, user, out = run(exe, [], tmp / "e", other / "e")
+        assert user == data == other / "e" / "hookshot", (data, user, out)
+        assert (data / "save" / "0100" / "file").read_text() == "my save" and not (game / "user").exists(), out
+
+        # a link (here a symbolic link to an emulator's folder) is never copied through or deleted into: the saves stay
+        game = tmp / "f" / "game"
+        exe = game_folder(game, built)
+        emulator = tmp / "f" / "emulator-saves"
+        shutil.move(str(game / "user" / "save"), str(emulator))
+        os.symlink(emulator, game / "user" / "save")
+        data, user, out = run(exe, [], tmp / "f", other / "f")
+        assert user == game / "user", (user, out)
+        assert (emulator / "0100" / "file").read_text() == "my save" and (game / "user" / "save").is_symlink()
+        assert (game / "user" / "mouse_sens.txt").exists() and not (data / "mouse_sens.txt").exists(), out   # (all or none)
+        assert not (data / "save").exists()
+
+        if as_root:
+            print("cross-file-system permission cases skipped: run as root")
+            return
+
+        # one entry that cannot be copied (unreadable): the one that went comes back, and the saves stay whole in <game>/user
+        game = tmp / "g" / "game"
+        exe = game_folder(game, built)
+        (game / "user" / "present.txt").write_text("secret")
+        os.chmod(game / "user" / "present.txt", 0)
+        try:
+            data, user, out = run(exe, [], tmp / "g", other / "g")
+        finally:
+            os.chmod(game / "user" / "present.txt", 0o600)
+        assert user == game / "user", (user, out)
+        assert (game / "user" / "save" / "0100" / "file").read_text() == "my save" and (game / "user" / "mouse_sens.txt").exists()
+        assert not (data / "save").exists() and not (data / "mouse_sens.txt").exists(), out
+        assert "the saves stay in" in out, out
+
+        # copied whole, but the original cannot be deleted (a read-only folder): <game>/user is set aside as user.moved, and the
+        # next start keeps the data folder rather than going back to what was left
+        game = tmp / "h" / "game"
+        exe = game_folder(game, built)
+        os.chmod(game / "user" / "save" / "0100", 0o555)
+        try:
+            data, user, out = run(exe, [], tmp / "h", other / "h")
+            assert user == data == other / "h" / "hookshot", (user, out)
+            assert (data / "save" / "0100" / "file").read_text() == "my save"
+            assert not (game / "user").exists() and (game / "user.moved" / "save" / "0100" / "file").exists(), out
+            assert "set aside as" in out and "user.moved" in (game / "files-moved.txt").read_text(), out
+            _, user2, out = run(exe, [], tmp / "h", other / "h")
+            assert user2 == data, (user2, out)
+        finally:
+            for d in (game / "user.moved" / "save" / "0100", game / "user" / "save" / "0100"):
+                if d.exists():
+                    os.chmod(d, 0o755)
 
 
 def main():
@@ -98,7 +169,7 @@ def main():
                         "-o", str(built), "-lpthread", "-ldl"], check=True)
 
         CACHES = ("hookshot_vk_pipelines.bin", "hookshot_vk_pipelines_play_3.bin", "hookshot_programs.bin", "hookshot_programs.idx",
-                  "hookshot_pipelines.bin", "hookshot_prepared.bin")   # (the Vulkan pipeline cache renamed from mkw_vk_pipelines*)
+                  "hookshot_pipelines.bin", "hookshot_prepared.bin", "hookshot_pipelines.bin.running")   # (the Vulkan pipeline cache renamed from mkw_vk_pipelines*)
         LOGS = ("hookshot_log.txt", "hookshot_log.1.txt", "hookshot_startup.log")
         SETTINGS = ("hookshot_options.ini", "hookshot_env.txt")
 
@@ -106,7 +177,7 @@ def main():
             """the game folder's caches in its cache/, its logs in its logs/, none left loose"""
             for name in CACHES:
                 assert (game / "cache" / name).exists() and not (game / name).exists(), name
-            assert not list(game.glob("mkw_vk_pipelines*")) and not list((game / "cache").glob("mkw_vk_pipelines*"))
+            assert not list(game.glob("mkw_vk_pipelines*"))   # (the .tmp of a write cut short too)
             for name in LOGS:
                 assert (game / "logs" / name).exists() and not (game / name).exists(), name
             assert not (game / "hookshot_programs.bin.lock").exists()
@@ -160,14 +231,12 @@ def main():
         (xdg / "hookshot" / "hookshot_options.ini").write_text("mine\n")
         (game / "cache").mkdir(parents=True)
         (game / "cache" / "hookshot_programs.bin").write_text("newer")
-        (game / "cache" / "mkw_vk_pipelines_play_8.bin").write_text("old name in cache/")   # (an earlier build of the change)
         data, user, out = run(exe, [], tmp / "c", xdg)
         assert data == xdg / "hookshot" and user == game / "user", (data, user)
         assert (data / "hookshot_options.ini").read_text() == "mine\n" and (game / "hookshot_options.ini").exists()
         assert (game / "user" / "save" / "0100" / "file").exists() and (game / "user" / "mouse_sens.txt").exists()
         assert (game / "cache" / "hookshot_programs.bin").read_text() == "newer" and (game / "hookshot_programs.bin").exists()
         assert (game / "cache" / "hookshot_vk_pipelines.bin").exists()
-        assert (game / "cache" / "hookshot_vk_pipelines_play_8.bin").read_text() == "old name in cache/"
         assert "the saves stay in" in out and "stayed in the game folder" in out, out
 
         # the game in bin/ beside image.bin (the launcher's layout): the folder above bin/ is the game folder
@@ -179,9 +248,12 @@ def main():
         assert not (game / "bin" / "cache").exists() and not (game / "bin" / "logs").exists()
         assert data == xdg / "hookshot" and (data / "hookshot_options.ini").exists() and not (game / "hookshot_options.ini").exists()
         assert (data / "save" / "0100" / "file").exists()
+
+        other_fs(tmp, built)
     print("PASS: the caches and logs go into the game folder's cache/ and logs/ on every run; --user and a development run keep "
           "their folder; a builder's folder moves its settings and saves to the data folder once, writes nothing over, keeps the "
-          "saves together, and finds the folder above bin/")
+          "saves together, and finds the folder above bin/; across file systems the saves are copied all or none, never through "
+          "a link, and an original left behind is set aside")
 
 
 if __name__ == "__main__":

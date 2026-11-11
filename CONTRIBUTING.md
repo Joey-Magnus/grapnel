@@ -17,7 +17,7 @@ never will. That includes:
 - `work/` and everything in it: the extracted dump, `image.bin`, the lifted C, test builds, runs and screenshots;
 - `hookshot.exe`, `hookshot_vk.dll` and other build output;
 - anything in the game's data folder (`%LOCALAPPDATA%\Hookshot`, `~/.local/share/hookshot`, or `--user`'s): saves
-  (`save/`), `hookshot_options.ini`, `hookshot_env.txt`, `language.txt`;
+  (`save/`), `hookshot_options.ini`, `hookshot_env.txt`;
 - the game folder's `cache/` (`hookshot_programs.bin` and its `.idx`, `hookshot_pipelines.bin`, `hookshot_vk_pipelines.bin`).
 
 Do not open an issue or a PR asking where to get the game, how to decrypt it, or for someone else's files. A

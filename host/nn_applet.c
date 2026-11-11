@@ -17,8 +17,8 @@ static int64_t boot_ns;
 HLE(_ZN2nn2oe10InitializeEv) { if (!boot_ns) boot_ns = hos_now_ns(); }
 HLE(_ZN2nn2oe17FinishStartupLogoEv) { hos_log("oe: startup logo finished"); }
 /* GetDesiredLanguage() -> settings::LanguageCode (char[8]) by value: the language the game shows. HOS_LANGUAGE, or language.txt
-   in the data folder (host/hos_data.c), else the game folder's (the builder writes the build's language there): its first line
-   that is not blank or a comment. With neither, the data folder's is written on the first start, with the choices: the 16
+   in the game folder (the builder writes the build's language there, nx2/make_game.py): its first line that is not blank or
+   a comment. The file is written on the first start when there is none, with the choices: the 16
    languages in romfs/Mals. After SkyboundTotk PR 16 by sardigital. */
 static const struct { const char *code, *name; } languages[] = {
     {"en-US", "English (US)"},       {"en-GB", "English (UK)"},       {"fr", "French (France)"},     {"fr-CA", "French (Canada)"},
@@ -35,11 +35,10 @@ static const char *desired_language(void) {
         snprintf(want, sizeof want, "%s", getenv("HOS_LANGUAGE"));
         from = "HOS_LANGUAGE";
     } else {
-        char path[MAX_PATH] = "language.txt", mine[MAX_PATH] = "language.txt";
+        char path[MAX_PATH] = "language.txt";
 #if !defined(__EMSCRIPTEN__)   /* (linux too: host/posix) */
-        hos_data_path(mine, sizeof mine, "language.txt");
-        snprintf(path, sizeof path, "%s", mine);
-        if (GetFileAttributesA(mine) == INVALID_FILE_ATTRIBUTES) hos_game_file(path, sizeof path, "language.txt");
+        /* (the game folder's, not the data folder's: the build's own choice, which each game folder may make otherwise) */
+        hos_game_file(path, sizeof path, "language.txt");
 #endif
         FILE *f = fopen(path, "r");
         if (f) {
@@ -66,7 +65,7 @@ static const char *desired_language(void) {
                 break;
             }
             fclose(f);
-        } else if ((f = fopen(mine, "w")) != NULL) {
+        } else if ((f = fopen(path, "w")) != NULL) {
             fputs("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\nen-US\n\n", f);
             for (size_t i = 0; i < sizeof languages / sizeof *languages; i++) fprintf(f, "# %-8s %s\n", languages[i].code, languages[i].name);
             fclose(f);
