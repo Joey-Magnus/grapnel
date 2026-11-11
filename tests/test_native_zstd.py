@@ -10,6 +10,7 @@ zstd decoder over a small guest window, on frames made here with python-zstandar
 - failures answer as the game's wrapper does: a wrong checksum, a wrong or missing dictionary, a bad magic, an unknown
   content size or a header split from the first chunk -1, too little output room -2, bytes after the frame -3, a block split
   with too small a staging buffer -1; a failed or finished stream is left to the lifted code;
+- a DDict the game makes again in place for another dictionary with the same ID and size is taken anew;
 - nothing is done on the host and nothing written with the switch off, for a workspace that is not 8-byte aligned, for a
   DDict whose ID libzstd reads otherwise, or with all 64 host entries in use (and an entry is free again once its stream
   ends);
@@ -117,6 +118,7 @@ int main(int argc, char **argv) {
         Ctx c;
         memset(&c, 0, sizeof c);
         rd(c.x, 32);
+        const uint64_t g = c.x[0];
         memcpy(before, zs_mem, SIZE);
         memset(marks, 0, sizeof marks);
         aways = backs = 0;
@@ -128,6 +130,9 @@ int main(int argc, char **argv) {
         const int32_t rec[5] = {handled, changed, unmarked, aways, backs};
         fwrite(rec, 4, 5, out);
         fwrite(&c.x[0], 8, 1, out);
+        const int32_t st[2] = {*(uint8_t *)GP(g), (int32_t)G32(g + 20)};   /* (the object's state, still to come, output) */
+        fwrite(st, 4, 2, out);
+        fwrite(GP(g + 8), 8, 1, out);
     }
     fwrite(zs_mem, 1, SIZE, out);
     fclose(out);
@@ -173,6 +178,7 @@ def guest_ddict(d, kind):
     b = d.as_bytes()
     out = bytearray(0x6860)
     struct.pack_into("<QQ", out, 8, 0, len(b))   # (content filled in by place())
+    out[0x18:0x18 + min(len(b), 0x6800)] = b[:0x6800]   # (stands for the tables the game builds: other per dictionary)
     struct.pack_into("<3I", out, 0x6834, 1, 4, 8)
     struct.pack_into("<II", out, 0x6840, d.dict_id() if kind == "full" else 0, 1 if kind == "full" else 0)
     return out, b
@@ -242,8 +248,8 @@ def run(exe, tmp, ops, mode="1", pre=()):
     if r.returncode:
         raise Crash("the fixture stopped with %#x" % (r.returncode & 0xFFFFFFFF))
     raw = res.read_bytes()
-    calls = [struct.unpack_from("<5iQ", raw, 28 * k) for k in range(len(ops))]
-    mem = raw[28 * len(ops):]
+    calls = [struct.unpack_from("<5iQiiQ", raw, 44 * k) for k in range(len(ops))]
+    mem = raw[44 * len(ops):]
     return calls, mem
 
 
@@ -266,7 +272,7 @@ class Checker:
 
 
 def check_calls(chk, name, calls, mode="1"):
-    for k, (h, changed, unmarked, aways, backs, x0) in enumerate(calls):
+    for k, (h, changed, unmarked, aways, backs, x0, *_) in enumerate(calls):
         chk(unmarked == 0, "%s: call %d changed %d page(s) without a mark after the change" % (name, k, unmarked))
         if h:
             chk(aways == backs and aways == (1 if mode == "1" else 0) or (aways == backs == 0 and signed(x0) == -1),
@@ -275,15 +281,17 @@ def check_calls(chk, name, calls, mode="1"):
             chk(changed == 0, "%s: call %d left to the lifted code but wrote %d page(s)" % (name, k, changed))
 
 
-def good(chk, exe, tmp, name, data, frame, split, d=None, kind=None, seed=0):
+def good(chk, exe, tmp, name, data, frame, split, d=None, kind=None, seed=0, mode="1"):
     pre = []
     dd = place(pre, 0, d, kind) if d else 0
-    calls, mem = run(exe, tmp, stream(0, frame, split, dd, s_init(0), seed), pre=pre)
-    check_calls(chk, name, calls)
+    calls, mem = run(exe, tmp, stream(0, frame, split, dd, s_init(0), seed), mode=mode, pre=pre)
+    check_calls(chk, name, calls, mode)
     chk(all(c[0] == 1 for c in calls), "%s: a call was not done on the host" % name)
     got = [signed(c[5]) for c in calls]
     chk(got[-1] == 0 and all(r >= 0 for r in got), "%s: results %s" % (name, got[-4:]))
-    chk(all(a >= b for a, b in zip(got, got[1:])), "%s: what is still to come grew: %s" % (name, got[:8]))
+    # (each result is what is still to come: the content less what is out; 0 only once all of it is)
+    chk(all(signed(c[5]) == c[7] == len(data) - (c[8] - DST) for c in calls if c[0]),
+        "%s: a result is not what is still to come: %s" % (name, [(signed(c[5]), c[7], c[8] - DST) for c in calls][:4]))
     st, dst, room, left, work, stage, cap, staged, ctx = field(mem, 0)
     chk(mem[DST - BASE:DST - BASE + len(data)] == data, "%s: the output is not the original" % name)
     chk((st, dst, room, left, staged, ctx) == (4, DST + len(data), DST_CAP - len(data), 0, 0, WORK),
@@ -348,6 +356,25 @@ def checks(exe, tmp, quick=False):
     check_calls(chk, "two streams", calls)
     chk(mem[DST - BASE:DST - BASE + len(mixed)] == mixed and mem[DST2 - BASE:DST2 - BASE + len(small)] == small
         and field(mem, 0)[0] == field(mem, 1)[0] == 4, "two streams: outputs")
+    same_a, same_b = (zstandard.train_dictionary(8192, [synth(k, 3000, s + i) for i in range(200)], dict_id=12345).as_bytes()
+                      for k, s in (("text", 500), ("mesh", 700)))
+    n = max(len(same_a), len(same_b))   # (the same size: a full dictionary's content is all past its header, so more at its end)
+    same_a, same_b = (zstandard.ZstdCompressionDict(x + synth("text", n - len(x), 9), dict_type=zstandard.DICT_TYPE_FULLDICT)
+                      for x in (same_a, same_b))
+    if len(same_a.as_bytes()) == len(same_b.as_bytes()) and same_a.dict_id() == same_b.dict_id():
+        pre = []
+        dd = place(pre, 0, same_a, "full")
+        tiny_a, tiny_b = synth("text", 300, 11), synth("mesh", 300, 12)   # (small frames use the dictionary's own tables)
+        ops = stream(0, compress(tiny_a, 3, True, same_a), "whole", dd, s_init(0))
+        second = stream(0, compress(tiny_b, 3, True, same_b), "whole", dd, s_init(0, DST2))
+        place(second[0][0], 0, same_b, "full")   # (the game makes its DDict again at the same place, for the other dictionary)
+        ops += second
+        calls, mem = run(exe, tmp, ops, pre=pre)
+        check_calls(chk, "DDict made again", calls)
+        chk(mem[DST2 - BASE:DST2 - BASE + len(tiny_b)] == tiny_b and signed(calls[-1][5]) == 0,
+            "DDict made again in place (same ID and size): the second frame %s" % [signed(c[5]) for c in calls][-2:])
+    else:
+        chk(False, "the two same-ID dictionaries differ in size: the DDict-made-again case does not run")
     # left to the lifted code: switch off, a misaligned workspace, a DDict libzstd reads another ID from, no free entry
     for name, mode, init, d in (("switch off", "0", s_init(0), None), ("misaligned workspace", "1", s_init(0, work=WORK + 1), None),
                                 ("DDict ID differs", "1", s_init(0), full)):
@@ -366,8 +393,7 @@ def checks(exe, tmp, quick=False):
         "64 entries: the 65th stream %s" % (calls[64][:2],))
     chk(calls[65][0] == 1 and signed(calls[65][5]) == 0 and calls[66][0] == 1, "64 entries: not free again after a stream ended")
     # the core kept with =2
-    calls, _ = run(exe, tmp, stream(0, compress(text), 4096, 0, s_init(0)), mode="2")
-    check_calls(chk, "HOS_NATIVE_ZSTD=2", calls, mode="2")
+    good(chk, exe, tmp, "HOS_NATIVE_ZSTD=2", text, compress(text), 4096, mode="2")
     return chk.failed
 
 

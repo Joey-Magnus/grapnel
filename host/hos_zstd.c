@@ -43,9 +43,15 @@
 #define ZS_STREAMS 64   /* stream objects decoding on the host at once (the game has a few decode threads) */
 #define ZS_DICTS 64     /* libzstd DDicts kept for the game's */
 
+/* the game's DDict: +8 its content, +16 the size, +0x18 up to +0x6840 the entropy tables it built (repeat offsets at
+   +0x6834), +0x6840 the dictID, +0x6844 whether it has entropy tables */
+#define ZS_TABLES 0x18
+#define ZS_TABLES_END 0x6840
 typedef struct ZsDict {
     uint64_t guest, content, size;   /* the game's DDict, its content and size */
-    uint32_t id, entropy, rep[3];    /* its dictID, entropy flag and repeat offsets: the same dictionary */
+    uint32_t id, entropy;            /* its dictID and entropy flag */
+    uint8_t *tables;                 /* its tables as they were: the same ones, the same dictionary (a DDict made again in
+                                        place for another dictionary with the same size and ID has other tables) */
     ZSTD_DDict *dd;
     int refs, live;                  /* streams using it; live 0 once the game's DDict at that address is another */
 } ZsDict;
@@ -91,11 +97,13 @@ static void zs_note(const char *why) {   /* (each kind of fallback logged once) 
 }
 
 /* (holding zs_lock) */
+static void zs_dict_free(ZsDict *d) {
+    ZSTD_freeDDict(d->dd);
+    free(d->tables);
+    memset(d, 0, sizeof *d);
+}
 static void zs_dict_put(ZsDict *d) {
-    if (d && --d->refs == 0 && !d->live) {
-        ZSTD_freeDDict(d->dd);
-        memset(d, 0, sizeof *d);
-    }
+    if (d && --d->refs == 0 && !d->live) zs_dict_free(d);
 }
 static void zs_free(ZsStream *s) {
     zs_used--;
@@ -109,8 +117,7 @@ static void zs_free(ZsStream *s) {
 static ZsDict *zs_dict_get(uint64_t g) {
     const uint64_t content = G64(g + 8), size = G64(g + 16);
     const uint32_t id = G32(g + 0x6840), entropy = G32(g + 0x6844);
-    uint32_t rep[3];
-    memcpy(rep, GP(g + 0x6834), sizeof rep);
+    const uint8_t *tables = (const uint8_t *)GP(g + ZS_TABLES);
     ZsDict *spot = NULL;
     for (int i = 0; i < ZS_DICTS; i++) {
         ZsDict *d = &zs_dict[i];
@@ -119,26 +126,28 @@ static ZsDict *zs_dict_get(uint64_t g) {
             continue;
         }
         if (!d->live || d->guest != g) continue;
-        if (d->content == content && d->size == size && d->id == id && d->entropy == entropy && !memcmp(d->rep, rep, sizeof rep)) {
+        if (d->content == content && d->size == size && d->id == id && d->entropy == entropy &&
+            !memcmp(d->tables, tables, ZS_TABLES_END - ZS_TABLES)) {
             d->refs++;
             return d;
         }
         d->live = 0;   /* the game made another DDict here: this one goes with its last stream */
         if (!d->refs) {
-            ZSTD_freeDDict(d->dd);
-            memset(d, 0, sizeof *d);
+            zs_dict_free(d);
             if (!spot) spot = d;
         }
     }
     if (!spot) return NULL;
     ZSTD_DDict *dd = ZSTD_createDDict_advanced(GP(content), (size_t)size, ZSTD_dlm_byRef,
                                                entropy ? ZSTD_dct_fullDict : ZSTD_dct_rawContent, ZSTD_defaultCMem);
-    if (!dd) return NULL;
-    if (ZSTD_getDictID_fromDDict(dd) != id) {
+    uint8_t *copy = malloc(ZS_TABLES_END - ZS_TABLES);
+    if (!dd || !copy || ZSTD_getDictID_fromDDict(dd) != id) {
         ZSTD_freeDDict(dd);
+        free(copy);
         return NULL;
     }
-    *spot = (ZsDict){g, content, size, id, entropy, {rep[0], rep[1], rep[2]}, dd, 1, 1};
+    memcpy(copy, tables, ZS_TABLES_END - ZS_TABLES);
+    *spot = (ZsDict){g, content, size, id, entropy, copy, dd, 1, 1};
     return spot;
 }
 
