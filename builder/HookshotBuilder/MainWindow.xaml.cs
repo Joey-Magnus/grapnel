@@ -39,6 +39,8 @@ public partial class MainWindow : Window
     readonly DispatcherTimer clock = new() { Interval = TimeSpan.FromSeconds(1) };
     readonly Stopwatch elapsed = new();
     readonly Stopwatch compileClock = new();
+    readonly Stopwatch shaderClock = new();   // (the shaders' step, and how far it is: Tick)
+    double shaderDone;
     readonly Dictionary<string, StepRow> rows = new();
     readonly Dictionary<string, (bool Ok, string Text)?> checks = new(StringComparer.OrdinalIgnoreCase);
     readonly List<Dump> dumps = new();
@@ -852,7 +854,8 @@ public partial class MainWindow : Window
             var id = line.Split(' ')[1];
             StepsLine(line);
             if (id == "compile") compileClock.Restart();
-            if (id == ShaderStep.Id) shadersBegan = true;
+            if (id == ShaderStep.Id) (shadersBegan, shaderDone) = (true, 0);
+            if (id == ShaderStep.Id) shaderClock.Restart();
             if (Weight.TryGetValue(id, out var w)) SetProgress(w.From);
             Tick();
         }
@@ -862,6 +865,7 @@ public partial class MainWindow : Window
                 && Weight.TryGetValue(current, out var w))
             {
                 if (current == "compile") compiled = f;
+                if (current == ShaderStep.Id) shaderDone = Math.Max(shaderDone, Math.Clamp(f, 0, 1));
                 SetProgress(w.From + w.Size * Math.Clamp(f, 0, 1));
             }
             return;
@@ -961,6 +965,8 @@ public partial class MainWindow : Window
             var count = row.Counted is { Length: > 0 } n ? " " + n : "";
             stepLine = $"{row.Name}...{count}" + (left.Length > 0 ? " · " + char.ToLowerInvariant(left[0]) + left[1..] : "");
         }
+        // (the shaders' step: its own number and time, as the bar has only a small share for it: LaunchWork.ShaderPart)
+        else if (current == ShaderStep.Id) stepLine = row.Name + "..." + LaunchWork.ShaderPart(shaderDone, shaderClock.Elapsed.TotalSeconds);
         else stepLine = row.Name + "...";
         Render();
     }

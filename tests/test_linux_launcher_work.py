@@ -107,6 +107,20 @@ for seconds, want in ((None, "around half an hour or more"), (1810, "about 30 mi
                       (3600, "about 1 h")):
     check("about(%r)" % seconds, lw.about(seconds), want)
 
+# ---- the shaders' step: its own number and time under the bar (its share of the bar is small, the step can be long) ----
+w = lw.Work("Updating to v2.2.0", update=True)
+w.line("@@stage shaders Preparing shaders")
+w.shader_started = 1000.0
+check("the shaders' step before a number", w.step_line(now=1005.0), "Prepare the shaders... 0%")
+w.line("@@progress 0.25")
+check("a quarter done in 10 minutes: 30 left", w.step_line(now=1600.0), "Prepare the shaders... 25% · 30 min left")
+check("too soon to tell: no time", w.step_line(now=1010.0), "Prepare the shaders... 25%")
+check("the build's usual time is not the shaders'", w.under_bar(1800, now=1600.0), "Rebuilding your game as v2.2.0\nPrepare the shaders... 25% · 30 min left")
+w.line("@@progress 0.1")
+check("its number never goes back", w.step_line(now=1600.0), "Prepare the shaders... 25% · 30 min left")
+w.line("@@progress nan")
+check("not a number moves nothing", w.step_line(now=1600.0), "Prepare the shaders... 25% · 30 min left")
+
 # ---- how long ----
 for seconds, want in ((20, "less than a minute left"), (60, "1 min left"), (1080, "18 min left"), (3900, "1 h 5 min left")):
     check("short_left(%d)" % seconds, lw.short_left(seconds), want)

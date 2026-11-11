@@ -58,6 +58,9 @@ class Work(object):
         self.says = "Getting its builder" if fetch else "Starting"   # (the line under the bar before a step is under way)
         self.done, self.error, self.cancelled, self.times, self.shaders_later = None, None, False, None, False
         self.started, self.compile_started, self.log = time.time(), None, []
+        # (the shaders' step: its share of the bar is small, but on some GPUs it takes as long as the compile. Its own number and
+        # a time from how fast it goes are said under the bar, so a bar near its end is not taken for a stuck one)
+        self.shader_done, self.shader_started = 0.0, None
         self.not_prepared = not_prepared   # (make_game.py's line when the shaders' step is left to the game's first start)
         # (the menu's steps: [id, name, state, the small words at its right]; state: "wait", "now", "done", "stopped")
         self.steps = ([["download", "Get its builder", "now", ""]] if fetch else []) + \
@@ -117,13 +120,19 @@ class Work(object):
                 self.says = "Working"   # (a stage this launcher has no words for)
             self.compile_started = time.time() if key == "compile" else None
             self.eta = -1.0
+            if key == "shaders":
+                self.shader_done, self.shader_started = 0.0, time.time()
         elif line.startswith("@@progress "):
             try:
                 f = float(line[11:])
             except ValueError:
                 return
+            if math.isnan(f):   # (not a number: moves nothing; inf is the end, clamped below)
+                return
             if self.stage in SHARES:
                 self.reach(self.whole(SHARES[self.stage][0] + SHARES[self.stage][1] * min(max(f, 0.0), 1.0)))
+            if self.stage == "shaders":
+                self.shader_done = max(self.shader_done, min(max(f, 0.0), 1.0))
         elif line.startswith("@@plan "):
             p = line.split(" ")
             if len(p) == 3 and p[1].isdigit():
@@ -169,14 +178,21 @@ class Work(object):
         verb = self.title.split(" ")[0] if self.title.split(" ")[0] in ("Building", "Updating", "Switching") else "Working"
         return "%s... %d%%" % (verb, int(self.fraction * 100))
 
-    def step_line(self):
-        """the one line under the bar: the step under way, "Read the game files...", "Compile 31 of 58 · 18 min left" """
+    def step_line(self, now=None):
+        """the one line under the bar: the step under way, "Read the game files...", "Compile 31 of 58 · 18 min left",
+        "Prepare the shaders... 25% · 30 min left" """
         if self.stage is None:
             return self.says + ("" if self.says.endswith("...") else "...")
         row = self.step(self.stage)
         if self.stage == "compile":
             files = " %d of %d" % (self.compiled, self.changed) if self.changed > 0 else ""
             return "Compile%s · %s" % (files, short_left(self.eta) if self.eta >= 0 else "estimating...")
+        if self.stage == "shaders":
+            line = "%s... %d%%" % (row[1] if row else self.says, int(self.shader_done * 100))
+            gone = ((time.time() if now is None else now) - self.shader_started) if self.shader_started else 0
+            if 0.02 <= self.shader_done < 1 and gone >= 20:
+                line += " · " + short_left(gone / self.shader_done * (1 - self.shader_done))
+            return line
         return (row[1] if row else self.says) + "..."
 
     def rebuild_line(self):
@@ -189,8 +205,9 @@ class Work(object):
         """the two lines under an update's bar: that it is a rebuild, then the step and the time left. Until the compile
         gives its own time, the time is what a build took on this PC before (typical, in seconds; None when none was kept)
         less the time gone"""
-        step = self.step_line()
-        if not (self.stage == "compile" and self.eta >= 0) and typical:
+        step = self.step_line(now)
+        # (the build's usual time has no shaders in it: their step has its own, step_line)
+        if not (self.stage == "compile" and self.eta >= 0) and self.stage != "shaders" and typical:
             left = typical - ((time.time() if now is None else now) - self.started)
             if left >= 90:
                 waiting = " · estimating..."

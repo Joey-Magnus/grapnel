@@ -35,6 +35,10 @@ sealed class LaunchWork
     int changed = -1, compiled;
     double eta = -1;
     string says;
+    // (the shaders' step: its own share of the bar is small, but on some GPUs it takes as long as the compile. Its own number and
+    // a time worked out from how fast it goes are said under the bar, so a bar near its end is not taken for a stuck one)
+    double shaderDone;
+    DateTime shaderStarted;
 
     /// name: the version, as written ("v2.2.0"); ahead: it is ahead of the one the folder holds (an update), else a switch back;
     /// fetch: its builder is not on this PC and is downloaded first
@@ -56,6 +60,7 @@ sealed class LaunchWork
     {
         get
         {
+            if (stage == ShaderStep.Id) return says + ShaderPart(shaderDone, (DateTime.Now - shaderStarted).TotalSeconds);
             if (stage != "compile") return says;
             var files = changed > 0 ? $" ({compiled} of {changed})" : "";
             return says + files + (eta >= 0 ? " · " + TimeLeft(eta) : "");
@@ -70,7 +75,8 @@ sealed class LaunchWork
     public string Note(double? typical, double elapsed)
     {
         var step = Detail;
-        if (!(stage == "compile" && eta >= 0) && typical is double t && t - elapsed >= 90) step += " · " + TimeLeft(t - elapsed);
+        // (the build's usual time has no shaders in it: their step has its own, ShaderPart)
+        if (!(stage == "compile" && eta >= 0) && stage != ShaderStep.Id && typical is double t && t - elapsed >= 90) step += " · " + TimeLeft(t - elapsed);
         return Rebuild + "\n" + step;
     }
 
@@ -109,6 +115,7 @@ sealed class LaunchWork
         else if (line.StartsWith("@@stage "))
         {
             stage = line[8..].Trim().Split(' ')[0];
+            if (stage == ShaderStep.Id) (shaderDone, shaderStarted) = (0, DateTime.Now);
             if (Stages.TryGetValue(stage, out var s))
             {
                 says = s.Says;
@@ -120,7 +127,10 @@ sealed class LaunchWork
         {
             if (stage != null && Stages.TryGetValue(stage, out var s)
                 && double.TryParse(line[11..], NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
+            {
                 Reach(Whole(s.From + s.Size * Math.Clamp(f, 0, 1)));
+                if (stage == ShaderStep.Id) shaderDone = Math.Max(shaderDone, Math.Clamp(f, 0, 1));
+            }
         }
         else if (line.StartsWith("@@plan "))
         {
@@ -141,6 +151,15 @@ sealed class LaunchWork
     /// (make_game.py's share of the whole: all of it when nothing is downloaded first)
     double Whole(double f) => fetch ? Fetch + (1 - Fetch) * f : f;
     void Reach(double f) => Fraction = Math.Max(Fraction, Math.Clamp(f, 0, 1));
+
+    /// (the shaders' step, under the bar: " · 25% · about 30 minutes left", the time from how fast it has gone so far, once it
+    /// has gone far enough to tell)
+    public static string ShaderPart(double done, double seconds)
+    {
+        var part = $" · {(int)(done * 100)}%";
+        if (done >= 0.02 && done < 1 && seconds >= 20) part += " · " + TimeLeft(seconds / done * (1 - done));
+        return part;
+    }
 
     public static string TimeLeft(double seconds)
     {

@@ -151,7 +151,12 @@ static class Program
         // (the shaders' step, where the version has it: the game's own lines, passed on by make_game.py, and its plain one
         // when it left them to the first start)
         Feed(w, "@@stage finish", "@@stage shaders Preparing the shaders", "@@progress 0.5");
-        Require(Math.Abs(w.Fraction - (0.12 + 0.88 * 0.96)) < 1e-9 && w.Detail == "Preparing the shaders", $"the shaders' step has its share: {w.Fraction}, {w.Detail}");
+        Require(Math.Abs(w.Fraction - (0.12 + 0.88 * 0.96)) < 1e-9 && w.Detail == "Preparing the shaders · 50%", $"the shaders' step has its share, and its own number: {w.Fraction}, {w.Detail}");
+        // (the shaders' own time, from how fast the step goes: its share of the bar is small and the step can be as long as the compile)
+        Require(LaunchWork.ShaderPart(0.25, 600) == " · 25% · about 30 minutes left", LaunchWork.ShaderPart(0.25, 600));
+        Require(LaunchWork.ShaderPart(0.25, 10) == " · 25%" && LaunchWork.ShaderPart(0.01, 600) == " · 1%" && LaunchWork.ShaderPart(1, 600) == " · 100%",
+                "no time until it can be told, and none at the end");
+        Require(w.Note(1800, 60) == "Rebuilding your game as v2.2.0\nPreparing the shaders · 50%", "the build's usual time is not the shaders': " + w.Note(1800, 60));
         Feed(w, "the shaders were not prepared now (no usable Vulkan here): the game prepares them at its first start");
         Require(w.Done == null && w.Error == null, "shaders left to the first start are not a failure");
         Feed(w, @"@@done C:\Games\Hookshot");
