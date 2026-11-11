@@ -344,6 +344,9 @@ void hos_display_loop(void) {
                     hos_posix_window[0] = 1;
                     break;
                 case HOS_SDL_EV_FOCUS_LOST:
+                    /* macOS can emit focus-lost while the window still owns keyboard focus (Metal view /
+                       occlusion churn). Drop the event when SDL still reports us focused. */
+                    if (hos_sdl_window_focused(window)) break;
                     hos_posix_window[0] = 0;
                     esc_had_capture = 0;
                     mouse_capture(0);
@@ -358,9 +361,11 @@ void hos_display_loop(void) {
                     break;
                 case HOS_SDL_EV_MOUSE_ENTER:
                     ptr_in = 1;
+                    if (hos_sdl_window_focused(window)) hos_posix_window[0] = 1;
                     break;
                 case HOS_SDL_EV_KEY_DOWN: {
                     const int scancode = e.scancode, mod = e.mod;
+                    hos_posix_window[0] = 1;   /* a key delivered here means the window is in front */
                     if (e.scancode == 41) {   /* Esc (it may open the Insert menu too: the capture comes back) */
                         if (!menu_open && mouse_captured) esc_had_capture = 1;
                         mouse_capture(0);
@@ -370,6 +375,7 @@ void hos_display_loop(void) {
                 }
                 case HOS_SDL_EV_MOUSE_DOWN:
                     ptr_in = 1;
+                    hos_posix_window[0] = 1;   /* a click in the window recovers from a spurious focus loss */
                     ptr_held |= sdl_button_bit(e.button);
                     if (menu_open) pointer_publish_at(e.x, e.y, sdl_button_bit(e.button), 0);   /* (the menu's click) */
                     else if (renderer && !mouse_captured) mouse_capture(1);
@@ -409,6 +415,10 @@ void hos_display_loop(void) {
             hos_window_closed_exit();
         }
         pointer_update(0, 0);
+#ifdef __APPLE__
+        /* Metal/occlusion churn can clear focus while SDL still reports the window focused. */
+        if (!hos_posix_window[0] && hos_sdl_window_focused(window)) hos_posix_window[0] = 1;
+#endif
         keys_update();
     }
 }

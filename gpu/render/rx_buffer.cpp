@@ -730,14 +730,19 @@ namespace {
 std::vector<std::pair<uint64_t, uint64_t>> dispatch_writes;
 }
 void note_dispatch_write(uint64_t gpu_va, uint64_t size) {
-    // Always sync small results the CPU reads (OoT's exposure meter is a page). Full sync stays opt-in:
-    // RX_SYNC_DISPATCH_WRITES=1. RX_NO_SMALL_DISPATCH_SYNC=1 turns the small path off.
+    // Always sync a prefix the CPU may read (OoT's exposure meter is a page). Large SSBO bindings still
+    // only write back the first RX_SMALL_DISPATCH_SYNC bytes (default 64 KiB) unless
+    // RX_SYNC_DISPATCH_WRITES=1 asks for the whole range. RX_NO_SMALL_DISPATCH_SYNC=1 turns the prefix off.
     static const bool all = getenv("RX_SYNC_DISPATCH_WRITES") != nullptr;
     static const bool no_small = getenv("RX_NO_SMALL_DISPATCH_SYNC") != nullptr;
     static const uint64_t small_limit = getenv("RX_SMALL_DISPATCH_SYNC")
                                            ? strtoull(getenv("RX_SMALL_DISPATCH_SYNC"), nullptr, 0)
                                            : (64ull << 10);
-    if (!all && (no_small || size > small_limit)) return;
+    if (!size) return;
+    if (!all) {
+        if (no_small) return;
+        size = std::min(size, small_limit);
+    }
     for (auto& [v, n] : dispatch_writes)
         if (v == gpu_va) { n = std::max(n, size); return; }
     dispatch_writes.push_back({gpu_va, size});

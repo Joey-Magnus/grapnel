@@ -2425,7 +2425,9 @@ void surface_present(WGPUTextureView view, uint32_t sw, uint32_t sh, int32_t ww,
         static int logged;
         if (logged++ < 8) hos_log("rx: no surface texture (status %d)", (int)st.status);
         if (st.texture) wgpuTextureRelease(st.texture);
-        configure_surface(surface_w, surface_h);
+        // Occluded (Metal/macOS): surface stays valid — skip the frame. Reconfiguring here blacked the window.
+        if (st.status != WGPUSurfaceGetCurrentTextureStatus_Occluded)
+            configure_surface(surface_w, surface_h);
         if (view) wgpuTextureViewRelease(view);
         return;
     }

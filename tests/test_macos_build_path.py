@@ -178,6 +178,25 @@ with tempfile.TemporaryDirectory() as tmp:
         self.assertIn('GET(Metal_CreateView, "SDL_Metal_CreateView")', sdl)
         self.assertIn("WIN_METAL", sdl)
 
+    def test_macos_runtime_guards_occluded_focus_and_posix_paths(self):
+        """Metal Occluded must not reconfigure; focus recovers; save mounts use / on POSIX."""
+        renderer = (ROOT / "gpu" / "render" / "rx_core.cpp").read_text(encoding="utf-8")
+        headers = (ROOT / "gpu" / "render" / "rx_internal.h").read_text(encoding="utf-8")
+        window = (ROOT / "host" / "posix" / "display_sdl.c").read_text(encoding="utf-8")
+        fs = (ROOT / "host" / "nn_fs.c").read_text(encoding="utf-8")
+        sdl = (ROOT / "host" / "hos_sdl.c").read_text(encoding="utf-8")
+        self.assertIn("WGPUSurfaceGetCurrentTextureStatus_Occluded", headers)
+        present = renderer[renderer.index("void surface_present("):renderer.index("void present_on_submit_thread(")]
+        self.assertIn("WGPUSurfaceGetCurrentTextureStatus_Occluded", present)
+        self.assertLess(present.index("Occluded"), present.index("configure_surface(surface_w, surface_h)"))
+        self.assertIn("hos_sdl_window_focused(window)", window)
+        self.assertIn("hos_posix_window[0] = 1;   /* a click in the window recovers", window)
+        self.assertIn("!hos_posix_window[0] && hos_sdl_window_focused(window)", window)
+        self.assertIn("int hos_sdl_window_focused(void *window)", sdl)
+        self.assertIn('#define FS_SEP_S "/"', fs)
+        self.assertIn('"%s" FS_SEP_S "save" FS_SEP_S "%016llx%016llx"', fs)
+        self.assertIn("depth texture", (ROOT / "gpu" / "render" / "rx_texture.cpp").read_text(encoding="utf-8"))
+
     def test_linux_guest_memory_optimizations_are_guarded_from_macos(self):
         source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
         self.assertIn("#ifdef __linux__\n    /* The window is a memfd's", source)

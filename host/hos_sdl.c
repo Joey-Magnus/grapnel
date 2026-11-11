@@ -16,7 +16,7 @@ static struct {
     void *CreateWindow, *SetWindowPosition, *SetWindowFullscreen, *SetRelativeMouseMode, *GetPrimaryDisplay,
         *GetDesktopDisplayMode, *Vulkan_CreateSurface, *PixelSize, *GetKeyboardState, *GetMouseState, *WaitEventTimeout,
         *PollEvent, *GetWindowSize, *LoadPNG, *SetWindowIcon, *DestroySurface, *GetWindowDisplay, *GetCurrentDisplayMode,
-        *Metal_CreateView, *Metal_GetLayer;
+        *Metal_CreateView, *Metal_GetLayer, *GetWindowFlags, *GetKeyboardFocus;
     /* sound */
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
@@ -61,6 +61,8 @@ static int get_all(HMODULE m, int three) {
     GET(GetKeyboardState, "SDL_GetKeyboardState");
     GET(GetMouseState, "SDL_GetMouseState");
     GET(GetWindowSize, "SDL_GetWindowSize");
+    *(FARPROC *)&f.GetWindowFlags = GetProcAddress(m, "SDL_GetWindowFlags");
+    *(FARPROC *)&f.GetKeyboardFocus = GetProcAddress(m, "SDL_GetKeyboardFocus");
     GET(WaitEventTimeout, "SDL_WaitEventTimeout");
     GET(PollEvent, "SDL_PollEvent");
     GET2(PadOpen, "SDL_OpenGamepad", "SDL_GameControllerOpen");
@@ -245,6 +247,13 @@ void hos_sdl_mouse_position(float *x, float *y) {
 void hos_sdl_window_size(void *window, int *width, int *height) {
     if (version == 3) CALL(_Bool (*)(void *, int *, int *), GetWindowSize)(window, width, height);
     else CALL(void (*)(void *, int *, int *), GetWindowSize)(window, width, height);
+}
+int hos_sdl_window_focused(void *window) {
+    if (!window) return 0;
+    if (f.GetKeyboardFocus && CALL(void *(*)(void), GetKeyboardFocus)() == window) return 1;
+    /* SDL2/SDL3: SDL_WINDOW_INPUT_FOCUS is 0x200 */
+    if (f.GetWindowFlags && (CALL(uint32_t (*)(void *), GetWindowFlags)(window) & 0x200u)) return 1;
+    return 0;
 }
 
 /* ---- events ---- */

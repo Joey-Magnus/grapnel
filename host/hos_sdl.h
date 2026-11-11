@@ -32,6 +32,7 @@ const uint8_t *hos_sdl_keys(int *count);   /* the keyboard by scancode (USB HID 
 uint32_t hos_sdl_mouse_buttons(void);   /* 1 left, 2 middle, 4 right */
 void hos_sdl_mouse_position(float *x, float *y);   /* main thread, window-coordinate units */
 void hos_sdl_window_size(void *window, int *width, int *height);   /* (in the units of the mouse's position, not pixels) */
+int hos_sdl_window_focused(void *window);   /* 1 when this window has keyboard focus (0 if unknown) */
 void hos_sdl_icon(void *window, const char *png);   /* (SDL 3.4's PNG loader: nothing on SDL2 or an older SDL3) */
 
 /* ---- events, as the window's loop wants them ---- */

@@ -40,6 +40,10 @@ bool wgpuDevicePoll(WGPUDevice device, bool wait, const void* submission);   // 
 #define RX_WEB 0
 #include <webgpu/wgpu.h>
 #endif
+// wgpu-native Metal extension: window occluded (0x00030001). Skip the frame; do not reconfigure the surface.
+#ifndef WGPUSurfaceGetCurrentTextureStatus_Occluded
+#define WGPUSurfaceGetCurrentTextureStatus_Occluded ((WGPUSurfaceGetCurrentTextureStatus)0x00030001)
+#endif
 // (macOS port) Samplers shared past 16 a stage, as the WGSL backend declares them (wgsl_emit_context.cpp SetupTextures):
 // browsers allow 16, and so does Metal. With 17 or 18 OoT's pixel programs' layouts were invalid there, and every
 // batch holding one of their draws was dropped: the 3D white after the opening

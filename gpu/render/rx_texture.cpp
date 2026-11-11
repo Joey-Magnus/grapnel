@@ -651,8 +651,10 @@ std::unique_ptr<Image> decode(const TICEntry& tic, const TexInfo& info_in, uint6
     im->storage = astc_gpu;
     im->dimension = info.dimension;
     WGPUTextureDescriptor d{};
-    d.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst | WGPUTextureUsage_CopySrc |
-              (astc_gpu ? WGPUTextureUsage_StorageBinding : 0);
+    const bool depth_tex = is_depth_format(format);
+    d.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopySrc |
+              (depth_tex ? WGPUTextureUsage_RenderAttachment
+                         : (WGPUTextureUsage_CopyDst | (astc_gpu ? WGPUTextureUsage_StorageBinding : 0)));
     d.dimension = info.dimension;
     d.size = {decode_any_compressed ? info.size.width : physical_width,
               decode_any_compressed ? info.size.height : physical_height, im->layers};
@@ -675,6 +677,59 @@ std::unique_ptr<Image> decode(const TICEntry& tic, const TexInfo& info_in, uint6
         log_limited("tex_create", 16, "rx: texture %ux%u x%u format %d not created: %s", info.size.width,
                     info.size.height, info.layers, (int)info.format, error.c_str());
         return nullptr;
+    }
+
+    // WebGPU forbids queueWriteTexture into depth. Clear via a pass (CPU depth uploads are rare: ~2/run on OoT).
+    if (depth_tex) {
+        static int logged;
+        if (logged++ < 8)
+            hos_log("rx: depth texture %ux%u format %d: clear instead of CPU write", info.size.width, info.size.height,
+                    (int)info.format);
+        if (!deferring && im->tex) {
+            WGPUCommandEncoder e = wgpuDeviceCreateCommandEncoder(dev.device, nullptr);
+            for (u32 level = 0; level < info.levels; level++) {
+                for (u32 layer = 0; layer < im->layers; layer++) {
+                    WGPUTextureViewDescriptor vd{};
+                    vd.format = format;
+                    vd.dimension = WGPUTextureViewDimension_2D;
+                    vd.baseMipLevel = level;
+                    vd.mipLevelCount = 1;
+                    vd.baseArrayLayer = layer;
+                    vd.arrayLayerCount = 1;
+                    vd.aspect = WGPUTextureAspect_DepthOnly;
+                    WGPUTextureView v = wgpuTextureCreateView(im->tex, &vd);
+                    WGPURenderPassDepthStencilAttachment da{};
+                    da.view = v;
+                    da.depthLoadOp = WGPULoadOp_Clear;
+                    da.depthStoreOp = WGPUStoreOp_Store;
+                    da.depthClearValue = 1.0f;
+                    if (format == WGPUTextureFormat_Depth24PlusStencil8 ||
+                        format == WGPUTextureFormat_Depth32FloatStencil8) {
+                        da.stencilLoadOp = WGPULoadOp_Clear;
+                        da.stencilStoreOp = WGPUStoreOp_Store;
+                        da.stencilClearValue = 0;
+                    }
+                    WGPURenderPassDescriptor pd{};
+                    pd.depthStencilAttachment = &da;
+                    WGPURenderPassEncoder p = wgpuCommandEncoderBeginRenderPass(e, &pd);
+                    wgpuRenderPassEncoderEnd(p);
+                    wgpuRenderPassEncoderRelease(p);
+                    wgpuTextureViewRelease(v);
+                }
+            }
+            WGPUCommandBuffer cb = wgpuCommandEncoderFinish(e, nullptr);
+            wgpuQueueSubmit(dev.queue, 1, &cb);
+            wgpuCommandBufferRelease(cb);
+            wgpuCommandEncoderRelease(e);
+        }
+        im->content_hash = sample_hash(va, total);
+        im->decoded_frame = frame_number;
+        im->guest_bytes = total;
+        if (!rx_side_thread) {
+            im->checked_frame = frame_number;
+            im->decoded_seq = memory_seq();
+        }
+        return im;
     }
 
     const LevelInfo li{info.size, info.block, tile, BytesPerBlockLog2(bpp), info.tile_width_spacing, info.levels};
