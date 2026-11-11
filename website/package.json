@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node scripts/prepare-content.mjs && astro dev --host 127.0.0.1",
     "build": "node scripts/prepare-content.mjs && astro build",
+    "build:preview": "node scripts/build-preview.mjs",
     "preview": "astro preview --host 127.0.0.1",
     "check": "node scripts/check-site.mjs && node --test tests/*.test.mjs"
   },

@@ -2,11 +2,15 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { siteConfig } from '../site.config.mjs';
+import { contentSources } from '../content-sources.mjs';
+import { verifyCompatibilitySources } from './verify-compatibility-sources.mjs';
 
 const site = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(site, 'dist');
-const origin = 'https://bibigurl-yum.github.io';
-const base = '/Hookshot/';
+await verifyCompatibilitySources(path.join(site, '..'));
+const origin = siteConfig.origin;
+const base = siteConfig.base;
 const bug = 'https://github.com/NotRexed/Hookshot/issues/new/choose';
 const files = [];
 async function walk(dir) {
@@ -17,6 +21,11 @@ async function walk(dir) {
   }
 }
 await walk(dist);
+const publishedRoutes = new Set([...contentSources.values(), '', 'about', 'antivirus', 'compatibility', '404.html']);
+for (const file of files) {
+  const route = path.relative(dist, file).replaceAll(path.sep, '/').replace(/\/?index\.html$/, '');
+  assert(publishedRoutes.has(route), `Unexpected published page: ${route}`);
+}
 const ids = new Map();
 for (const file of files) {
   const html = await readFile(file, 'utf8');
@@ -29,6 +38,11 @@ for (const file of files) {
   const route = base + path.relative(dist, file).replaceAll(path.sep, '/').replace(/index\.html$/, '');
   assert(html.includes(`href="${bug}"`), `Missing Report a bug link: ${route}`);
   assert(/<h1\b/.test(html), `Missing page heading: ${route}`);
+  for (const [, editUrl] of html.matchAll(/href="(https:\/\/github\.com\/[^\"]+\/edit\/[^\"]+)"/g)) {
+    assert(editUrl.startsWith(siteConfig.editBase), `Wrong edit repository: ${editUrl}`);
+    const source = editUrl.slice(siteConfig.editBase.length);
+    await stat(path.join(site, '..', source));
+  }
   for (const match of html.matchAll(/<(a|img|script|link)\b[^>]*?\b(?:href|src)="([^"]+)"/g)) {
     const [, tag, raw] = match;
     if (/^(?:data:|mailto:|tel:|javascript:)/.test(raw)) continue;

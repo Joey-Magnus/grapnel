@@ -1,11 +1,10 @@
 ---
 title: About this preview
 description: A community documentation preview for Hookshot, built with Astro Starlight.
-editUrl: https://github.com/bibigurl-yum/Hookshot/edit/docs/starlight-preview/website/src/content/docs/about.md
 ---
 
-This documentation preview is maintained on **bibigurl-yum's fork** of Hookshot. It is not the official
-Hookshot documentation. The upstream maintainers decide whether to adopt and host it.
+This is a community documentation proposal for Hookshot. The upstream maintainers decide whether to adopt and host it.
+A [live preview](https://bibigurl-yum.github.io/Hookshot/) is maintained on bibigurl-yum's fork.
 
 The site uses the original Hookshot logo from the project's README.
 
@@ -17,17 +16,17 @@ game dumps, or decryption keys. You must supply your own supported copy of the g
 ## Using the docs
 
 Browse the guides in the sidebar, or search with **Ctrl/Cmd + K**. The common-issues page links to the original
-GitHub responses and identifies known workarounds and unresolved problems. **Report a bug** opens the issue forms
+GitHub responses as historical examples and links to the trackers for current status. **Report a bug** opens the issue forms
 in NotRexed's repository.
 
 ## Versions
 
 These docs follow the source branch, so some settings may not be in the latest stable release. Check your build
-and the release notes. Issue answers show when they were last checked; follow the linked threads for updates.
+and the release notes. Issue examples identify the original reports; follow their linked threads for current advice.
 A report closed as a duplicate does not mean the bug is fixed.
 
 The site builds from the Markdown files in the repository. See the
-[website instructions](https://github.com/bibigurl-yum/Hookshot/blob/docs/starlight-preview/website/README.md)
+[website instructions](https://github.com/NotRexed/Hookshot/blob/main/website/README.md)
 for editing and publishing.
 
 ## Project links

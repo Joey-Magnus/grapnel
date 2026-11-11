@@ -28,8 +28,8 @@ These docs follow the source branch. A setting described here may not be in the 
 version at the top of `hookshot_log.txt` and the [release notes](https://github.com/NotRexed/Hookshot/releases) before
 assuming a fix or feature is in your installation. Nightly builds are development builds.
 
-Hookshot is experimental. The [common-issues page](common-issues.md) separates temporary workarounds from unresolved
-reports; a closed duplicate does not mean the underlying bug has been fixed.
+Hookshot is experimental. The [common-issues page](common-issues.md) collects historical responses and links to
+the trackers for current advice. A closed duplicate does not mean the underlying bug has been fixed.
 
 ## Project links
 

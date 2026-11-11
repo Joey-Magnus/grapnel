@@ -1,7 +1,6 @@
 ---
 title: Is Hookshot a virus?
 description: The maintainer's explanation of Windows Defender alerts, signing status, and links to the source code.
-editUrl: https://github.com/bibigurl-yum/Hookshot/edit/docs/starlight-preview/website/src/content/docs/antivirus.md
 ---
 
 **The maintainer identifies the reported Windows Defender detections as false positives.**
@@ -27,5 +26,5 @@ for updates.
 ## Can I inspect it or build it myself?
 
 Yes. Hookshot is open source. You can [review the code](https://github.com/NotRexed/Hookshot)
-and follow the [development guide](/Hookshot/guides/development/) to build from source if you prefer that
+and follow the [development guide](https://github.com/NotRexed/Hookshot/blob/main/docs/development.md) to build from source if you prefer that
 to the provided binaries. Source availability makes review possible; it is not itself a security audit.

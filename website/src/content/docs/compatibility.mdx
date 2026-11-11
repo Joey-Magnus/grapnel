@@ -1,7 +1,6 @@
 ---
 title: Check build compatibility
 description: Compare your game version and PC with Hookshot's documented requirements.
-editUrl: https://github.com/bibigurl-yum/Hookshot/edit/docs/starlight-preview/website/src/content/docs/compatibility.mdx
 ---
 import CompatibilityChecker from '../../components/CompatibilityChecker.astro';
 
@@ -15,20 +14,17 @@ Your answers stay in this page. Nothing is uploaded or saved.
 Checked against the [upstream requirements](https://github.com/NotRexed/Hookshot#what-you-need)
 and [project status](https://github.com/NotRexed/Hookshot#project-status) on **November 10, 2026**.
 
-- **Game:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
-- **OS:** 64-bit Windows 10/11, or 64-bit Linux with glibc 2.35 or newer. The Linux AppImage also requires AVX2.
-- **Graphics:** Vulkan 1.3 and mesh shaders with a current driver. Listed GPU families include GeForce RTX 20 series and newer, Radeon RX 6000 series and newer, and Intel Arc.
-- **Memory and storage:** 16 GB RAM, 8 GB VRAM recommended, and about 60 GB free during the build.
+The calculator is reviewed against the README's requirements and GPU status. A website build stops if either
+source section changes, until the calculator has been reviewed again. The source links above contain the full requirements.
 
-Meeting these requirements does not guarantee a trouble-free run. AMD and Intel have known issues, and cards without
-mesh shaders are unsupported even though a partial fallback exists. The checker does not maintain a driver-version
-database; check the capabilities of your installed driver.
+This checks the selected requirements, not performance or stability. Confirm the capabilities of your installed driver;
+the checker does not maintain a driver-version database.
 
 ## Next steps
 
 - [Install Hookshot](/Hookshot/guides/getting-started/)
 - [Check common issues and workarounds](/Hookshot/guides/common-issues/)
 - [Read the Linux / Steam Deck tracker](https://github.com/NotRexed/Hookshot/issues/1000)
-- [Compare tested configurations](/Hookshot/guides/tested-configurations/)
+- [Compare tested configurations](https://github.com/NotRexed/Hookshot/blob/main/docs/tested-configurations.md)
 
 **We do not host, store, or distribute game files.** You need your own supported copy, and Hookshot builds it locally.

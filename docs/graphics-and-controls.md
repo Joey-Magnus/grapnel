@@ -1,47 +1,26 @@
 # Graphics and controls
 
-Press **F1** or, by default, **Insert** to open the menu. On a controller, use Home or Select + Start; a DualShock 4
-or DualSense touchpad click also opens it. Options are saved in `hookshot_options.ini` in the game folder.
-
-Rows marked **After restart** take effect when the game starts again. Save your progress before choosing
-**Restart now**. Some rows only appear when the build, GPU and driver support them.
+The README's [in-game menu reference](../readme.md#in-game-menu) lists the current shortcuts, options, defaults,
+and restart requirements. Use it when choosing settings for your build.
 
 ## Resolution and upscaling
 
-| Setting | What it controls |
-|---|---|
-| Render resolution | How many pixels the game draws for the 3D scene. Auto allows dynamic resolution. |
-| Upscaler | How the 3D scene reaches the output size: the game's own, DLSS/DLAA, or an available FSR mode. |
-| Output resolution | The size of the whole game frame, including the HUD. |
-| Window scaling filter | Scaling from that whole frame to the window, when the two sizes differ. |
-| Sharpness | The sharpening applied to the resulting picture. |
-
-The [reference manual](../readme.md#in-game-menu) lists supported sizes and modes. Some upscalers require specific
-hardware or an SDK enabled when building Hookshot.
+The menu reference explains render resolution, output resolution, upscalers, window scaling, and sharpness.
+Check it for the available modes and their hardware requirements before changing settings.
 
 ## Frame rate and frame generation
 
-**Game frame rate cap** limits the frames the game renders. **Frame generation** inserts additional displayed
-frames. A 60 FPS game cap with 2× frame generation can display 120 FPS without raising the game's simulation cap.
+A game-frame cap and frame generation control different things. See the
+[menu reference](../readme.md#in-game-menu) for the current explanation and advice on higher frame caps.
+For reports about boss timing or HUD artifacts, follow the
+[linked responses and trackers](common-issues.md).
 
-Keep the game cap at **60** for normal play while the
-[above-60 timing issue](https://github.com/NotRexed/Hookshot/issues/1742) remains unresolved. Higher caps have affected
-Gohma, cutscenes and other frame-counted systems. Frame generation can introduce ghosting and extra latency; switch
-it off when measuring the game's performance or diagnosing artifacts.
+## Comparing performance
 
-If the HUD shimmers, see the [frame-generation answer](common-issues.md#the-hud-ghosts-or-shimmers-with-frame-generation).
-
-## Choosing settings
-
-Choose a quality preset suited to your GPU's memory, keep the game cap at 60, and change one setting at a time.
-Compare the same route twice after preparation finishes. First-visit stutter and a slowdown that persists until
-restart are different symptoms; the [common-issues page](common-issues.md) explains what to report.
-
-On a computer with multiple GPUs, check **GPU device** and the `vk: device` entries in the log. For HDR, follow the
-[reference manual's requirements](../readme.md#in-game-menu) for your display and platform.
+Change one setting at a time and compare the same area. Follow the README's
+[performance-reporting instructions](../readme.md#low-fps-or-stutter) so the comparison includes useful log details.
 
 ## Controls
 
-Use the Controls tab for layout and bindings, and the [controls reference](../readme.md#controls) for the current
-shortcuts. Include both Hookshot's layout and the game's own control settings when reporting a mismatch. Known
-Xbox/PC layout reports are linked from [Common issues](common-issues.md#controller-buttons-do-not-match-the-selected-layout).
+Use the [controls reference](../readme.md#controls) for shortcuts and bindings. When reporting a mismatch, include
+both Hookshot's selected layout and the game's own control settings.

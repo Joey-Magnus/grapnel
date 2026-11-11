@@ -1,9 +1,10 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { siteConfig } from './site.config.mjs';
 
 export default defineConfig({
-  site: 'https://bibigurl-yum.github.io',
-  base: '/Hookshot',
+  site: siteConfig.origin,
+  base: siteConfig.base,
   trailingSlash: 'always',
   integrations: [starlight({
     title: 'Hookshot',
@@ -15,7 +16,7 @@ export default defineConfig({
       Hero: './src/components/Hero.astro',
       Footer: './src/components/Footer.astro',
     },
-    editLink: { baseUrl: 'https://github.com/bibigurl-yum/Hookshot/edit/docs/starlight-preview/' },
+    editLink: { baseUrl: siteConfig.editBase + 'website/' },
     tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 2 },
     sidebar: [
       { label: 'Overview', slug: '' },
@@ -34,13 +35,13 @@ export default defineConfig({
       ] },
       { label: 'Development', collapsed: true, items: [
         { label: 'Reference manual', slug: 'reference/manual' },
-        { label: 'Development', slug: 'guides/development' },
-        { label: 'Architecture', slug: 'guides/design' },
+        { label: 'Development ↗', link: 'https://github.com/NotRexed/Hookshot/blob/main/docs/development.md' },
+        { label: 'Architecture ↗', link: 'https://github.com/NotRexed/Hookshot/blob/main/docs/design.md' },
         { label: 'Contributing', slug: 'reference/contributing' },
-        { label: 'Technical notes', slug: 'guides/technical-notes' },
-        { label: 'Versioning', slug: 'guides/versioning' },
-        { label: 'Workflow', slug: 'guides/workflow' },
-        { label: 'Pipeline lists', slug: 'reference/pipeline-states' },
+        { label: 'Technical notes ↗', link: 'https://github.com/NotRexed/Hookshot/tree/main/docs' },
+        { label: 'Versioning ↗', link: 'https://github.com/NotRexed/Hookshot/blob/main/docs/versioning.md' },
+        { label: 'Workflow ↗', link: 'https://github.com/NotRexed/Hookshot/blob/main/docs/workflow.md' },
+        { label: 'Pipeline lists ↗', link: 'https://github.com/NotRexed/Hookshot/blob/main/assets/pipeline_states/README.md' },
       ] },
       { label: 'About the preview', slug: 'about' },
     ],

@@ -1,19 +1,16 @@
-import { readFile, writeFile, mkdir, readdir, rm, copyFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rm, copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { siteConfig } from '../site.config.mjs';
+import { contentSources } from '../content-sources.mjs';
+import { verifyCompatibilitySources } from './verify-compatibility-sources.mjs';
 
 const site = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(site, '..');
 const out = path.join(site, 'src/content/docs/generated');
-const base = '/Hookshot/';
-const pages = new Map();
-for (const name of await readdir(path.join(root, 'docs'))) {
-  if (!name.endsWith('.md') || name === 'README.md') continue;
-  pages.set(`docs/${name}`, `guides/${name.slice(0, -3)}`);
-}
-pages.set('readme.md', 'reference/manual');
-pages.set('CONTRIBUTING.md', 'reference/contributing');
-pages.set('assets/pipeline_states/README.md', 'reference/pipeline-states');
+await verifyCompatibilitySources(root);
+const base = siteConfig.base;
+const pages = new Map(contentSources);
 pages.set('docs/README.md', '');
 
 const assetDir = path.join(site, 'public/assets');
@@ -49,7 +46,7 @@ for (const [source, slug] of pages) {
   }).join('');
   const front = [
     '---', `title: ${JSON.stringify(title)}`, `slug: ${JSON.stringify(slug)}`,
-    `editUrl: ${JSON.stringify('https://github.com/bibigurl-yum/Hookshot/edit/docs/starlight-preview/' + source)}`,
+    `editUrl: ${JSON.stringify(siteConfig.editBase + source)}`,
     '---', '',
   ].join('\n');
   await writeFile(path.join(out, slug.replaceAll('/', '--') + '.md'), front + text);
