@@ -96,9 +96,18 @@ lists = ll.make_lists([], None, "v1.0.0", ["v0.9.0"], True, None, False)
 check("no answer: the folder's and the installed builder's", labels(lists["releases"]), ["v1.0.0", "v0.9.0"])
 check("no answer: picked", lists["picked"].tag, "v1.0.0")
 
-# ---- a pre-release behind the latest release is an old test build ----
+# ---- a pre-release of a release that is out: still listed (with pre-releases on), below its release ----
 lists = ll.make_lists([("v1.1.0", False, True), ("v1.1.0-rc.2", True, True)], "v1.1.0", "v1.1.0", [], True, None, False)
-check("a pre-release of the latest is not listed", lists["pre"], [])
+check("a pre-release of the latest is listed", [c.label for c in lists["pre"]], ["v1.1.0-rc.2"])
+check("below its release", [c.label for c in ll.tab_rows(lists, True)], ["v1.1.0 - Latest", "v1.1.0-rc.2"])
+# (Hookshot's own list today: the candidates came before their release; with older releases folded, the candidates among the
+# releases in sight are listed, the older ones' once they are unfolded)
+_today = [("v2.1.0", False, True), ("v2.1.0-rc.3", True, True), ("v2.1.0-rc.2", True, True), ("v2.1.0-rc.1", True, True)] + \
+    [("v2.0.%d" % n, False, True) for n in range(14, 7, -1)] + [("v2.0.8-rc.5", True, True), ("v2.0.8-rc.1", True, True)]
+lists = ll.make_lists(_today, "v2.1.0", "v2.1.0", [], True, None, False, in_sight=ll.SHOWN)
+check("the candidates of the releases in sight", [c.label for c in lists["pre"]], ["v2.1.0-rc.3", "v2.1.0-rc.2", "v2.1.0-rc.1"])
+lists = ll.make_lists(_today, "v2.1.0", "v2.1.0", [], True, None, True, in_sight=ll.SHOWN)
+check("unfolded, all of them", [c.label for c in lists["pre"]], ["v2.1.0-rc.3", "v2.1.0-rc.2", "v2.1.0-rc.1", "v2.0.8-rc.5", "v2.0.8-rc.1"])
 lists = ll.make_lists([("v1.1.0", False, True), ("v1.1.0-rc.2", True, True)], "v1.1.0", "v1.1.0-rc.2", [], True, None, False)
 check("the one the folder holds is", labels(lists["pre"]), ["v1.1.0-rc.2"])
 check("and it is the one picked", lists["picked"].title, "v1.1.0-rc.2 - Pre-release")

@@ -134,9 +134,15 @@ def make_lists(github, latest, built, builders, rebuilds, pick, open_older, in_s
     older = len(releases) - len(stay)
     if older < 2:   # (a row that says "1 older release" takes the place of the release itself)
         stay, older = releases, 0
-    # (a pre-release is shown while it is ahead of the latest release: once that is out it is an old test build. The one
-    # the folder holds, or the one picked, always is)
-    pre = [c for c in everything if c.kind == "pre" and (c.here or c.picked or not latest or newer(c.tag, latest))]
+    # (the pre-releases among the releases in sight, in version order: every one newer than the oldest release in sight, and
+    # all of them once the older releases are unfolded. Hookshot's release candidates come before their release (v2.1.0-rc.3,
+    # then v2.1.0), so one that is out is still listed, below its release. The one the folder holds, or the one picked,
+    # always is)
+    floor = None
+    if not open_older and older:
+        plain = [c for c in stay if not c.here and not c.picked]
+        floor = (plain or stay)[-1].tag
+    pre = [c for c in everything if c.kind == "pre" and (c.here or c.picked or floor is None or newer(c.tag, floor))]
     return {"all": everything, "releases": releases if open_older else stay, "older": older, "folded": older > 0 and not open_older,
             "pre": pre, "dev": [c for c in everything if c.kind == "dev"], "picked": picked}
 

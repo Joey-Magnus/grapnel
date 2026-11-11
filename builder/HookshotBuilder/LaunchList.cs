@@ -87,9 +87,12 @@ static class LaunchList
         var stay = releases.Where((c, i) => i < Newest || c.Here || c.Picked).ToList();
         var older = releases.Count - stay.Count;
         if (older < 2) (stay, older) = (releases, 0);   // (a row that says "1 older release" takes the place of the release itself)
-        // (a pre-release is shown while it is ahead of the latest release: once that is out it is an old test build. The one
-        // the folder holds, or the one picked, always is)
-        var pre = all.Where(c => c.Kind == LaunchKind.Pre && (c.Here || c.Picked || latest == null || Newer(c.Tag!, latest))).ToList();
+        // (the pre-releases among the releases in sight, in version order: every one newer than the oldest release in sight, and
+        // all of them once the older releases are unfolded. Hookshot's release candidates come before their release
+        // (v2.1.0-rc.3, then v2.1.0), so one that is out is still listed, below its release. The one the folder holds, or the
+        // one picked, always is)
+        var floor = open || older == 0 ? null : stay.Where(c => !c.Here && !c.Picked).LastOrDefault()?.Tag ?? stay.LastOrDefault()?.Tag;
+        var pre = all.Where(c => c.Kind == LaunchKind.Pre && (c.Here || c.Picked || floor == null || Newer(c.Tag!, floor))).ToList();
         return new Lists(all, open ? releases : stay, older, older > 0 && !open, pre, picked);
     }
 

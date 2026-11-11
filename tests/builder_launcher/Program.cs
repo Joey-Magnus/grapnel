@@ -56,7 +56,15 @@ static class Program
         l = LaunchList.Make(github, "v2.2.0", "v2.1.0", NoBuilders, true, null, false);
         Require(Names(l.Releases) == "v2.2.0 - Latest | v2.1.0 | v2.0.14" && l.Older == 0, "one older release is not folded: " + Names(l.Releases));
         Require(l.Releases[0].Arrow && l.Picked?.Tag == "v2.1.0", "the new release has the arrow; the folder's stays picked");
-        Require(l.Pre.Count == 0, "a pre-release of a release that is out is not listed");
+        Require(Names(l.Pre) == "v2.2.0-rc.1", "a pre-release of a release that is out is still listed, below its release");
+        // (Hookshot's own list today: the candidates came before their release, v2.1.0-rc.3 before v2.1.0; with older releases
+        // folded, the candidates among the releases in sight are listed, the older ones' only once they are unfolded)
+        var today = new List<ReleaseInfo> { R("v2.1.0"), R("v2.1.0-rc.3"), R("v2.1.0-rc.2"), R("v2.1.0-rc.1"), R("v2.0.14"), R("v2.0.13"),
+                                         R("v2.0.12"), R("v2.0.11"), R("v2.0.10"), R("v2.0.9"), R("v2.0.8"), R("v2.0.8-rc.5"), R("v2.0.8-rc.1") };
+        l = LaunchList.Make(today, "v2.1.0", "v2.1.0", NoBuilders, true, null, false);
+        Require(Names(l.Pre) == "v2.1.0-rc.3 | v2.1.0-rc.2 | v2.1.0-rc.1", "the candidates of the releases in sight: " + Names(l.Pre));
+        l = LaunchList.Make(today, "v2.1.0", "v2.1.0", NoBuilders, true, null, open: true);
+        Require(Names(l.Pre) == "v2.1.0-rc.3 | v2.1.0-rc.2 | v2.1.0-rc.1 | v2.0.8-rc.5 | v2.0.8-rc.1", "unfolded, all of them: " + Names(l.Pre));
         Require(LaunchList.Newer("v2.2.0", "v2.1.0") && LaunchList.Newer("v2.2.0", "v2.2.0-rc.1") && !LaunchList.Newer("v2.2.0-rc.1", "v2.2.0")
                 && !LaunchList.Newer("v2.1.0", "v2.1.0") && LaunchList.Newer("v2.2.0-rc.1", "v2.1.0"), "what is ahead of what");
         // (release candidates of one release, as Hookshot tags them: by their number, rc.10 after rc.9; an update from one to the
