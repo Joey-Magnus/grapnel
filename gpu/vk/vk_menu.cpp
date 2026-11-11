@@ -3758,7 +3758,8 @@ void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkP
          (unsigned long long)mb, tx_preset(preset));
 }
 
-int menu_vsync() { return env_on("RX_VK_FIFO") ? 1 : env_on("RX_VK_IMMEDIATE") ? 2 : opts.vsync; }
+// (the switches read once, at the first present: they are for the whole run, and each present asked twice)
+int menu_vsync() { static const int run = env_on("RX_VK_FIFO") ? 1 : env_on("RX_VK_IMMEDIATE") ? 2 : 0; return run ? run : opts.vsync; }
 bool resolution_auto() { return opts.resolution == 0; }
 int resolution_scale() {
     const float s = upscaler_rows::percent(opts.resolution) / 100.0f;

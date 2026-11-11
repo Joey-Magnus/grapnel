@@ -374,7 +374,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
       if (!want_write && hos_ultrawide_redirect(g, alt, sizeof alt)) snprintf(path, sizeof path, "%s", alt); }
     if (!want_write && hos_blank_cached_icon(g, path)) { if (away) hos_vcore_back(); RET(R_PATH_NOT_FOUND); return; }
     {   /* HOS_FS_OVERLAY=<folder> (a test): a file of the game's data found there is read in place of the game's own */
-        const char *ov = getenv("HOS_FS_OVERLAY");
+        static const char *ov;   /* (read once: every OpenFile asked the environment) */
+        static int looked;
+        if (!looked) ov = getenv("HOS_FS_OVERLAY"), looked = 1;
         const char *rel = !want_write && ov ? strstr(g, ":/") : NULL;
         if (rel) {
             char alt[HOS_FS_PATH];
