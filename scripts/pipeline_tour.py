@@ -802,57 +802,81 @@ def program_cache_count(log_path):
     return int(m[-1]) if m else None
 
 
+def chunks(a, part, size):
+    """A part's stops in runs of `size` (a fresh game each: one game's memory grows by about 1 GB an area and is not given back):
+    [(first stop's label or None, stops)]. The opening part, or size 0: one run"""
+    plan = plan_stops(a, part)
+    if not plan or not size:
+        return [(None, None)]
+    return [("%s (%s)" % (a["teleports"][plan[k][1]][0], plan[k][0]), min(size, len(plan) - k)) for k in range(0, len(plan), size)]
+
+
 def tour(args):
-    """The parts at once, each in a reflinked copy of the game folder, then merged"""
+    """The parts at once, each in a reflinked copy of the game folder and in runs of --chunk stops one after another, then merged"""
+    import threading
+    a = actions()
     parts = args.parts.split(",")
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
     t0 = time.monotonic()
-    procs = []
     copies = {part: os.path.abspath(args.game).rstrip("/") + "-tour-" + part for part in parts}
     for copy in copies.values():   # (all copies first: the parts start together)
         if not os.path.exists(copy):
             subprocess.run(["cp", "-a", "--reflink=always", os.path.abspath(args.game), copy], check=True)
     print("tour %s: game folders copied in %.0f s" % (args.name, time.monotonic() - t0), flush=True)
-    for part in parts:
-        copy = copies[part]
-        cmd = [sys.executable, "-I", os.path.abspath(__file__), "run", "--game", copy, "--out", out, "--name",
-               "%s-%s" % (args.name, part), "--part", part] + sum((["--env", e] for e in args.env), []) + \
-              sum((["--ini", i] for i in args.ini), [])
-        if part != "opening" and ("opening" in parts or (part != parts[0] and len(parts) > 1)):
-            cmd.append("--skip-opening")   # (the opening is watched whole once: by its own part, else by the first)
-        if args.cpus:   # (the tour's CPUs shared out between the parts)
-            mine = sorted(cpu_list(args.cpus))[parts.index(part)::len(parts)]
-            cmd += ["--cpus", ",".join(map(str, mine))]
-        if args.window:   # (each part in a window, one under the other)
-            cmd += ["--window", args.window, "--slot", str(parts.index(part))]
-        procs.append((part, copy, subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
-    rc = 0
-    lists = []
-    for part, copy, p in procs:
-        try:
+    results, running, lock = [], [], threading.Lock()
+
+    def part_runs(part):
+        for k, (first, stops) in enumerate(chunks(a, part, args.chunk)):
+            name = "%s-%s" % (args.name, part) + ("-%d" % k if first else "")
+            cmd = [sys.executable, "-I", os.path.abspath(__file__), "run", "--game", copies[part], "--out", out, "--name", name,
+                   "--part", part] + sum((["--env", e] for e in args.env), []) + sum((["--ini", i] for i in args.ini), [])
+            if first:
+                cmd += ["--first", first, "--stops", str(stops)]
+            if part != "opening" and ("opening" in parts or (part != parts[0] and len(parts) > 1) or k):
+                cmd.append("--skip-opening")   # (the opening is watched whole once: by its own part, else by the first)
+            if args.cpus:   # (the tour's CPUs shared out between the parts)
+                cmd += ["--cpus", ",".join(map(str, sorted(cpu_list(args.cpus))[parts.index(part)::len(parts)]))]
+            if args.window:   # (each part in a window, one under the other)
+                cmd += ["--window", args.window, "--slot", str(parts.index(part))]
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            with lock:
+                running.append(p)
             text = p.communicate()[0]
-        except KeyboardInterrupt:   # (stopped: each part ends its game and puts its files back first)
-            for _, _, q in procs:
-                if q.poll() is None:
-                    q.send_signal(signal.SIGINT)
-            for _, _, q in procs:
-                q.wait()
-            raise
-        print(text, end="")
-        rc |= p.returncode
-        lists.append(os.path.join(out, "%s-%s" % (args.name, part), "states.bin"))
-        if not args.keep:
+            with lock:
+                running.remove(p)
+                print(text, end="", flush=True)
+                results.append((part, os.path.join(out, name), p.returncode))
+
+    threads = [threading.Thread(target=part_runs, args=(part,), daemon=True) for part in parts]
+    for t in threads:
+        t.start()
+    try:
+        for t in threads:
+            while t.is_alive():
+                t.join(0.5)
+    except KeyboardInterrupt:   # (stopped: each run ends its game and puts its files back first)
+        with lock:
+            for q in running:
+                q.send_signal(signal.SIGINT)
+        for t in threads:
+            t.join()
+        raise
+    if not args.keep:
+        for copy in copies.values():
             shutil.rmtree(copy, ignore_errors=True)
+    rc = 0 if all(code == 0 for _, _, code in results) else 1
+    order = sorted(results, key=lambda r: (parts.index(r[0]), r[1]))
+    have = [os.path.join(d, "states.bin") for _, d, _ in order if os.path.exists(os.path.join(d, "states.bin"))]
     merged = os.path.join(out, "%s.bin" % args.name)
-    have = [x for x in lists if os.path.exists(x)]
     if have:
         merge(argparse.Namespace(out=merged, lists=have))
-    if args.publish and have and not rc:
-        rc = publish(have, [os.path.join(out, "%s-%s" % (args.name, part)) for part in parts], parts)
+    if args.publish and have and (not rc or args.publish_partial):
+        rc = publish(have, [d for _, d, _ in order], parts)
     elif args.publish:
-        print("tour %s: not published (a part failed or made no list)" % args.name)
-    print("tour %s: %.0f s in all, parts %s%s" % (args.name, time.monotonic() - t0, ",".join(parts), "" if not rc else " (a part failed)"))
+        print("tour %s: not published (a run failed or made no list: --publish-partial publishes anyway)" % args.name)
+    print("tour %s: %.0f s in all, parts %s, %d runs%s" % (args.name, time.monotonic() - t0, ",".join(parts), len(results),
+                                                         "" if not rc else " (a run failed)"))
     return rc
 
 
@@ -934,6 +958,8 @@ def main(argv=None):
     t.add_argument("--env", action="append", default=[])
     t.add_argument("--ini", action="append", default=[])
     t.add_argument("--keep", action="store_true", help="keep the parts' game folder copies")
+    t.add_argument("--chunk", type=int, default=8, help="stops a game, then a fresh one (one game grows ~1 GB an area); 0: no limit")
+    t.add_argument("--publish-partial", action="store_true", help="--publish even when a run failed")
     t.add_argument("--window", metavar="WxH", help="each part in a window (on Sway workspace 10)")
     t.add_argument("--publish", action="store_true",
                    help="write the repository's tour list (assets/pipeline_states/tour.bin.xz and tour.md) from the parts' lists")

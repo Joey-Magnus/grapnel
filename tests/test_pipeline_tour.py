@@ -116,6 +116,13 @@ def main():
     resumed = tour.plan_stops(a, "child", first="Market")
     if a["teleports"][resumed[0][1]][0] != "Market" or len(resumed) >= len(tour.plan_stops(a, "child")):
         fail("--first Market does not start the route there")
+    for part in tour.PARTS:   # (the runs of 8 stops cover the part's route, each starting where the one before ended)
+        runs = tour.chunks(a, part, 8)
+        covered = sum((tour.plan_stops(a, part, stops, first) for first, stops in runs), [])
+        if covered != tour.plan_stops(a, part):
+            fail("the %s part's runs of 8 stops are not its route" % part)
+    if tour.chunks(a, "opening", 8) != [(None, None)]:
+        fail("the opening part is not one run")
     if len([s for s in tour.route(a, stops=3) if s[0] == "visit"]) != 3:
         fail("--stops 3 is not three stops")
 
