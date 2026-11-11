@@ -224,6 +224,19 @@ PAUSE_TOUR = presses([(0, "PLUS"), (0.8, "ZR"), (1.5, "ZR"), (2.2, "ZR"), (2.9, 
                       (5.7, "ZL"), (6.4, "B"), (6.9, "B")])
 PAUSE_SPAN = 7.4
 
+# Water: at these stops Link arrives swimming; A held dives (the scales are given). As adult the pause menu's Equipment page then
+# puts on the iron boots and the Zora tunic (its cursor starts on the Echo Gem in a new game: up is the iron boots, right then down
+# the tunics' row), the stop is reached again, and Link walks the lake's bottom; the boots come off after
+DIVE_AT = {"Lake Hylia"}
+DIVE = presses([(0, "A/4000")])
+DIVE_SPAN = 4.5
+UNDERWATER_GEAR = presses([(0, "PLUS"), (0.8, "ZL"), (1.2, "ZL"), (1.6, "ZL"), (2.0, "ZR"), (2.6, "UP"), (3.0, "A"), (3.5, "RIGHT"),
+                           (3.9, "DOWN"), (4.3, "RIGHT"), (4.7, "RIGHT"), (5.1, "A"), (5.6, "B"), (6.1, "B")])
+GEAR_SPAN = 6.6
+BOOTS_OFF = presses([(0, "PLUS"), (0.8, "ZL"), (1.2, "ZL"), (1.6, "ZL"), (2.0, "ZR"), (2.6, "LEFT"), (3.0, "LEFT"), (3.4, "LEFT"),
+                     (3.8, "A"), (4.3, "B"), (4.8, "B")])   # (from the Zora tunic: left three times is the iron boots again)
+BOOTS_SPAN = 5.3
+
 
 PARTS = ("all", "child", "adult", "opening", "child-overworld", "child-dungeons", "adult-overworld", "adult-dungeons", "dungeons",
          "extras")
@@ -268,7 +281,7 @@ def route(a, part="all", stops=None, first=None):
     age = "child"
     for k, (want, i) in enumerate(plan_stops(a, part, stops, first)):
         if want != age:
-            steps.append(("age",))
+            steps += [("age",), ("items",)]   # (the adult's equipment is only given to the adult: a child's add is lost)
             age = want
         steps.append(("visit", want, i, k))
     if part == "extras":
@@ -280,7 +293,7 @@ def route(a, part="all", stops=None, first=None):
             extras = extras[at[0]:]
         for x in extras[:stops] if stops is not None else extras:
             if x[3] != age:
-                steps.append(("age",))
+                steps += [("age",), ("items",)]
                 age = x[3]
             steps.append(("extra",) + x)
     return steps
@@ -735,6 +748,7 @@ def run(args):
     error = None
     mark = [0.0, 0]
     misses = acts = 0
+    dived = False
 
     def count(label):
         nonlocal seen
@@ -801,8 +815,28 @@ def run(args):
                     continue
                 misses = 0
                 g.note("arrived: %s" % where)
+                if name in DIVE_AT:
+                    g.send(DIVE)
+                    g.frames(int(DIVE_SPAN * FPS))
                 g.send(LOOK)
                 g.frames(int(LOOK_SPAN * FPS))
+                if name in DIVE_AT and age == "adult" and not dived:
+                    dived = True
+                    count("%s (%s)" % (name, age))
+                    g.send(UNDERWATER_GEAR)
+                    g.frames(int(GEAR_SPAN * FPS))
+                    try:   # (arrived again, in the water: with the boots Link sinks to the bottom)
+                        teleport(g, a["teleport"] + i, lambda st: True, limit_frames=60 * 60)
+                        g.frames(300)
+                        g.send(LOOK)
+                        g.frames(int(LOOK_SPAN * FPS))
+                        g.settle(150, 600)
+                        count("%s (%s) underwater" % (name, age))
+                    except Failed as e:
+                        g.note("underwater missed: %s" % e)
+                    g.send(BOOTS_OFF)
+                    g.frames(int(BOOTS_SPAN * FPS))
+                    continue
                 if name in ACT_AT:
                     pick, span = pause_pick(acts)
                     acts += 1

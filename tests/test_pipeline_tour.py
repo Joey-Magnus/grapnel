@@ -135,7 +135,7 @@ def main():
 
     # the presses: buttons host/nn_hid.c knows, in its <seconds>:<button>[+<button>][/<ms>] form, each within its step's span
     known = set(re.findall(r'\{"([A-Z]+)", (?:B_|-1)', hid))
-    texts = [(tour.LOOK, tour.LOOK_SPAN), (tour.ACT, tour.ACT_SPAN), (tour.PAUSE_TOUR, tour.PAUSE_SPAN), (tour.SKIP, tour.SKIP_EVERY / tour.FPS)]
+    texts = [(tour.LOOK, tour.LOOK_SPAN), (tour.ACT, tour.ACT_SPAN), (tour.PAUSE_TOUR, tour.PAUSE_SPAN), (tour.SKIP, tour.SKIP_EVERY / tour.FPS), (tour.DIVE, tour.DIVE_SPAN), (tour.UNDERWATER_GEAR, tour.GEAR_SPAN), (tour.BOOTS_OFF, tour.BOOTS_SPAN)]
     texts += [tour.pause_pick(k) for k in range(25)]
     for text, span in texts:
         for press in text.split(","):
