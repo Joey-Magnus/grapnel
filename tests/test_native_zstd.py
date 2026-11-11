@@ -13,8 +13,8 @@ zstd decoder over a small guest window, on frames made here with python-zstandar
 - nothing is done on the host and nothing written with the switch off, for a workspace that is not 8-byte aligned, for a
   DDict whose ID libzstd reads otherwise, or with all 64 host entries in use (and an entry is free again once its stream
   ends);
-- every page changed is marked for the GPU mirror (HOS_WRITTEN), and the virtual core is given up and taken back once a call
-  (kept with HOS_NATIVE_ZSTD=2);
+- every page changed is marked for the GPU mirror (HOS_WRITTEN) after its last change, and the virtual core is given up and
+  taken back once a call (kept with HOS_NATIVE_ZSTD=2);
 - a broken copy (the staging buffer's fill never stored) must fail.
 
 Byte-for-byte equality with the game's own decoder (f_80115c80 run in Unicorn on the game's image) needs the game: checked
@@ -78,12 +78,13 @@ FIXTURE = r'''
 #include "hos.h"
 #define SIZE 0x%xull
 uint8_t *zs_mem;
-static uint8_t marks[SIZE >> 12];
+static uint8_t marks[SIZE >> 12], *shadow;   /* (a page as it was at its last mark: the GPU mirror may copy it then) */
 static int aways, backs;
 void zs_mark(const void *p, size_t n) {
     const size_t a = (size_t)((const uint8_t *)p - zs_mem);
     if (n && a < SIZE)
-        for (size_t q = a >> 12; q <= (a + n - 1) >> 12 && q < (SIZE >> 12); q++) marks[q] = 1;
+        for (size_t q = a >> 12; q <= (a + n - 1) >> 12 && q < (SIZE >> 12); q++)
+            marks[q] = 1, memcpy(shadow + (q << 12), zs_mem + (q << 12), 4096);
 }
 int hos_vcore_away(void) { aways++; return 1; }
 void hos_vcore_back(void) { backs++; }
@@ -98,6 +99,7 @@ int main(int argc, char **argv) {
     in = fopen(argv[1], "rb");
     FILE *out = fopen(argv[2], "wb");
     zs_mem = calloc(1, SIZE);
+    shadow = malloc(SIZE);
     uint8_t *before = malloc(SIZE);
     uint32_t nops;
     rd(zs_mem, SIZE);
@@ -121,7 +123,8 @@ int main(int argc, char **argv) {
         const int32_t handled = hos_zstd_stream(&c);
         int32_t changed = 0, unmarked = 0;
         for (size_t q = 0; q < SIZE >> 12; q++)
-            if (memcmp(before + (q << 12), zs_mem + (q << 12), 4096)) changed++, unmarked += !marks[q];
+            if (memcmp(before + (q << 12), zs_mem + (q << 12), 4096))   /* (unmarked, or written after its last mark) */
+                changed++, unmarked += !marks[q] || memcmp(shadow + (q << 12), zs_mem + (q << 12), 4096);
         const int32_t rec[5] = {handled, changed, unmarked, aways, backs};
         fwrite(rec, 4, 5, out);
         fwrite(&c.x[0], 8, 1, out);
@@ -264,7 +267,7 @@ class Checker:
 
 def check_calls(chk, name, calls, mode="1"):
     for k, (h, changed, unmarked, aways, backs, x0) in enumerate(calls):
-        chk(unmarked == 0, "%s: call %d changed %d page(s) without marking them" % (name, k, unmarked))
+        chk(unmarked == 0, "%s: call %d changed %d page(s) without a mark after the change" % (name, k, unmarked))
         if h:
             chk(aways == backs and aways == (1 if mode == "1" else 0) or (aways == backs == 0 and signed(x0) == -1),
                 "%s: call %d gave the core up %d times and took it back %d" % (name, k, aways, backs))

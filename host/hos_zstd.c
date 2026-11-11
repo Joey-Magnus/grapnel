@@ -317,10 +317,10 @@ int hos_zstd_stream(Ctx *c) {
     } else if (!(s = zs_take(g, 0, 0, NULL))) {
         return 0;   /* (a stream that started lifted) */
     }
-    HOS_WRITTEN(GP(g), 56);
     const int away = mode == 1 ? hos_vcore_away() : 0;
     const int32_t ret = zs_chunk(s->z, g, src, n);
     if (away) hos_vcore_back();
+    HOS_WRITTEN(GP(g), 56);   /* (after its last write: a mark taken by the GPU mirror's scan in between would miss them) */
     zs_give(s, S_STATE(g) == 3 || S_STATE(g) == 4);
     c->x[0] = (uint32_t)ret;
     return 1;
