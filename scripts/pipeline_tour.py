@@ -175,6 +175,14 @@ EXTRAS = [
     ("Ganondorf's room", "GanonCastle", "RestartPos_Ganondorf_BossBattle", "adult"),
     ("Ganon's arena", "GanonCastle", "FinalBattle_BossInStartPos", "adult"),
 ]
+# The same rooms with the boss's own entrance scene as the arrival event (the teleport's third word: "!teleport <map> <start>
+# <event>", in place of Dm_SY_BancChangeArrive), to try: --part extras --first "<label>, its entrance scene" --stops 1
+BOSS_IN = {"Gohma's room": "Dm_Deku_BossIn", "King Dodongo's room": "Dm_DodongoCave_BossIn",
+           "Barinade's room": "Dm_InsideJabu_Jabu_BossIn", "Phantom Ganon's room": "Dm_ForestTemple_BossIn",
+           "Volvagia's room": "Dm_FireTemple_BossIn", "Morpha's room": "Dm_WaterTemple_BossIn",
+           "Bongo Bongo's room": "Dm_ShadowTemple_BossIn", "Twinrova's room": "Dm_SpiritTemple_BossIn",
+           "Ganondorf's room": "Dm_InsideGanonCastle_BossIn", "Ganon's arena": "Dm_FinalBattle_BossIn"}
+EXTRAS += [(label + ", its entrance scene", banc, start, age) for label, banc, start, age in list(EXTRAS) if label in BOSS_IN]
 # Game Over: the "gameover" part (its own run: hearts are not protected there) takes Link, a child, to the crater, whose heat
 # empties his hearts; A now and then chooses Continue on the Game Over screen
 GAME_OVER_AT = "Death Mountain Crater"
@@ -278,7 +286,7 @@ def plan_stops(a, part="all", stops=None, first=None):
     # (a stop the game will not teleport out of goes last: the next map change after it is the next run's)
     ages = [age for age, _ in plan]
     plan = sorted(plan, key=lambda x: (ages.index(x[0]), a["teleports"][x[1]][0] in LAST))   # (last within its age)
-    if first:   # (a run that starts again at a stop: "<name>" or "<name> (<age>)", as the report names them)
+    if first and part not in ("extras", "gameover", "opening"):   # (a run that starts again at a stop: "<name>" or "<name> (<age>)", as the report names them)
         labels = ["%s (%s)" % (a["teleports"][i][0], age) for age, i in plan]
         at = [k for k, (lab, (age, i)) in enumerate(zip(labels, plan)) if first in (lab, a["teleports"][i][0])]
         if not at:
@@ -975,9 +983,10 @@ def run(args):
                 count("Game Over")
             elif kind == "extra":
                 _, label, banc, start_pos, age = step
+                event = BOSS_IN.get(label.split(", its entrance scene")[0]) if label.endswith(", its entrance scene") else None
                 try:
-                    where = teleport(g, "!teleport %s %s" % (banc, start_pos), lambda st, banc=banc: st["map"].startswith(banc),
-                                     limit_frames=60 * 60 * 2)
+                    where = teleport(g, "!teleport %s %s" % (banc, start_pos) + (" " + event if event else ""),
+                                     lambda st, banc=banc: st["map"].startswith(banc), limit_frames=60 * 60 * 2)
                 except Failed as e:
                     misses += 1
                     g.note("missed: %s" % e)
