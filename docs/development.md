@@ -94,7 +94,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | Switch | What it does |
 |---|---|
 | `HOS_INPUT_SCRIPT=<presses>` | Presses timed from the game's first controller read |
-| `HOS_INPUT_LIVE=<file>` | A file the test appends lines of presses to, read every 30 ms; each line's times count from when it is read. A line `!cheat <n>` sends a Cheats page action (`!cheat 998`, which no menu row sends: a `cheats: state:` line with the map, whether an event plays or a map loads, and Link's age), `!synclog` logs the NVN syncs (`!dump`, `!shots`, `!rdoc` and `!flasharm` are the WebGPU renderer's) |
+| `HOS_INPUT_LIVE=<file>` | A file the test appends lines of presses to, read every 30 ms; each line's times count from when it is read. A line `!cheat <n>` sends a Cheats page action (`!cheat 998`, which no menu row sends: a `cheats: state:` line with the map, whether an event plays or a map loads, and Link's age), a line `!teleport <map> <start position> [<arrival event>]` a map change no menu row names (a boss's room, for the pipeline tour), `!synclog` logs the NVN syncs (`!dump`, `!shots`, `!rdoc` and `!flasharm` are the WebGPU renderer's) |
 | `HOS_INPUT_FRAME_CLOCK=1` | The script's time runs at 60 game frames a second instead of the wall clock |
 | `HOS_INPUT_EXCLUSIVE`, `HOS_INPUT_BACKGROUND`, `HOS_INPUT_SCRIPT_BACKGROUND` (set) | As above; the last lets every device count while the window is behind another one |
 | `RX_VK_MENU_SCRIPT=<seconds>:<key>,...` | Timed Insert menu keys: `INS`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, `ENTER`, `TABL`, `TABR` |

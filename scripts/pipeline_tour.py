@@ -137,6 +137,26 @@ LEFT_OUT = {("adult", "Sacred Forest Meadow"): "Sheik's lesson starts on arrival
             # (runs 2-4, ~/.cache/hookshot-work/tour/route-value.txt: what only these met, against everything else)
             ("child", "Lost Woods"): "20 pipelines no other stop met", ("adult", "Lost Woods"): "7",
             ("child", "Sacred Forest Meadow"): "4"}
+# Rooms no Teleport destination reaches, by the game's own map and start position names ("!teleport <map> <start>": host/hos_main.c):
+# the boss arenas and the sages' rooms, and the boss rush's rooms (DreamWorld). The "extras" part visits them, the child ones
+# first. (label, map, start position, age)
+EXTRAS = [
+    ("Gohma's room", "InsideTheDekuTree", "Gohma_BattleStartPos", "child"),
+    ("Deku Tree, after Gohma", "InsideTheDekuTree", "StartPos_Get_StoneOfForest", "child"),
+    ("King Dodongo's room", "DodongoCavern", "StartPos_Get_StoneOfFire", "child"),
+    ("Barinade's room", "InsideJabuJabuBelly", "StartPos_StoneOfWater", "child"),
+    ("Big Octo's room", "InsideJabuJabuBelly", "StartPos_Get_StoneOfWater_MiddleBoss", "child"),
+    ("Boss rush", "DreamWorld", "StartPos_SubEvent_AllBossBattle", "child"),
+    ("Phantom Ganon's room", "ForestTemple", "StartPos_SageOfForest", "adult"),
+    ("Volvagia's room", "FireTemple", "StartPos_SageOfFire", "adult"),
+    ("Morpha's room", "WaterTemple", "StartPos_SageOfWater", "adult"),
+    ("Dark Link's room", "WaterTemple", "StartPos_SageOfWater_MiddleBoss", "adult"),
+    ("Bongo Bongo's room", "ShadowTemple", "StartPos_SageOfShadow", "adult"),
+    ("Shadow Temple's ship", "ShadowTemple", "StartPos_SageOfShadow_BattleOnShip", "adult"),
+    ("Twinrova's room", "SpiritTemple", "StartPos_SageOfSpirit", "adult"),
+    ("Ganondorf's room", "GanonCastle", "RestartPos_Ganondorf_BossBattle", "adult"),
+    ("Ganon's arena", "GanonCastle", "FinalBattle_BossInStartPos", "adult"),
+]
 # Stops the game does not teleport out of (the request is refused: "result 0"), visited last in their part
 LAST = {"Haunted Wasteland"}
 # Where Link uses his items and their effects (one picked from the pause menu, a different one each time): a few stops per age,
@@ -201,7 +221,8 @@ PAUSE_TOUR = presses([(0, "PLUS"), (0.8, "ZR"), (1.5, "ZR"), (2.2, "ZR"), (2.9, 
 PAUSE_SPAN = 7.4
 
 
-PARTS = ("all", "child", "adult", "opening", "child-overworld", "child-dungeons", "adult-overworld", "adult-dungeons", "dungeons")
+PARTS = ("all", "child", "adult", "opening", "child-overworld", "child-dungeons", "adult-overworld", "adult-dungeons", "dungeons",
+         "extras")
 
 
 def plan_stops(a, part="all", stops=None, first=None):
@@ -215,7 +236,7 @@ def plan_stops(a, part="all", stops=None, first=None):
     under = lambda plan: [(age, i) for age, i in plan if i >= first_dungeon]
     plan = {"all": child + adult, "child": child, "adult": adult, "opening": [], "child-overworld": over(child),
             "dungeons": under(child) + under(adult), "adult-overworld": over(adult), "child-dungeons": under(child),
-            "adult-dungeons": under(adult)}[part]
+            "adult-dungeons": under(adult), "extras": []}[part]
     plan = [(age, i) for age, i in plan if (age, a["teleports"][i][0]) not in LEFT_OUT]
     # (a stop the game will not teleport out of goes last: the next map change after it is the next run's)
     ages = [age for age, _ in plan]
@@ -246,6 +267,18 @@ def route(a, part="all", stops=None, first=None):
             steps.append(("age",))
             age = want
         steps.append(("visit", want, i, k))
+    if part == "extras":
+        extras = [x for x in EXTRAS if x[3] == "child"] + [x for x in EXTRAS if x[3] == "adult"]
+        if first:
+            at = [k for k, x in enumerate(extras) if x[0] == first]
+            if not at:
+                raise SystemExit("pipeline_tour: no extra stop %r" % first)
+            extras = extras[at[0]:]
+        for x in extras[:stops] if stops is not None else extras:
+            if x[3] != age:
+                steps.append(("age",))
+                age = x[3]
+            steps.append(("extra",) + x)
     return steps
 
 
@@ -453,8 +486,9 @@ def teleport(g, action, want, limit_frames=60 * 60 * 3, limit_s=300):
     """A map change (a teleport or the age switch): sent, sent again while the game is busy (an event playing, a request in
     progress, a map loading) or when it did not take it; done once the game's state says it is in the map wanted (want(state)),
     nothing loading and no event playing (the arrival's own scene over). Returns that state"""
+    line = action if isinstance(action, str) else "!cheat %d" % action   # (or a "!teleport <map> <start>" line)
     if g.dry:
-        g.note("!cheat %d" % action)
+        g.note(line)
         return {"map": "?"}
     start, end = g.frame, time.monotonic() + limit_s
     poll = Poll(g)
@@ -462,7 +496,7 @@ def teleport(g, action, want, limit_frames=60 * 60 * 3, limit_s=300):
     busy_since, unstick_at, unstick, refused = None, 0, 0, 0
     while True:
         if state == "send" and g.frame >= again_at:
-            g.send("!cheat %d" % action)
+            g.send(line)
             state, again_at = "wait", g.frame + 600   # (no answer in 10 s of game time: the action was not read, again)
         elif state == "wait" and g.frame >= again_at:
             state = "send"
@@ -481,7 +515,7 @@ def teleport(g, action, want, limit_frames=60 * 60 * 3, limit_s=300):
             elif said.startswith("teleport ") and "request sent" in said and said.rstrip().endswith("result 0"):
                 refused += 1   # (the event manager did not take it: in the Haunted Wasteland it never does)
                 if refused >= 5:
-                    raise Failed("the game did not take map change %d five times" % action)
+                    raise Failed("the game did not take map change %s five times" % action)
                 state, again_at = "send", g.frame + 120
             elif said.startswith("teleport ") and "request sent" in said:
                 state, again_at = "sent", g.frame + 900
@@ -494,7 +528,7 @@ def teleport(g, action, want, limit_frames=60 * 60 * 3, limit_s=300):
                 g.note("not taken (%s): again" % st)   # (sent between two events of a cutscene: the game let it go)
                 state, again_at = "send", g.frame
         if g.frame - start > limit_frames or time.monotonic() > end:
-            raise Failed("map change %d: not done after %d frames (%s, last state %s)" % (action, g.frame - start, state,
+            raise Failed("map change %s: not done after %d frames (%s, last state %s)" % (action, g.frame - start, state,
                                                                                             poll.last))
 
 
@@ -729,6 +763,24 @@ def run(args):
             elif kind == "age":
                 teleport(g, a["age"], lambda st: st["age"] == "adult")
                 count("age switched: adult")
+            elif kind == "extra":
+                _, label, banc, start_pos, age = step
+                try:
+                    where = teleport(g, "!teleport %s %s" % (banc, start_pos), lambda st, banc=banc: st["map"].startswith(banc),
+                                     limit_frames=60 * 60 * 2)
+                except Failed as e:
+                    misses += 1
+                    g.note("missed: %s" % e)
+                    count("%s (%s): MISSED" % (label, age))
+                    if misses >= 3:
+                        raise Failed("three stops in a row missed: %s" % e)
+                    continue
+                misses = 0
+                g.note("arrived: %s" % where)
+                g.send(LOOK)
+                g.frames(int(LOOK_SPAN * FPS))
+                g.settle(150, 600)
+                count("%s (%s)" % (label, age))
             elif kind == "visit":
                 _, age, i, k = step
                 name = a["teleports"][i][0]

@@ -781,8 +781,20 @@ static struct {
     unsigned destination;
 } teleport;
 
+/* (test runs: scripts/pipeline_tour.py) A destination of the live input's own, "!teleport <map> <start position> [<arrival event>]"
+   (host/nn_hid.c): a room no menu row names, as a boss's. Taken as the action OOT_TELEPORT_CUSTOM, at either age */
+#define OOT_TELEPORT_CUSTOM 997
+#define OOT_CUSTOM_INDEX 0xFFFFu
+static char custom_teleport[3][96];
+void hos_oot_custom_teleport(const char *banc, const char *start, const char *boot) {
+    snprintf(custom_teleport[0], sizeof custom_teleport[0], "%s", banc);
+    snprintf(custom_teleport[1], sizeof custom_teleport[1], "%s", start);
+    snprintf(custom_teleport[2], sizeof custom_teleport[2], "%s", boot && *boot ? boot : "Dm_SY_BancChangeArrive");
+}
+
 static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
-    if (index >= sizeof oot_destinations / sizeof oot_destinations[0]) return 0;
+    if (index >= sizeof oot_destinations / sizeof oot_destinations[0] && index != OOT_CUSTOM_INDEX) return 0;
+    if (index == OOT_CUSTOM_INDEX && !custom_teleport[0][0]) return 0;
     const int64_t now = hos_now_ns();
     if (teleport.requested_at && now - teleport.requested_at < 8000000000LL) {
         hos_log("cheats: teleport ignored, a request is still in progress");
@@ -805,7 +817,9 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         return 0;
     }
     if (!oot_gamedata_bool(c, 0xcea220d3u, &child)) hos_log("cheats: Sequence_IsChildhood not found, using child maps");
-    const OotDestination *d = &oot_destinations[index];
+    const OotDestination custom = {custom_teleport[0], custom_teleport[1], custom_teleport[2], custom_teleport[0], custom_teleport[1],
+                                   custom_teleport[2]};
+    const OotDestination *d = index == OOT_CUSTOM_INDEX ? &custom : &oot_destinations[index];
     const char *banc = child ? d->child_banc : d->adult_banc;
     const char *start = child ? d->child_start : d->adult_start;
     const char *boot = child ? d->child_boot : d->adult_boot;
@@ -1014,6 +1028,8 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     oot_player_speed(c, components);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
+    } else if (action == OOT_TELEPORT_CUSTOM) {
+        oot_teleport(c, actor, OOT_CUSTOM_INDEX);
     } else if (action == OOT_STATE_ACTION) {
         oot_log_state(c);
     } else if (action == OOT_AGE_ACTION) {

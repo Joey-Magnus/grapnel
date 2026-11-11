@@ -121,6 +121,13 @@ def main():
         covered = sum((tour.plan_stops(a, part, stops, first) for first, stops in runs), [])
         if covered != tour.plan_stops(a, part):
             fail("the %s part's runs of 8 stops are not its route" % part)
+    extras = [x for x in tour.route(a, "extras") if x[0] == "extra"]
+    if len(extras) != len(tour.EXTRAS):
+        fail("the extras part does not visit every extra stop")
+    if [x[4] for x in extras] != ["child"] * sum(x[3] == "child" for x in tour.EXTRAS) + ["adult"] * sum(x[3] == "adult" for x in tour.EXTRAS):
+        fail("the extras part does not do the child stops first")
+    if '!strncmp(line, "!teleport ", 10)' not in hid or "OOT_TELEPORT_CUSTOM" not in main_c:
+        fail("the live input's \"!teleport <map> <start>\" is gone (host/nn_hid.c, host/hos_main.c)")
     if tour.chunks(a, "opening", 8) != [(None, None)]:
         fail("the opening part is not one run")
     if len([s for s in tour.route(a, stops=3) if s[0] == "visit"]) != 3:
