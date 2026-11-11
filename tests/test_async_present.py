@@ -71,7 +71,7 @@ void drop_img(Img& i) { if(i.image) --live_images; i={}; }
 void to_general(int,unsigned) {}
 void queue_flush_locked() {}
 void device_wait_idle_locked() {}
-int64_t prof_now(){return std::chrono::steady_clock::now().time_since_epoch().count();}
+int64_t present_trace_now(){return std::chrono::steady_clock::now().time_since_epoch().count();}
 void full_barrier(int) {}
 void vkCmdCopyImage(int,unsigned src,unsigned,unsigned dst,unsigned,unsigned n,const VkImageCopy* c) {
  assert(src==99 && dst && n==1 && c->extent.w==640 && c->extent.h==360); ++copies;
@@ -88,7 +88,7 @@ std::vector<uint64_t> ready_values;
 void present_image(unsigned image,unsigned w,unsigned h,const int* crop,unsigned view,NativePresentSync* sync) {
  assert(sync && sync->timeline && sync->ready%2==1 && sync->consumed==sync->ready+1);
  sync->shown=!std::getenv("RX_TEST_HIDDEN");
- sync->present_begin_ns=prof_now();sync->present_end_ns=prof_now();
+ sync->present_begin_ns=present_trace_now();sync->present_end_ns=present_trace_now();
  sync->present_result=sync->shown?0:1;
  assert(w==640 && h==360 && image==view);
  assert(crop && crop[0]==10 && crop[1]==20 && crop[2]==600 && crop[3]==300);

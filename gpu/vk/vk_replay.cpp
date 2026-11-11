@@ -3880,13 +3880,13 @@ static VkResult present_out(uint32_t index, std::unique_lock<std::mutex>& qk, Na
     if (dev.present_queue) {
         qk.unlock();
         std::lock_guard pq(dev.present_queue_mu);
-        if (sync) sync->present_begin_ns = prof_now();
+        if (sync) sync->present_begin_ns = present_trace_now();
         res = vkQueuePresentKHR(dev.present_queue, &pi);
-        if (sync) sync->present_end_ns = prof_now();
+        if (sync) sync->present_end_ns = present_trace_now();
     } else {
-        if (sync) sync->present_begin_ns = prof_now();
+        if (sync) sync->present_begin_ns = present_trace_now();
         res = vkQueuePresentKHR(dev.queue, &pi);
-        if (sync) sync->present_end_ns = prof_now();
+        if (sync) sync->present_end_ns = present_trace_now();
     }
     if (sync) sync->present_result = res;
     if (res == VK_ERROR_DEVICE_LOST) device_lost();

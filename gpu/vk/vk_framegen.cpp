@@ -558,12 +558,12 @@ void native_display_main() {
         // The read explicitly waits for this owned image's capture, and signals
         // its reusable value. A hidden/out-of-date swapchain still releases the
         // capture with an ordered empty submission; no unfulfilled reuse wait.
-        slot->sync.worker_ns = prof_now();
+        slot->sync.worker_ns = present_trace_now();
         present_kind.store(0);
         present_image(slot->image.image, native.w, native.h, slot->has_crop ? slot->crop : nullptr, slot->image.view, &slot->sync);
         if (!slot->sync.read_submitted) present_async_release(slot->sync);
         if (slot->sync.shown) menu_note_frame(true);
-        slot->sync.finished_ns = prof_now();
+        slot->sync.finished_ns = present_trace_now();
         native_note_timing(slot->sync);
         {
             std::lock_guard lk(native.mu);
@@ -582,7 +582,7 @@ void native_display_main() {
 bool present_async_record(VkCommandBuffer cmd, VkImage src, VkFormat format, uint32_t w, uint32_t h, const int crop[4]) {
     static const bool enabled = getenv("RX_VK_ASYNC_PRESENT") && atoi(getenv("RX_VK_ASYNC_PRESENT")) != 0;
     if (!enabled) return false;
-    const int64_t source_ns = prof_now();
+    const int64_t source_ns = present_trace_now();
     if (native.failed || dev.offscreen || framegen_on() || !src || !w || !h) {
         native_drain(); // old jobs must finish before switching to direct/interpolated presents
         native.active = false;
@@ -675,7 +675,7 @@ void present_async_queue(bool submitted, uint64_t source_frame = 0) {
     {
         std::lock_guard lk(native.mu);
         native.recorded->sync.source_frame = source_frame;
-        native.recorded->sync.queued_ns = prof_now();
+        native.recorded->sync.queued_ns = present_trace_now();
         native.jobs.push_back(native.recorded);
         ++native.queued;
         native.recorded = nullptr;

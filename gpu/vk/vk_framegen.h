@@ -5,6 +5,19 @@
 
 namespace mkwvk {
 
+// Cross-thread presentation traces share the host present CSV's performance-counter
+// epoch. prof_now() is a calibrated TSC duration clock, not that absolute epoch.
+inline int64_t present_trace_now() {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    static const int64_t frequency = [] {
+        LARGE_INTEGER value;
+        QueryPerformanceFrequency(&value);
+        return value.QuadPart;
+    }();
+    return perf_ticks_to_ns(now.QuadPart, frequency);
+}
+
 bool framegen_on();
 // Each owned native image has one timeline: odd values publish the captured
 // frame; the following even value releases the display read for reuse.
