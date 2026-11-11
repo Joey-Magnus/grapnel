@@ -8,11 +8,9 @@
      boxes (the text and its shadow) as the game gives a box its message (f_80459520): the page's buttons take theirs from
      LayoutMsg/PlusMenu_00, which has none for a sixth.
    - Pressed: A while the cursor is on it (its state, noted at f_80ad5310) opens the Insert menu (F1, as the key opens it),
-     and the game does not see that press (hos_pausebtn_buttons, from host/nn_hid.c).
-   HOS_RECOMP_BUTTON=0: none of it (the layout's sixth pane then shows without a text and does nothing). */
+     and the game does not see that press (hos_pausebtn_buttons, from host/nn_hid.c). */
 #include "hos.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -25,10 +23,6 @@ static uint64_t mem;   /* our guest memory: the pane's name and the button's tex
 enum { AT_B05 = 0, AT_TEXT = 32, AT_REF = 96, AT_END = 128 };
 static volatile uint64_t our_part, our_button, our_control;   /* (the sixth pane's part and its button object, while the page lives) */
 
-static int off(void) {
-    const char *e = getenv("HOS_RECOMP_BUTTON");
-    return e && *e == '0';
-}
 static int ready(void) {
     if (mem) return 1;
     mem = hos_region_alloc(0x10000, 0x10000);
@@ -60,7 +54,7 @@ void hos_pausebtn_build(Ctx *c, A64Fn game) {
     const uint64_t screen = c->x[0], heap = c->x[1];
     game(c);
     our_part = our_button = 0, our_control = 0;
-    if (off() || !ready()) return;
+    if (!ready()) return;
     const uint64_t panel = recomp_load64(c, screen + 800);
     const uint64_t page = panel ? recomp_load64(c, panel + 0x20) : 0;
     if (!page) return;
@@ -112,7 +106,7 @@ uint64_t hos_pausebtn_buttons(uint64_t buttons, uint64_t a) {
     const int down = (buttons & a) != 0, pressed = down && !was;
     was = down;
     if (!down) ours = 0;
-    else if (pressed && !off()) {
+    else if (pressed) {
         const uint64_t control = our_control;
         const unsigned state = control ? *(const uint8_t *)GP(control + 0x38) : 0;
         int rx_option(int id, int otherwise);   /* rx_backend.c: 1 the Insert menu is open */
