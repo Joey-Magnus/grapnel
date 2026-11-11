@@ -277,8 +277,7 @@ def cxx_std(compiler):
             value = f.read().strip()
         if value in ("-std=c++23", "-std=c++2b"):
             return value
-    standards = ("-std=c++23", "-std=c++2b")
-    for std in standards:
+    for std in ("-std=c++23", "-std=c++2b"):
         # Match assert.h: a static on the non-constant failure path, while a
         # successful call remains a valid constant expression (also on Clang 18).
         probe = "constexpr int f(int n){if(n<0){static int x=0;return ++x;}return n;} static_assert(f(1)==1);"
