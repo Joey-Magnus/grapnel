@@ -593,9 +593,10 @@ HLE(_ZN2nn2os25FinalizeConditionVariableEPNS0_21ConditionVariableTypeE) { drop(A
    the predicate changed under the mutex that waiter has not yet looked at it. HOS_CV_SIGNAL_ALWAYS=1: every signal takes
    the lock, as before (tests/test_cv_signal_early.py) */
 static int cv_signal_always(void) {
-    static int v = -1;
-    if (v < 0) v = env_on("HOS_CV_SIGNAL_ALWAYS");
-    return v;
+    static int v = -1;   /* (atomic: the first signals of several threads read it at once) */
+    int on = __atomic_load_n(&v, __ATOMIC_RELAXED);
+    if (on < 0) __atomic_store_n(&v, on = env_on("HOS_CV_SIGNAL_ALWAYS"), __ATOMIC_RELAXED);
+    return on;
 }
 HLE(_ZN2nn2os23SignalConditionVariableEPNS0_21ConditionVariableTypeE) {
     Obj *cv = obj(ARG(0), K_COND);
