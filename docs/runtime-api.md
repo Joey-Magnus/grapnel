@@ -109,72 +109,21 @@ into the private session. `--dlss-preferences FILE` selects a baseline and
 `--dlss-base DIRECTORY` selects an isolated candidate. No layer or model is downloaded
 or installed. Native frames, helper evaluations and displayed frames are distinct.
 
-### Renderer wall/CPU stage trace
+### Optional renderer experiment switches
 
-`start --stage-trace` (Python: `HookshotAPI.launch(..., stage_trace=True)`)
-sets `RX_VK_STAGE_TRACE` to the private run's `renderer-stages.csv` and also
-records `native-presents.csv`. It requires a renderer built with this collector;
-setting an environment variable alone does not prove support. Check that the
-CSV contains rows. This is opt-in diagnostic instrumentation, not a performance
-improvement or a zero-overhead benchmark mode.
+`start --stage-trace`, `--present-stages`, `--stage-cache on|off` and
+`--cpu-uncached on|off` forward explicit settings to a separately supplied
+renderer. These collectors and renderer experiments are not implemented by this
+API change. Their Python equivalents are `stage_trace`, `present_stages`,
+`stage_cache` and `cpu_uncached` on `HookshotAPI.launch`.
 
-The trace separates submission memory work, capture retirement/stamping,
-texture-shadow invalidation/update, and presentation lock/fence/acquire/queue
-stages. Every interval has monotonic start/end times and calling-thread CPU
-consumption. Capture rows also contain dirty/copied/late page counts and the actual source
-allocation memory-property flags (`source_memory_flags`; bit 0x8 is HOST_CACHED).
-Zero on noncapture operations does not describe a memory allocation. The analyzer
-keeps different source memory flags separate. One rotating
-copied page per capture is eligible for `shadow_page_sample`, splitting lookup /
-allocation from a 4096-byte copy; nontexture pages are skipped. These are samples,
-not totals or automatically extrapolated estimates. Output occurs after the
-instrumented capture/presentation locks are released. Output is buffered, flushed
-approximately once a second, and capped at one million rows. Forced termination
-can lose the buffered tail. A capped trace is incomplete.
-
-On Linux the timestamps use `CLOCK_MONOTONIC`, matching native present timestamps;
-CPU uses `CLOCK_THREAD_CPUTIME_ID`. Windows CPU time uses `GetThreadTimes` and can
-be coarse for short stages. Thread identifiers are process-local hashes.
-Wall minus CPU time includes descheduling as well as waits; it is not proof of
-GPU waiting. Explicit wait stages narrow that interpretation. GPU execution time
-requires Vulkan timestamps (the existing `RX_VK_PASS_TIMING` diagnostics), not
-CPU time spent invoking Vulkan.
-
-```sh
-python3 scripts/analyze_stage_trace.py RUN/renderer-stages.csv RUN/native-presents.csv \
-    --first 3000 --last 3600 --output RUN/stage-analysis.json
-```
-
-The analyzer keeps nested operations separate and lists stages overlapping the
-ten slowest native present intervals. Overlap is temporal correlation, not a
-causal assignment to a displayed frame: work can execute concurrently or ahead
-of presentation. `submit_memory/take_capture_inclusive` contains `take_capture`
-stages; sampled page work is contained in `shadow_update`. Never add these levels
-together. Boundary-crossing stages are excluded from window totals and retained
-in overlap evidence. Instrumentation overhead needs a matching disabled run.
-
-### Bounded CPU snapshots for uncached capture buffers
-
-`start --cpu-uncached on|off` (Python: `cpu_uncached=True|False`) explicitly
-selects `RX_VK_CAPTURE_CPU_UNCACHED`. Omitting it follows the renderer default;
-this candidate is currently opt-in. The selection is made at process startup.
-
-When Vulkan gives a capture buffer without `HOST_CACHED`, the candidate first
-captures into ordinary CPU memory, then uploads the same valid-page runs to the
-Vulkan buffer. Texture shadows read the CPU snapshot. Cached Vulkan buffers keep
-the original path. Late GPU write-back updates both copies after the existing
-wait; guest writes after submission cannot replace ordinary captured bytes.
-
-Snapshot payload storage is limited to 128 MiB per capture and 256 MiB across all
-concurrent captures. Reservations are atomic and released on allocation failure,
-reset or destruction. Exhaustion falls back to the original mapped-buffer path;
-it does not skip required copies or synchronization. These limits describe the
-additional snapshot payload, not total process RSS or allocator overhead.
-
-Stage traces identify this path as `take_capture_cpu_shadow`. Its per-page sample
-is `shadow_page_cpu_sample` with memory flags 0 (ordinary CPU storage); the outer
-capture still records the Vulkan allocation's flags. Do not interpret the sample
-as a read from the uncached Vulkan mapping.
+`--stage-trace` requests a private `renderer-stages.csv` and also enables
+`native-presents.csv`. Confirm that the renderer supports the requested option
+and that the expected diagnostic output contains rows. Environment variables or
+a session manifest alone do not establish support. Consult that renderer's
+implementation and analyzer documentation for field definitions and limits.
+Treat instrumented timing separately from clean performance comparisons; these
+switches do not establish a performance improvement.
 
 ### Virtual-core wait ownership diagnostics
 

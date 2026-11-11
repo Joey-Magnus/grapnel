@@ -65,26 +65,13 @@ CPU/GPU tests during timed sections. Include cold starts separately; warming is 
 first-use stalls. Repeat the baseline after the candidate to identify drift.
 
 
-## Optional presentation-stage timing
+## Optional renderer timing collectors
 
-`RX_VK_PRESENT_STAGES=1` enables CPU wall-time buckets in `present_image`.
-Private analysis runs can request it with `HookshotAPI.launch(..., present_stages=True)`
-or `analysis_api.py start ... --present-stages`. It is off by default, inherited
-renderer flags are filtered, and the explicit setting is recorded in the session
-environment. It does not enable stack sampling or change presentation policy.
-The default is off (no additional clock reads). Every 120 calls, the renderer logs
-mean/maximum milliseconds for presentation-lock acquisition, resize handling,
-fence wait, image acquisition, command recording, queue-lock acquisition, queue
-flush, submit, present, and out-of-date/suboptimal swapchain recreation. Buckets
-also include the small CPU setup between consecutive marks; they are not GPU
-execution times. The fence bucket includes menu polling, and acquisition includes
-frame-log collection when that separate diagnostic is enabled.
+Private analysis runs can forward `--present-stages` and `--stage-trace` to a
+renderer with separately supplied collectors. This API change does not implement
+those collectors. Confirm support and actual output before interpreting a run;
+record the exact renderer version alongside the session manifest. CPU wall-time
+buckets do not measure GPU execution time, and instrumentation overhead requires
+a matching disabled comparison.
 
-Early returns count in the denominator and contribute zero to unreached stages.
-The accepted-present count means `VK_SUCCESS` or `VK_SUBOPTIMAL_KHR`, not a count
-of frames displayed by the compositor. Output is serialized under the existing
-presentation lock; periodic log I/O adds diagnostic overhead. Do not use an
-instrumented run as an uninstrumented performance comparison.
-
-
-See [runtime-api.md](runtime-api.md) for stage traces and scene controls.
+See [runtime-api.md](runtime-api.md) for the optional switches and scene controls.
