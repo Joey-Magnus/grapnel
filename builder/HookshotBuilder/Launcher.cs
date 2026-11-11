@@ -200,6 +200,7 @@ public partial class MainWindow
         FoldRow.Visibility = launchLists.Older > 0 ? Visibility.Visible : Visibility.Collapsed;
         FoldText.Text = launchLists.Folded ? $"{launchLists.Older} older releases" : "Fewer releases";
         FoldTurn.ScaleY = launchLists.Folded ? 1 : -1;   // (the arrow points down while they are folded, up to fold them again)
+        ShowLowMem();
         ReleasesNote.Text = launchChecked && launchReleases.Count == 0 ? "GitHub did not answer: only the versions on this PC are listed." : "";
         ReleasesNote.Visibility = ReleasesNote.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         Render();
@@ -278,6 +279,31 @@ public partial class MainWindow
         if (typicalBuild is not double t) return "around half an hour or more";
         var minutes = Math.Max(5, (int)Math.Round(t / 300) * 5);   // (to five minutes: it is a guess, not a promise)
         return minutes >= 60 ? $"about {minutes / 60} h {(minutes % 60 > 0 ? $"{minutes % 60} min" : "")}".TrimEnd() : $"about {minutes} minutes";
+    }
+
+    /// Settings' "Lower memory use" as the game folder's hookshot_env.txt has it (GameEnv.cs), and the cache file's size under it.
+    /// Only with a game folder: the switch is a line beside the game
+    void ShowLowMem()
+    {
+        var game = launchFolder.Length > 0 && Directory.Exists(launchFolder) ? new DirectoryInfo(launchFolder) : null;
+        LowMemTick.IsEnabled = game != null;
+        LowMemTick.IsChecked = game != null && GameEnv.SkipsCache(game);
+        var bytes = game != null ? GameEnv.CacheBytes(game) : -1;
+        LowMemNote.Text = game == null ? "" : bytes > 0
+            ? $"Skips the {Storage.Gb(bytes)} pipeline cache file: less memory, may stutter more the first time."
+            : "Skips the pipeline cache file the game makes as it plays: less memory, may stutter more the first time.";
+        LowMemNote.Visibility = LowMemNote.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    void LowMemClick(object sender, RoutedEventArgs e)
+    {
+        var skip = LowMemTick.IsChecked == true;
+        try { GameEnv.SetSkip(new DirectoryInfo(launchFolder), skip); }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            MessageBox.Show(this, $"The setting could not be saved in the game folder: {x.Message}", "Hookshot", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        ShowLowMem();   // (what the file says now, whether or not it could be written)
     }
 
     /// (a build or an update under way, the builder's own update's download too, or the build files let go after one: nothing

@@ -785,14 +785,24 @@
                             AutomationProperties.Name="NVIDIA DLSS"
                             ToolTip="For NVIDIA RTX graphics cards. The build downloads NVIDIA's SDK under NVIDIA's license. NVIDIA's files stay on this PC: never share a game folder built with them."/>
                 </Grid>
-                <!-- AMD FSR 4: off unless picked. Nothing is downloaded: AMD's DLLs are put beside the game by hand (the readme). Not in
-                     Paper's drawing; kept, as Hookshot's builder has it -->
+                <!-- AMD FSR 4: off unless picked. Picking it shows AMD's license; the build downloads AMD's runtime under it
+                     (make_game.py, scripts/ffx_sdk.py). Not in Paper's drawing; kept, as Hookshot's builder has it -->
                 <Grid Margin="0,12,0,0">
                   <TextBlock Style="{StaticResource Small}" Text="Enable FSR 4" VerticalAlignment="Center"/>
                   <CheckBox x:Name="FsrTick" Style="{StaticResource Switch}" HorizontalAlignment="Right" IsChecked="False" Click="FsrChanged"
                             AutomationProperties.Name="AMD FSR 4"
                             ToolTip="For AMD Radeon graphics cards. The build downloads AMD's runtime under AMD's license (asked when it is switched on). It is chosen in the game's Insert menu, as the Upscaler."/>
                 </Grid>
+                <!-- (#2206's RX_VK_PCACHE_LOAD=0, a line of the game folder's hookshot_env.txt, so it holds however the game is started:
+                     GameEnv.cs. The game's own setting, not the build's: it takes effect at the next start, nothing is rebuilt) -->
+                <Grid Margin="0,12,0,0">
+                  <TextBlock Style="{StaticResource Small}" Text="Lower memory use" VerticalAlignment="Center"/>
+                  <CheckBox x:Name="LowMemTick" Style="{StaticResource Switch}" HorizontalAlignment="Right" IsChecked="False" Click="LowMemClick"
+                            AutomationProperties.Name="Lower memory use"
+                            ToolTip="The game neither loads nor saves its pipeline cache file (mkw_vk_pipelines.bin), which the graphics driver holds in memory for the whole session: up to about 3 GB less memory. On a fresh driver cache the game may stutter more the first time it draws something. The file stays: switched off again, the game uses it as before. Applies from the game's next start, however it is started (a line in the game folder's hookshot_env.txt)."/>
+                </Grid>
+                <TextBlock x:Name="LowMemNote" Style="{StaticResource Small}" Foreground="#B0B0B0" Width="189" HorizontalAlignment="Left" TextWrapping="Wrap"
+                           Margin="0,4,0,0" Visibility="Collapsed"/>
                 <!-- (Hookshot's update track, Updater.cs: off, Release; on, Release candidate. A Nightly chosen before shows on and stays
                      Nightly until it is switched) -->
                 <Grid Margin="0,12,0,0">

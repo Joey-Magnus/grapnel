@@ -133,6 +133,37 @@ check("the pre-release the folder holds, even with them off", labels(ll.tab_rows
 lists = ll.make_lists([], None, None, [], False, None, False)
 check("no game, no answer", (lists["all"], lists["picked"]), ([], None))
 
+# ---- Settings' "Lower memory use" (builder/linux/game_env.py): RX_VK_PCACHE_LOAD=0 in the game folder's hookshot_env.txt ----
+import game_env as ge  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+check("no line: loaded", (ge.skips_cache(""), ge.skips_cache("RX_VK_NOOPT=1\n")), (False, False))
+check("the line, as the game reads it", (ge.skips_cache("RX_VK_PCACHE_LOAD=0\n"), ge.skips_cache("﻿  RX_VK_PCACHE_LOAD=0  \r\n")), (True, True))
+check("a note, another value, another name", (ge.skips_cache("# RX_VK_PCACHE_LOAD=0\n"), ge.skips_cache("RX_VK_PCACHE_LOAD=1\n"),
+                                               ge.skips_cache("XRX_VK_PCACHE_LOAD=0\n")), (False, False, False))
+check("the last line wins; 00 is atoi's 0", (ge.skips_cache("RX_VK_PCACHE_LOAD=0\nRX_VK_PCACHE_LOAD=1\n"),
+                                             ge.skips_cache("RX_VK_PCACHE_LOAD=1\nRX_VK_PCACHE_LOAD=00\n")), (False, True))
+_mine = "# my switches\r\nRX_VK_NOOPT=1\r\n"
+_on = ge.with_skip(_mine, True)
+check("on: its line added, CRLF kept", _on, "# my switches\r\nRX_VK_NOOPT=1\r\nRX_VK_PCACHE_LOAD=0\r\n")
+check("on twice: one line; off again: as it was", (ge.with_skip(_on, True), ge.with_skip(_on, False)), (_on, _mine))
+check("off: every line that sets it goes", ge.with_skip("RX_VK_PCACHE_LOAD=1\nHOS_X=2\nRX_VK_PCACHE_LOAD=0", False), "HOS_X=2\n")
+check("a file of its own: made, and empty again", (ge.with_skip("", True), ge.with_skip("RX_VK_PCACHE_LOAD=0\n", False)), ("RX_VK_PCACHE_LOAD=0\n", ""))
+check("sizes as Windows writes them", (ge.size_text(2576980378), ge.size_text(458227712)), ("2.4 GB", "437 MB"))
+_dir = tempfile.mkdtemp(prefix="hookshot env ü ")
+try:
+    with open(os.path.join(_dir, ge.CACHE_FILE), "w") as _f:
+        _f.write("cache")
+    check("no file: off; the cache's size", (ge.folder_skips_cache(_dir), ge.cache_bytes(_dir)), (False, 5))
+    ge.set_skip(_dir, True)
+    check("on: written", (ge.folder_skips_cache(_dir), open(os.path.join(_dir, ge.FILE_NAME), newline="").read()), (True, "RX_VK_PCACHE_LOAD=0\n"))
+    ge.set_skip(_dir, False)
+    check("off: the file it made is gone, the cache is still there",
+          (os.path.exists(os.path.join(_dir, ge.FILE_NAME)), os.path.exists(os.path.join(_dir, ge.CACHE_FILE))), (False, True))
+    check("no cache yet", ge.cache_bytes(os.path.join(_dir, "none")), -1)
+finally:
+    shutil.rmtree(_dir, ignore_errors=True)
+
 if failed:
     print("\n".join(failed))
     sys.exit(1)

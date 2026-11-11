@@ -29,6 +29,7 @@ import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
+import game_env
 import launcher_art as art
 import linux_update
 from launch_list import SHOWN, is_pre, is_release, make_lists, newer, same_tag, tab_rows, version_name
@@ -1250,6 +1251,19 @@ class Launcher(object):
         y = self.switch(y + u(12), "Enable DLSS", bool(app.dlss.get()), self.dlss_pressed,
                         "NVIDIA DLSS, for NVIDIA RTX graphics cards. The build downloads NVIDIA's SDK under NVIDIA's license. "
                         "NVIDIA's files stay on this PC: never share a game folder built with them.")
+        # (#2206's RX_VK_PCACHE_LOAD=0, a line of the game folder's hookshot_env.txt, so it holds however the game is started:
+        # game_env.py. Only with a game folder; the game's own setting, not the build's: it takes effect at its next start)
+        if self.folder and os.path.isdir(self.folder):
+            y = self.switch(y + u(12), "Lower memory use", game_env.folder_skips_cache(self.folder), self.low_mem_pressed,
+                            "The game neither loads nor saves its pipeline cache file (mkw_vk_pipelines.bin), which the graphics "
+                            "driver holds in memory for the whole session: up to about 3 GB less memory. On a fresh driver cache "
+                            "the game may stutter more the first time it draws something. The file stays: switched off again, "
+                            "the game uses it as before. Applies from the game's next start, however it is started (a line in "
+                            "the game folder's hookshot_env.txt).")
+            size = game_env.cache_bytes(self.folder)
+            note = ("Skips the %s pipeline cache file: less memory, may stutter more the first time." % game_env.size_text(size) if size > 0 else
+                    "Skips the pipeline cache file the game makes as it plays: less memory, may stutter more the first time.")
+            y = self.wrapped(u(16), y + u(4), note, "LsLabel", OFF_INK, u(205), lines=3)
         y = self.switch(y + u(12), "Enable pre-releases", self.pre_on(), self.pre_pressed,
                         "Release candidates in Releases, and Check for updates offers them.")
         # (Paper's 189 in Segoe UI; Inter is wider, and 205 breaks its lines where Paper's do)
@@ -1308,6 +1322,13 @@ class Launcher(object):
         app.dlss.set(not app.dlss.get())
         app.dlss_toggled = True
         self.save_options()
+
+    def low_mem_pressed(self):
+        """Lower memory use: its line in the game folder's hookshot_env.txt, on or off (game_env.py)"""
+        try:
+            game_env.set_skip(self.folder, not game_env.folder_skips_cache(self.folder))
+        except OSError as error:
+            messagebox.showwarning("Hookshot", "The setting could not be saved in the game folder: %s" % error, parent=self.app)
 
     def pre_pressed(self):
         """Enable pre-releases: the update track, Release or Release candidate (a nightly one kept is turned off to Release)"""

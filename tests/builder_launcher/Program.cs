@@ -117,8 +117,44 @@ static class Program
 
         var lists = checks;
         Work();
-        Console.WriteLine($"launcher list: {lists} checks passed; launcher work: {checks - lists} checks passed");
+        var work = checks - lists;
+        Env();
+        Console.WriteLine($"launcher list: {lists} checks passed; launcher work: {work} checks passed; game settings: {checks - lists - work} checks passed");
         return 0;
+    }
+
+    /// Settings' "Lower memory use" (builder/HookshotBuilder/GameEnv.cs): RX_VK_PCACHE_LOAD=0 in the game folder's
+    /// hookshot_env.txt, the rest of the player's file as it was
+    static void Env()
+    {
+        Require(!GameEnv.SkipsCache("") && !GameEnv.SkipsCache("RX_VK_NOOPT=1\n"), "no line: the cache is loaded");
+        Require(GameEnv.SkipsCache("RX_VK_PCACHE_LOAD=0\n") && GameEnv.SkipsCache("﻿  RX_VK_PCACHE_LOAD=0  \r\n"), "the line, as the game reads it (a BOM, spaces, CRLF)");
+        Require(!GameEnv.SkipsCache("# RX_VK_PCACHE_LOAD=0\n") && !GameEnv.SkipsCache("RX_VK_PCACHE_LOAD=1\n") && !GameEnv.SkipsCache("XRX_VK_PCACHE_LOAD=0\n"),
+                "a note, another value or another name is not it");
+        Require(!GameEnv.SkipsCache("RX_VK_PCACHE_LOAD=0\nRX_VK_PCACHE_LOAD=1\n") && GameEnv.SkipsCache("RX_VK_PCACHE_LOAD=1\nRX_VK_PCACHE_LOAD=00\n"),
+                "the last line wins, as the game sets them in order; 00 is atoi's 0");
+        // (switched on and off: the player's other lines, notes and line ends kept; the switch's line once, at the end)
+        var mine = "# my switches\r\nRX_VK_NOOPT=1\r\n";
+        var on = GameEnv.WithSkip(mine, true);
+        Require(on == "# my switches\r\nRX_VK_NOOPT=1\r\nRX_VK_PCACHE_LOAD=0\r\n" && GameEnv.SkipsCache(on), "on: its line added, CRLF kept: " + on);
+        Require(GameEnv.WithSkip(on, true) == on, "on twice: one line");
+        Require(GameEnv.WithSkip(on, false) == mine, "off again: the file as it was");
+        Require(GameEnv.WithSkip("RX_VK_PCACHE_LOAD=1\nHOS_X=2\nRX_VK_PCACHE_LOAD=0", false) == "HOS_X=2\n", "off: every line that sets it goes");
+        Require(GameEnv.WithSkip("", true) == "RX_VK_PCACHE_LOAD=0\n" && GameEnv.WithSkip("RX_VK_PCACHE_LOAD=0\n", false) == "", "a file of its own: made, and empty again");
+        // (on the disk: written beside the game, removed when nothing is left, the cache file never touched)
+        var folder = Directory.CreateTempSubdirectory("hookshot env ü ");
+        try
+        {
+            File.WriteAllText(Path.Combine(folder.FullName, GameEnv.CacheFile), "cache");
+            Require(!GameEnv.SkipsCache(folder) && GameEnv.CacheBytes(folder) == 5, "no file: off; the cache's size");
+            GameEnv.SetSkip(folder, true);
+            Require(GameEnv.SkipsCache(folder) && File.ReadAllText(Path.Combine(folder.FullName, GameEnv.FileName)) == "RX_VK_PCACHE_LOAD=0\n", "on: written");
+            GameEnv.SetSkip(folder, false);
+            Require(!File.Exists(Path.Combine(folder.FullName, GameEnv.FileName)) && File.Exists(Path.Combine(folder.FullName, GameEnv.CacheFile)),
+                    "off: the file it made is gone, the cache is still there");
+            Require(GameEnv.CacheBytes(new DirectoryInfo(Path.Combine(folder.FullName, "none"))) == -1, "no cache yet");
+        }
+        finally { folder.Delete(recursive: true); }
     }
 
     /// What the launcher says while it brings a version (builder/HookshotBuilder/LaunchWork.cs), from the lines of the hidden
