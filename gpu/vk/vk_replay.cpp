@@ -178,9 +178,18 @@ uint64_t completed() {
 /// batch waited for the next wait or present while the GPU sat idle, and with serial replay the game waits for it mid-frame
 /// (take_capture's late pages), so the GPU started cold just as it was waited for. RX 9070 XT, RADV, Kokiri Forest: 33-41
 /// fps -> 46-61, no flashes in 5230 frames; ~10 flushes a frame of ~3.7 command buffers each, so batching still groups the
-/// submits while the GPU is busy. RX_VK_BATCH_IDLE=0: held until a wait, a present or the cap, as before
+/// submits while the GPU is busy. RX_VK_BATCH_IDLE=0: held until a wait, a present or the cap, as before.
+/// (Not by default on the Steam Deck's APU (Van Gogh: 0x163f LCD, 0x1435 OLED): Deck LCD, Kokiri Forest, current main: queue
+/// submit 11-12 ms a frame with it, 6.6-7.1 without, 18.6-18.8 fps -> 20.0-20.7; each submit costs that APU ~1 ms. Other APUs
+/// (780M, 890M, 8060S) are unmeasured and keep it. RX_VK_BATCH_IDLE=1: on there too)
 bool batch_gpu_idle() {
-    static const bool on = !getenv("RX_VK_BATCH_IDLE") || atoi(getenv("RX_VK_BATCH_IDLE")) != 0;
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_BATCH_IDLE");
+        const bool deck = dev.props.vendorID == 0x1002 && (dev.props.deviceID == 0x163f || dev.props.deviceID == 0x1435);
+        const bool v = e ? atoi(e) != 0 : !deck;
+        logf("vk: idle send %s (RX_VK_BATCH_IDLE%s)", v ? "on" : "off", !e && deck ? ", off on the Steam Deck" : "");
+        return v;
+    }();
     uint64_t done = 0;
     return on && vkGetSemaphoreCounterValue(dev.device, batch_tl, &done) == VK_SUCCESS && done >= batch_flushed;
 }
