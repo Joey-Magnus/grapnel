@@ -533,6 +533,31 @@ const char* hn_mic(int v, int variant) {
     return missing ? "Not plugged in: Default stands in until it is back." : "This microphone, by its name. A change applies at once.";
 }
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
+// (hookshot) Amiibo (host/amiibo.c): None, or a dump of the amiibo folder by its file name; its place in the list the host
+// gave at the menu's opening (refresh_amiibo)
+constexpr int kMaxAmiibo = 64;
+int amiibo_listed = 0;
+bool amiibo_failed = false;   // (the chosen file was not an amiibo dump: said under the row until the choice changes)
+bool can_amiibo() { return host && host->version >= 18 && host->amiibo_count && host->amiibo_name && host->amiibo_choose && host->amiibo_state; }
+const char* tx_amiibo(int v) {
+    static char b[140];
+    if (!can_amiibo() || !amiibo_listed || v <= 0) return "None";
+    snprintf(b, sizeof b, "%s", host->amiibo_name(v - 1));
+    if (const size_t n = strlen(b); n > 4 && b[n - 4] == '.') b[n - 4] = 0;   // (the .bin)
+    utf8_whole(b);
+    return b;
+}
+/// The reader as the host says it (variant -1), or each line it can show (variant 0, 1, ...: the help box's height)
+const char* hn_amiibo(int v, int variant) {
+    static const char* const t[] = {"Nothing on the reader.", "On the reader: the game reads it when it next asks for an amiibo.",
+                                    "On the reader, and the game is looking for it.", "Read by the game.",
+                                    "Not an amiibo dump: see hookshot_log.txt.", "No amiibo in the amiibo folder."};
+    (void)v;
+    if (variant >= 0) return variant < 6 ? t[variant] : nullptr;
+    if (amiibo_failed) return t[4];
+    if (can_amiibo() && !amiibo_listed) return t[5];
+    return t[can_amiibo() ? std::clamp(host->amiibo_state(), 0, 3) : 0];
+}
 // (hookshot) Menu size: how large the overlays are drawn (vk_ui.h unit), Medium unless the player chooses Small or Large. It
 // was Auto by default, Large in fullscreen at 1080 lines and up while a controller opened the menu: the menu changed size with
 // the input that opened it, and the version in its banner no longer fitted. An options file's menu_size=0 (that Auto): Medium
@@ -837,6 +862,10 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
+    {TAB_GAMEPLAY, "Amiibo", &opts.amiibo, 0, kMaxAmiibo, 1, tx_amiibo,
+     "Puts one of your amiibo on the controller's NFC reader, from a dump of your own figure (a 540-byte .bin file in the "
+     "amiibo folder beside the game). Choose it with Left or Right, then Enter or A when the game asks for an amiibo.",
+     hn_amiibo, false, true},
 
     // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -1382,7 +1411,7 @@ void save() {
                 const int v = saved_value(r.value);
                 const Out o = v == kCustomOutput && player_custom_output.w && env_holds(r.value) ? player_custom_output : output_at(v);
                 fprintf(f, "%s=%ux%u\n", ini_key(r), o.w, o.h);
-            } else if (r.value) {
+            } else if (r.value && r.value != &opts.amiibo) {   // (hookshot: the amiibo on the reader is this run's, not a setting)
                 fprintf(f, "%s=%d\n", ini_key(r), saved_value(r.value));
             }
         }
@@ -1409,6 +1438,19 @@ void prompts_at_once(const Row& r) {
         restart_state.restart_value(restart_slot_of(r), *r.value);
 }
 
+/// (hookshot) The Amiibo row's list as the host has it now (at each opening): its last value the last dump
+void refresh_amiibo() {
+    amiibo_listed = can_amiibo() ? std::min(host->amiibo_count(), kMaxAmiibo) : 0;
+    for (Row& r : rows)
+        if (r.value == &opts.amiibo) r.hi = amiibo_listed;
+    if (opts.amiibo > amiibo_listed) opts.amiibo = 0;
+}
+/// (hookshot) Enter on the Amiibo row: the chosen dump onto the reader, or (None) the figure off it
+void amiibo_put() {
+    if (!can_amiibo()) return;
+    amiibo_failed = !host->amiibo_choose(opts.amiibo - 1);
+    logf("menu: amiibo %s%s", opts.amiibo ? tx_amiibo(opts.amiibo) : "taken off the reader", amiibo_failed ? ": not an amiibo dump" : "");
+}
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
 /// (a slider's drag: saved once it is let go)
 void set_row(Row& r, int v, int dir, bool keep = true) {
@@ -2035,6 +2077,10 @@ void draw_options(ui::Ctx& c) {
     int prompts_n = cur_tab == TAB_MOTION ? 3 : 4;
     if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
     if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
+    if (selr.value == &opts.amiibo && can_amiibo()) {   // (hookshot) Enter puts the chosen amiibo on the reader, None takes it off
+        prompt_list[4] = prompt_list[3], prompt_list[3] = prompt_list[2];
+        prompt_list[2] = {ui::kConfirm, opts.amiibo ? "Put on reader" : "Take off"}, prompts_n = 5;
+    }
     if (selr.cheat >= 0) {   // (a debug tool: Change when Left and Right do something, then what confirm does)
         prompts_n = 1;
         if (selr.cheat <= 1 || selr.cheat == 7 || cheat_chooses(selr.cheat) || age_shown(selr.cheat))
@@ -3435,6 +3481,7 @@ void menu_tick() {
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
         if (open_now.load()) dlss_probe(), fsr4_probe();   // (whether the Upscaler row can offer DLSS and FSR here: asked once)
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
+        if (open_now.load()) refresh_amiibo(), amiibo_failed = false;   // (hookshot: the amiibo folder's dumps as they are now)
     }
     if (open_now.load() && page == 5) {   // (hookshot) the restart question: Later (the default) or Restart now
         if (mouse) {   // (a button under the cursor chosen, a click on it pressed, a right click is Later; no list: the wheel does nothing)
@@ -3684,6 +3731,8 @@ void menu_tick() {
         } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
+        if (press[7] && r.value == &opts.amiibo) amiibo_put(), press[7] = false, changed = true;   // (hookshot: Enter puts it on)
+        if ((press[3] || press[4]) && r.value == &opts.amiibo) amiibo_failed = false;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
             if (press[7]) press[4] = true;
             set_row(r, *r.value + (press[4] ? r.step : -r.step), press[4] ? 1 : -1);

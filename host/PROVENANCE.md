@@ -31,3 +31,8 @@ mkw-recomp's changes:
 
 Licensing follows a64-kit: GPL, through suyu's translator in the lifted code (see
 `third_party/a64-kit/NOTICE.TOTKPort.md`).
+
+`amiibo.c` and `nn_nfp.c` (the amiibo reader) are ported from valentderah/totk-pc-recomp's `runtime/amiibo.c` and
+`runtime/nfp.c` (MIT, Copyright (c) 2026 Valiantsin Dzerakh; the notice is in `amiibo.c`): totk-pc-recomp serves the
+nfp:user service's IPC commands, Hookshot the SDK's `nn::nfp` functions the game imports; the application area is kept
+beside the dumps instead of read from the encrypted tag.

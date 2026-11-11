@@ -123,6 +123,10 @@ The game is also added to your applications menu as "Hookshot". That entry, and 
 launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
 update.
 
+On a Steam Deck or another PC with Steam, **Add to Steam** (in the launcher and when a build finishes) adds the game to
+Steam's library as a non-Steam game, for Game Mode and Steam Input. Close Steam first: Steam writes its own list over a
+change when it exits. From a terminal: `python3 -I builder/linux/steam_shortcut.py <game folder>`.
+
 The same AppImage also builds and starts the game without opening the window, for a machine you reach over SSH or for a
 script: see [Linux, the AppImage from the command line](#build-from-source).
 
@@ -312,6 +316,7 @@ HDR peak brightness show only while HDR is on.
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
 | | Microphone | Off, Default, or each microphone by name | Default |
+| | Amiibo | None, or each dump in the game folder's `amiibo` folder by name (not saved) | None |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
 | | Disable camera centering | Off, On | Off |
@@ -430,6 +435,12 @@ HDR peak brightness show only while HDR is on.
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
   back. On Linux (SDL2) two microphones with the same name cannot be told apart: the first is used. Windows must allow desktop apps to use the microphone
   (Settings, Privacy & security, Microphone). `HOS_MIC_LOG=1` logs what the game reads, a line a second.
+- **Amiibo** puts one of your amiibo on the controller's NFC reader. Put dumps of your own figures (540-byte `.bin`
+  NTAG215 files, as figure readers and NFC phone apps save them) in a folder named `amiibo` in the game folder
+  (`HOS_AMIIBO_DIR` for another), choose one with Left or Right, and press Enter or A when the game asks for an amiibo;
+  under the row the help says whether the game has read it. The game reads what a figure keeps in the clear (which
+  figure it is); its nickname shows as the file's name. Data the game saves on the figure is kept in `amiibo/appdata`,
+  never in your dump. Hookshot does not include or download any amiibo data.
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
@@ -854,6 +865,9 @@ Hookshot exists thanks to the work of many people:
 - **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround Ocarina of Time used before
   its fog and lighting were fixed.
 - **Mesa (NAK)**: the reference for Ampere's instruction encoding.
+- **[valentderah/totk-pc-recomp](https://github.com/valentderah/totk-pc-recomp)** (MIT): the amiibo reader and the Windows power
+  throttling log line.
+- **[lethevimlet/oot-bc250](https://github.com/lethevimlet/oot-bc250)**: the Steam shortcut writer behind Add to Steam.
 - Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (NVIDIA
   DLSS, DLAA and Reflex, the exposure flicker and fog fixes, build speed, CI), madebyjordan (AMD FSR 4.1), N3oTraX (FSR 4 on
   Linux), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,

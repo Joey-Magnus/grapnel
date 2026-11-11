@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 17
+#define MKWVK_API_VERSION 18
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -172,6 +172,14 @@ typedef struct MkwVkHost {
     /* (version 17, hookshot) what of the button prompts a change of face or controls reaches at once (host/prompts.c):
        HOS_PROMPTS_LIVE_* bits; 0 none (a mod's files, built without the prompts, or not loaded yet) */
     int (*prompts_live)(void);
+    /* (version 18, hookshot) the Insert menu's Amiibo row (host/amiibo.c): how many dumps the game folder's amiibo folder holds
+       (counted again at each call), one's file name by its place in that list, that one put on the emulated reader (-1: the
+       figure taken off; 1 done, 0 not an amiibo dump), and the reader as the row shows it: 0 no figure, 1 a figure on it, 2 a
+       figure on it while the game searches, 3 the figure read by the game */
+    int (*amiibo_count)(void);
+    const char *(*amiibo_name)(int index);
+    int (*amiibo_choose)(int index);
+    int (*amiibo_state)(void);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
