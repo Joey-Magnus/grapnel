@@ -1099,8 +1099,10 @@ class Launcher(object):
         said, good = self.source_check()
         y = self.field(y, "Game File", words, WHY if there and good is False else FIELD_INK, None if busy else self.choose_source,
                        app.nup.get() if there and app.kind.get() == "nup" else None)
-        if there and good is False:   # (why the file chosen cannot be built from)
-            y = self.wrapped(x0, y + u(4), said, "LsLabel", WHY, u(235), lines=3)
+        if there and good is False:   # (why the file chosen cannot be built from: one line, whole under the pointer)
+            said_top = y + u(4)
+            y = self.wrapped(x0, said_top, said, "LsLabel", WHY, u(235), lines=1)
+            self.region(x0, said_top, x1, y, tip=said)
         out = app.out.get().strip()
         y = self.field(y + u(8), "Install to", out or "Choose a folder", FIELD_INK if out else LABEL,
                        None if busy else self.choose_out, os.path.expanduser(out) if out else None)
@@ -1126,8 +1128,12 @@ class Launcher(object):
                     self.start_build if ready else None, EDGE)
         y = top + u(38)
         line, ink = self.build_line(there, out, said, good)
-        if line:
-            y = self.wrapped(cx, y + u(8), line, "LsLabel", ink, u(235), anchor="n", justify="center", lines=3)
+        # (the build options are drawn from the panel's foot up: the line takes the lines there is room for above them, never
+        # one over them. A long reason under the game file and this line together ran into "Build options" on a 640 window)
+        height = int(self.app.tk.call("font", "metrics", "LsLabel", "-linespace"))
+        room = self.options_top(bottom) - u(4) - u(16) - (y + u(8))
+        if line and room >= height:
+            y = self.wrapped(cx, y + u(8), line, "LsLabel", ink, u(235), anchor="n", justify="center", lines=min(3, room // height))
         self.box(0, y + u(16), u(PANEL - 1), y + u(16) + max(1, u(1)), RULE)
         self.draw_options(bottom)
 
@@ -1145,6 +1151,13 @@ class Launcher(object):
         if free is None:
             return "About 45 minutes, once · needs 45 GB", LABEL
         return "About 45 minutes, once · needs 45 GB, %d GB free there" % free, WHY if free < 45 else LABEL
+
+    OPTIONS = 3   # (Language, Workers, Memory)
+
+    def options_top(self, bottom):
+        """where the build options start, their "Build options" label's top: rows of 32 and 8 between, up from the foot"""
+        u = self.u
+        return bottom - u(32) * self.OPTIONS - u(8) * (self.OPTIONS - 1) - u(16) - u(8)
 
     def draw_options(self, bottom):
         """Build options (Paper: Language, Workers, Memory), rows of 32 from the body's foot up"""
