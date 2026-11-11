@@ -618,6 +618,11 @@ struct NvnState {
     // per NVN stage (0 vertex, 1 fragment, 2 geometry, 3 tess control, 4 tess evaluation, 5 compute)
     nvn_p_bind_buf ubo[6][16]{}, ssbo[6][16]{};
     uint64_t tex[6][128]{}, samp[6][128]{}, img[6][32]{};
+    // (macOS port, as gpu/vk/vk_shader.cpp GetReplaceConstBuffer) the draw being prepared: its base vertex, base instance
+    // and draw index, which NVN's draw macros put in the vertex stage's c0 at 0x640, 0x644 and 0x648 (gl_BaseVertex,
+    // gl_BaseInstance, gl_DrawID). OoT's text finds each string's glyph records with the base instance there.
+    int32_t draw_base_vertex = 0;
+    uint32_t draw_base_instance = 0, draw_id = 0;
     nvn_blend_st blend[8]{};   // by target
     nvn_color_st color{};
     nvn_chmask_st chmask{0xffffffffu};

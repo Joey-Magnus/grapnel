@@ -327,6 +327,9 @@ void nvn_driver_bank(const NvnState& s, int bank, int stage, uint8_t d[0xA00]) {
         } else if (stage == 0) {
             const float point_max = 2047.9375f;
             std::memcpy(d + 0x610, &point_max, 4);
+            std::memcpy(d + 0x640, &s.draw_base_vertex, 4);   // (the draw macros' parameters, see NvnState)
+            std::memcpy(d + 0x644, &s.draw_base_instance, 4);
+            std::memcpy(d + 0x648, &s.draw_id, 4);
         }
     } else if (bank == 2) {
         for (int r = 0; r < 128; r++) {
@@ -394,6 +397,9 @@ uint32_t nvn_driver_bank_word(const NvnState& s, int bank, int stage, uint32_t o
     }
     if (base && offset >= base && offset < base + 16 * 16) return table(s.ssbo[stage], base);
     if (stage == 0 && offset == 0x610) return std::bit_cast<uint32_t>(2047.9375f);
+    if (stage == 0 && offset == 0x640) return (uint32_t)s.draw_base_vertex;   // (the draw macros' parameters)
+    if (stage == 0 && offset == 0x644) return s.draw_base_instance;
+    if (stage == 0 && offset == 0x648) return s.draw_id;
     return 0;
 }
 

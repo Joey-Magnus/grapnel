@@ -3498,6 +3498,10 @@ void nvn_draw(NvnState& s, const NvnDraw& d) {
         count(why);
     };
     if (!d.count) return count("draws_empty");
+    // (macOS port, as gpu/vk) the draw macros' parameters in the vertex stage's c0 (NvnState::draw_base_vertex)
+    s.draw_base_vertex = d.indexed ? d.base_vertex : (int32_t)d.first;
+    s.draw_base_instance = d.base_instance;
+    s.draw_id = 0;
     trim_bind_groups();
     const Attachments at = nvn_attachments(s);
     if (!at.width) return skip("no render target");
