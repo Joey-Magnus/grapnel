@@ -66,7 +66,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         launchAt = LaunchArg() ?? HomeGame();
-        OutPath.Text = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Games", "Hookshot");
+        OutPath.Text = BuilderHome.DefaultGame;
+        // (a portable home on a USB drive: no shortcuts on this PC unless asked, as the setup's portable install)
+        if (BuilderHome.Portable) desktopShortcut = startShortcut = false;
         LanguageBox.ItemsSource = Strings.All;
         LanguageBox.SelectedItem = lang;
         WorkerBox.ItemsSource = BuildWorkers.Choices(Environment.ProcessorCount);
@@ -325,6 +327,105 @@ public partial class MainWindow : Window
     /// (Prepare Shaders, Enable FSR 4: kept at once, not only when Build Game is pressed)
     void SettingClick(object sender, RoutedEventArgs e) => SaveSettings();
 
+    // ---- Save my pipeline list: the game folder's pipeline list and the "Submit your pipelines" issue's template, filled in,
+    // zipped into the Downloads folder by nx2/pipeline_share.py (as the Linux builder and the game's menu do), then the template
+    // on the clipboard, the zip shown in its folder and the issue opened. Nothing is uploaded: the player attaches the zip ----
+    const string ShareIssue = "https://github.com/NotRexed/Hookshot/issues/2034";
+
+    async void LaunchShareClick(object sender, RoutedEventArgs e)
+    {
+        var tools = Tools.Find();
+        LaunchShareStatus.Visibility = Visibility.Visible;
+        if (tools == null)
+        {
+            LaunchShareStatus.Text = "The builder's tools were not found: start it again from its own folder.";
+            return;
+        }
+        LaunchShare.IsEnabled = false;
+        LaunchShareStatus.Text = "Saving…";
+        var folder = launchFolder;
+        var (zip, template, count, error) = await Task.Run(() => SharePipelines(tools, folder, DownloadsFolder()));
+        LaunchShare.IsEnabled = true;
+        if (zip == null)
+        {
+            LaunchShareStatus.Text = error ?? "The pipeline list could not be saved.";
+            return;
+        }
+        var copied = false;
+        try { Clipboard.SetText(template ?? ""); copied = true; } catch (Exception) { }
+        var explorer = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");   // (not one found on the path)
+        try { Process.Start(new ProcessStartInfo(File.Exists(explorer) ? explorer : "explorer.exe", $"/select,\"{zip}\"") { UseShellExecute = true }); } catch (Exception) { }
+        var opened = false;
+        try { Process.Start(new ProcessStartInfo(ShareIssue) { UseShellExecute = true }); opened = true; } catch (Exception) { }
+        var said = $"Saved {System.IO.Path.GetFileName(zip)} ({count} pipelines) in {System.IO.Path.GetDirectoryName(zip)}. " +
+            (copied ? "The report is copied. " : "The report is in the zip. ") +
+            (opened ? "Issue #2034 is open in your browser: attach" : $"Open {ShareIssue} and attach") +
+            " the zip to a comment, then paste the report and say where you played.";
+        // (the menu's panel is narrow: the short of it there, the whole under the pointer)
+        LaunchShareStatus.Text = $"Saved in {System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(zip))}: attach it to issue #2034" +
+            (copied ? " with the copied report." : ", with the report in it.");
+        LaunchShareStatus.ToolTip = said;
+    }
+
+    /// nx2/pipeline_share.py --json: (the zip, the template, the pipelines) or the reason there is none
+    static (string? Zip, string? Template, int Count, string? Error) SharePipelines(Tools tools, string folder, string outDir)
+    {
+        var si = new ProcessStartInfo(tools.Python)
+        {
+            WorkingDirectory = tools.Root,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+        };
+        si.Environment["PYTHONIOENCODING"] = "utf-8";
+        foreach (var a in tools.PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
+        si.ArgumentList.Add("-I");
+        si.ArgumentList.Add(System.IO.Path.Combine(tools.Root, "nx2", "pipeline_share.py"));
+        si.ArgumentList.Add(folder);
+        si.ArgumentList.Add("--out-dir");
+        si.ArgumentList.Add(outDir);
+        si.ArgumentList.Add("--json");
+        try
+        {
+            using var p = Process.Start(si)!;
+            var stderr = p.StandardError.ReadToEndAsync();   // (drained, so a long complaint cannot stall it)
+            var line = p.StandardOutput.ReadToEnd().Trim().Split('\n').LastOrDefault() ?? "";
+            p.WaitForExit();
+            if (!line.StartsWith("{"))   // (the script stopped before its answer: what it said last)
+            {
+                var last = stderr.Result.Trim().Split('\n').LastOrDefault()?.Trim();
+                return (null, null, 0, "The pipeline list could not be saved" + (string.IsNullOrEmpty(last) ? "." : ": " + last));
+            }
+            using var doc = System.Text.Json.JsonDocument.Parse(line);
+            var r = doc.RootElement;
+            if (r.GetProperty("ok").GetBoolean())
+                return (r.GetProperty("zip").GetString(), r.GetProperty("template").GetString(), r.GetProperty("pipelines").GetInt32(), null);
+            return (null, null, 0, r.GetProperty("error").GetString());
+        }
+        catch (Exception ex)
+        {
+            return (null, null, 0, tools.OwnPythonMissing ? Tools.OwnPythonMissingText : "The pipeline list could not be saved: " + ex.Message);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling = true)]
+    static extern int SHGetKnownFolderPath([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStruct)] Guid id,
+                                           uint flags, IntPtr token, out string path);
+
+    /// Where a browser's file picker opens: the Downloads folder, else the user's own
+    static string DownloadsFolder()
+    {
+        try
+        {
+            if (SHGetKnownFolderPath(new Guid("374DE290-123F-4565-9164-39C4925E467B"), 0, IntPtr.Zero, out var path) == 0 && Directory.Exists(path))
+                return path;
+        }
+        catch (Exception) { }
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
     // ---- what the player chose last time (BuilderSettings.cs): builder-settings.json beside the versions ----
     static string SettingsPath => System.IO.Path.Combine(Storage.Base, "builder-settings.json");
 
@@ -332,6 +433,10 @@ public partial class MainWindow : Window
     {
         var s = BuilderSettings.Load(SettingsPath);
         if (s == null) return;
+        s.Out = BuilderHome.LoadPath(s.Out);
+        s.Nup = BuilderHome.LoadPath(s.Nup);
+        s.Romfs = BuilderHome.LoadPath(s.Romfs);
+        s.Exefs = BuilderHome.LoadPath(s.Exefs);
         PrepareTick.IsChecked = !s.PrepareLater;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
@@ -360,7 +465,9 @@ public partial class MainWindow : Window
     {
         try
         {
-            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
+            var s = new BuilderSettings { Out = BuilderHome.SavePath(OutPath.Text),
+                                          Nup = BuilderHome.SavePath(romfs == null ? chosenNup : null),
+                                          Romfs = BuilderHome.SavePath(romfs), Exefs = BuilderHome.SavePath(exefs),
                                           Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
@@ -1016,13 +1123,7 @@ public partial class MainWindow : Window
         }
         if (failure == "cancelled")
         {
-            // (as it was before the build: the launcher of a game that is there, else the choices)
-            if (updating && File.Exists(GameExe(OutPath.Text))) EnterLauncher(OutPath.Text);
-            else
-            {
-                ShowFace(Face.Files);
-                Refresh();
-            }
+            BackFromBuild();
             return;
         }
         if (current != null && rows.TryGetValue(current, out var row)) row.Stopped();
@@ -1117,7 +1218,7 @@ public partial class MainWindow : Window
         if (tools)
         {
             problemTitle = "The build tools need repairing";
-            var base_ = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder");
+            var base_ = Storage.Base;
             problemWhy = $"Your antivirus removed part of the build tools. {line} Restore them in Windows Security (Protection history), " +
                          $"or add {base_} to its exclusions, then press Repair build tools.";
         }
@@ -1142,12 +1243,17 @@ public partial class MainWindow : Window
     }
 
     /// (from a build that stopped: to what was there before it, the launcher of a game that is there, else the choices)
-    void Back(object sender, RoutedEventArgs e)
+    void Back(object sender, RoutedEventArgs e) => BackFromBuild();
+
+    /// From a build or an update that stopped (Back) or was cancelled, to what was there before it: the launcher of the game that
+    /// is there, which offers the update again (EnterLauncher: the releases are asked for, or the ones already in are listed),
+    /// also after a start with --update that went straight to the update (#2129); else the build's choices. One way back, so a
+    /// cancel and a stop cannot leave the window in two different states
+    void BackFromBuild()
     {
         if (updating && File.Exists(GameExe(OutPath.Text)))
         {
-            updating = false;
-            EnterLauncher(OutPath.Text);
+            EnterLauncher(OutPath.Text);   // (updating = false there)
             return;
         }
         updating = false;

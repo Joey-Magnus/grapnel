@@ -293,6 +293,7 @@ public partial class MainWindow
             ? $"Skips the {Storage.Gb(bytes)} pipeline cache file: less memory, may stutter more the first time."
             : "Skips the pipeline cache file the game makes as it plays: less memory, may stutter more the first time.";
         LowMemNote.Visibility = LowMemNote.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        LaunchShare.IsEnabled = game != null;   // (Save my pipeline list: the game folder's)
     }
 
     void LowMemClick(object sender, RoutedEventArgs e)
@@ -568,6 +569,8 @@ public partial class MainWindow
                 StandardOutputEncoding = System.Text.Encoding.UTF8,
             };
             foreach (var a in new[] { "--engine", "--tag", tag }) si.ArgumentList.Add(a);
+            // (this builder's home, a portable one too: the release goes beside the versions there, BuilderHome.cs)
+            BuilderHome.PassTo(si);
             using var p = Process.Start(si)!;
             enginePull = p;
             while (await p.StandardOutput.ReadLineAsync() is { } line) WorkLine(line);

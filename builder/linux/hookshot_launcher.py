@@ -198,6 +198,7 @@ class Launcher(object):
         # that tab from the start, its older releases unfolded, a build or an update made up and drawn half way or stopped
         preview = [p.strip() for p in os.environ.get("HOOKSHOT_UI_PREVIEW", "").split(",")]
         self.older_open = "older" in preview
+        self.share_said = None   # (what Save my pipeline list did, under it in Settings)
         self.releases, self.latest, self.checked, self.checking, self.check_says = [], None, False, False, None
         self.photos, self.regions, self.hot, self.down, self.size, self.scroll = {}, [], None, None, (0, 0), 0
         self.redraw_job = self.tip_job = self.tip_window = self.tick_job = self.said_job = None
@@ -1283,6 +1284,13 @@ class Launcher(object):
             note = ("Skips the %s pipeline cache file: less memory, may stutter more the first time." % game_env.size_text(size) if size > 0 else
                     "Skips the pipeline cache file the game makes as it plays: less memory, may stutter more the first time.")
             y = self.wrapped(u(16), y + u(4), note, "LsLabel", OFF_INK, u(205), lines=3)
+            # (#2447's Save my pipeline list: the game folder's list and the "Submit your pipelines" issue's report, zipped into
+            # Downloads, hookshot_builder.share_pipeline_list. What it did, under it)
+            y += u(12)
+            self.canvas.create_text(u(16), y + u(16), text="Pipeline list", font="LsLabel", fill=WHITE, anchor="w", tags="ui")
+            self.link(u(251), y + u(16), "Save", self.share_pressed, anchor="e")
+            y = self.wrapped(u(16), y + u(36), self.share_said or "Helps remove stutter: a zip to attach to the Submit your pipelines issue.",
+                             "LsLabel", OFF_INK, u(205), lines=5)
         y = self.switch(y + u(12), "Enable pre-releases", self.pre_on(), self.pre_pressed,
                         "Release candidates in Releases, and Check for updates offers them.")
         # (Paper's 189 in Segoe UI; Inter is wider, and 205 breaks its lines where Paper's do)
@@ -1348,6 +1356,14 @@ class Launcher(object):
             game_env.set_skip(self.folder, not game_env.folder_skips_cache(self.folder))
         except OSError as error:
             messagebox.showwarning("Hookshot", "The setting could not be saved in the game folder: %s" % error, parent=self.app)
+
+    def share_pressed(self):
+        """Save my pipeline list (hookshot_builder.share_pipeline_list): the zip in Downloads, the report copied, the issue opened"""
+        self.share_said = "Saving..."
+        self.draw()
+        self.app.update_idletasks()
+        self.share_said = self.hb.share_pipeline_list(self.folder, copy=self.app.copy_text)
+        self.draw()
 
     def pre_pressed(self):
         """Enable pre-releases: the update track, Release or Release candidate (a nightly one kept is turned off to Release)"""

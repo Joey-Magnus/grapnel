@@ -841,6 +841,16 @@
                 </Grid>
                 <TextBlock x:Name="LowMemNote" Style="{StaticResource Small}" Foreground="#B0B0B0" Width="189" HorizontalAlignment="Left" TextWrapping="Wrap"
                            Margin="0,4,0,0" Visibility="Collapsed"/>
+                <!-- (#2447's Save my pipeline list: the game folder's list and the "Submit your pipelines" issue's report, zipped into
+                     Downloads, LaunchShareClick. Only with a game folder: the list is the game's. The note under it says what it did) -->
+                <Grid Margin="0,12,0,0">
+                  <TextBlock Style="{StaticResource Small}" Text="Pipeline list" VerticalAlignment="Center"/>
+                  <Button x:Name="LaunchShare" Style="{StaticResource SmallLink}" HorizontalAlignment="Right" Content="Save" Click="LaunchShareClick"
+                          AutomationProperties.Name="Save my pipeline list"
+                          ToolTip="Saves the list of pipelines your game made, and a filled-in report, as a zip for the &quot;Submit your pipelines&quot; issue. Nothing is uploaded."/>
+                </Grid>
+                <TextBlock x:Name="LaunchShareStatus" Style="{StaticResource Small}" Foreground="#B0B0B0" Width="189" HorizontalAlignment="Left"
+                           TextWrapping="Wrap" Margin="0,4,0,0" Text="Helps remove stutter: a zip to attach to the Submit your pipelines issue."/>
                 <!-- (Hookshot's update track, Updater.cs: off, Release; on, Release candidate. A Nightly chosen before shows on and stays
                      Nightly until it is switched) -->
                 <Grid Margin="0,12,0,0">
