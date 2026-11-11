@@ -263,6 +263,10 @@ void hos_update_check(void) {
 /* (the same offer as Windows, when the player started bin/hookshot itself. The launcher sets HOOKSHOT_NO_UPDATE_CHECK
    and asks in its own window. curl and zenity do the network and the question; without either, the game just starts) */
 
+/* "Skip this version" is kept in the data folder (host/hos_data.c, chosen first: $XDG_DATA_HOME/hookshot, or --user's
+   folder), never in a user/ folder beside the game: the start's move of such a folder would take the file for a save
+   (moved, or found in both places and the saves kept beside the game) */
+
 static int read_value(const char *path, const char *name, char *out, size_t cap) {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;

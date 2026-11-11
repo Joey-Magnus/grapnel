@@ -63,6 +63,7 @@ static const char *const to_cache[] = {
     "hookshot_programs.bin", "hookshot_programs.idx", "hookshot_pipelines.bin", "hookshot_computes.bin",
     "hookshot_pipeline_states.bin", "hookshot_pipeline_states_v1.bin", "hookshot_prepared.bin", "hookshot_prepare_skipped",
     "hookshot_pipelines.bin.running",   /* (the precompile's crash count, beside its notes: vk_draw.cpp precompile_run) */
+    "hookshot_driver_faults.txt",       /* (the programs this PC's driver faulted on: vk_draw.cpp driver_faults_path) */
 };
 /* The Vulkan pipeline cache, mkw_vk_pipelines.bin and its play files mkw_vk_pipelines_play_<n>.bin (mkw-recomp's names), renamed
    hookshot_vk_pipelines*.bin as they move into cache/ (gpu/vk/vk_draw.cpp) */
@@ -70,7 +71,7 @@ static const char old_pcache[] = "mkw_vk_pipelines", new_pcache[] = "hookshot_vk
 /* Made from the player's choices and made again when missing: deleted from the game folder */
 static const char *const made_again[] = {
     "prompts" SEP_S "Common.bntx.zs", "prompts" SEP_S "Common.blarc.zs", "prompts" SEP_S "Common.key",
-    "prompts" SEP_S "Common.blarc.key", "prompts" SEP_S "External.bfotf.zs",
+    "prompts" SEP_S "Common.blarc.key", "prompts" SEP_S "External.bfotf.zs", "prompts" SEP_S "rsizetable.mod.zs",
 };
 
 static int exists(const char *p) { return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES; }
