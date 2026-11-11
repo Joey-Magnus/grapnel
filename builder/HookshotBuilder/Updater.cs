@@ -131,6 +131,7 @@ static class Updater
     {
         var found = new List<ReleaseInfo>();
         string? latest = null;
+        var unanswered = false;   // (no answer at all: offline, or GitHub out of reach)
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
@@ -151,18 +152,21 @@ static class Updater
                     var names = new HashSet<string?>();
                     if (r.TryGetProperty("assets", out var assets))
                         foreach (var asset in assets.EnumerateArray()) names.Add(asset.GetProperty("name").GetString());
-                    // (what UpdateFolder downloads: the setup and its list, else the whole zip)
-                    found.Add(new ReleaseInfo(tag, pre, names.Contains(Asset) || (names.Contains(SetupAsset) && names.Contains(SetupList))));
+                    // (what UpdateFolder downloads: the setup and its list, else the whole zip. The setup's engine mode only the first)
+                    var listed = names.Contains(SetupAsset) && names.Contains(SetupList);
+                    found.Add(new ReleaseInfo(tag, pre, names.Contains(Asset) || listed, listed));
                     if (latest == null && !pre) latest = tag;
                 }
             }
         }
+        // (offline: no second try that waits a minute for the same silence. GitHub's no, its limit (HTTP 403, 429), is an answer)
+        catch (Exception e) when (e is HttpRequestException { StatusCode: null } or TaskCanceledException) { unanswered = true; }
         catch (Exception) { }
         // (the API's limit: the setup list still names the latest. What it holds is not known then: it is taken to have its builder)
-        if (found.Count == 0 && await LatestTag() is { } named)
+        if (found.Count == 0 && !unanswered && await LatestTag() is { } named)
         {
             latest = named;
-            found.Add(new ReleaseInfo(named, false, true));
+            found.Add(new ReleaseInfo(named, false, true, true));
         }
         return (found, latest);
     }
@@ -238,7 +242,7 @@ static class Updater
         var si = new ProcessStartInfo(setup) { UseShellExecute = false, WorkingDirectory = cache };
         foreach (var arg in args) si.ArgumentList.Add(arg);
         Process.Start(si);
-        Application.Current.Shutdown();
+        w.Leave();
     }
 
     /// The game in folder built again with the latest release: here when these tools are it (or fetched), else after the setup
@@ -330,7 +334,7 @@ static class Updater
                 var ssi = new ProcessStartInfo(setup) { UseShellExecute = false, WorkingDirectory = cache };
                 foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) ssi.ArgumentList.Add(arg);
                 Process.Start(ssi);
-                Application.Current.Shutdown();
+                w.Leave();
                 return;
             }
             if (url == null) throw new InvalidOperationException(which + " has no " + Asset + ".");
@@ -355,7 +359,7 @@ static class Updater
             var si = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = target };
             foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) si.ArgumentList.Add(arg);
             Process.Start(si);
-            Application.Current.Shutdown();
+            w.Leave();
         }
         catch (OperationCanceledException)
         {

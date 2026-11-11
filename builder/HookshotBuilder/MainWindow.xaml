@@ -709,7 +709,8 @@
                       </Grid>
                       <TextBlock x:Name="BuildLine" Style="{StaticResource Small}" Foreground="#B8B8B8" HorizontalAlignment="Center" TextAlignment="Center"
                                  TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed" Background="Transparent"/>
-                      <TextBlock x:Name="BuildWhy" Style="{StaticResource Why}" Margin="0,8,0,0" MaxWidth="174" HorizontalAlignment="Left" Visibility="Collapsed"/>
+                      <TextBlock x:Name="BuildWhy" Style="{StaticResource Why}" Margin="0,8,0,0" MaxWidth="174" HorizontalAlignment="Left" Visibility="Collapsed"
+                                 MaxHeight="162" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
                   </Border>
                 </StackPanel>
@@ -809,7 +810,8 @@
                  the red button of one that stopped (Paper: "Releases Menu - Update Available", "Releases Menu - Updating") ==== -->
             <Border Grid.Row="2" BorderBrush="#282828" BorderThickness="0,1,0,0" Padding="16,16,16,0">
               <StackPanel>
-                <TextBlock x:Name="FootWhy" Style="{StaticResource Why}" Margin="0,0,0,8" Visibility="Collapsed"/>
+                <!-- (a long reason is cut, whole under the pointer and in Show details: the buttons under it stay in the panel) -->
+                <TextBlock x:Name="FootWhy" Style="{StaticResource Why}" Margin="0,0,0,8" Visibility="Collapsed" MaxHeight="108" TextTrimming="CharacterEllipsis"/>
                 <Grid>
                   <Button x:Name="LauncherCheck" Style="{StaticResource Block}" Content="Check for updates" Click="LauncherCheckClick"/>
                   <Button x:Name="UpdateButton" Style="{StaticResource Block}" Background="#D2823F" Foreground="#000000" Content="Update Available"
@@ -832,6 +834,8 @@
                 <StackPanel x:Name="FootLinks" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0" Visibility="Collapsed">
                   <Button x:Name="FootDetails" Style="{StaticResource SmallLink}" Content="Show details" Click="DetailsClick"/>
                   <Button x:Name="FootCopy" Style="{StaticResource SmallLink}" Content="Copy error log" Margin="8,0,0,0" Click="StoppedCopyClick"/>
+                  <Button x:Name="FootDismiss" Style="{StaticResource SmallLink}" Content="Dismiss" Margin="8,0,0,0" Click="FootDismissClick"
+                          ToolTip="Put this away: Check for updates in its place"/>
                 </StackPanel>
               </StackPanel>
             </Border>

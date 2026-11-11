@@ -85,7 +85,7 @@ public partial class MainWindow
         {
             await Task.Delay(500);
             SaveShot(Shot);
-            Application.Current.Shutdown();
+            Leave();
         }
     }
 
@@ -152,7 +152,7 @@ public partial class MainWindow
         {
             found = fake == "none" ? new List<ReleaseInfo>()
                 : fake.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                      .Select(t => new ReleaseInfo(t.TrimEnd('?'), IsPre(t), !t.EndsWith('?'))).ToList();
+                      .Select(t => new ReleaseInfo(t.TrimEnd('?'), IsPre(t), !t.EndsWith('?'), !t.EndsWith('?'))).ToList();
             latest = found.FirstOrDefault(r => !r.Pre)?.Tag;
         }
         else
@@ -227,20 +227,23 @@ public partial class MainWindow
         var ahead = launchBuilt == null || !IsRelease(launchBuilt) || Newer(tag, launchBuilt);
         // (kept for this folder, as Play keeps what it played: the builder opened with nothing asked finds the game by it)
         SaveChoice(launchFolder, c.Key);
-        // (asked every time: a version is not downloaded ready to play, its tools build the game again from the player's files)
+        // (beside the builder in use, by the setup's engine mode, when the release has what it installs from: LaunchList.ByEngine)
+        var engine = ByEngine(launchReleases.FirstOrDefault(r => SameTag(r.Tag, tag)), BuilderHere(tag) != null, EngineSetup() != null);
+        // (asked every time: a version is not downloaded ready to play, its tools build the game again from the player's files.
+        // The builder goes back too only by its own update: the engine mode leaves the one in use, NextBuilder)
         var name = VersionName(tag);
         var rebuild = $"Your game is rebuilt from your game files with {name}'s tools. That takes {AboutTime()} on this PC, and Play waits until it is done. Your saves and settings stay.";
         var ask = ahead ? $"Update to {name}?\n\n{rebuild}"
-                        : $"Switch back to {name}? It replaces {VersionName(launchBuilt!)} in this folder, and the builder goes back with it.\n\n{rebuild}";
+                        : $"Switch back to {name}? It replaces {VersionName(launchBuilt!)} in this folder{(engine ? "" : ", and the builder goes back with it")}.\n\n{rebuild}";
         if (Shot == null && MessageBox.Show(this, ask, "Hookshot", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
-        if (BuilderHere(tag) != null || EngineSetup() != null)
+        if (engine)
         {
             StartWork(c);
             return;
         }
-        // (a setup from before it could install a version beside this one: the builder's own update, which takes this builder's
-        // place with that version's. The latest release as before; any other by its own tag)
+        // (a setup from before it could install a version beside this one, or a release with only the zip: the builder's own
+        // update, which takes this builder's place with that version's. The latest release as before; any other by its own tag)
         readyNote = null;
         Updater.UpdateFolder(this, launchFolder, tag, fetched: false, named: !SameTag(tag, latestTag));
     }
@@ -277,8 +280,10 @@ public partial class MainWindow
         return minutes >= 60 ? $"about {minutes / 60} h {(minutes % 60 > 0 ? $"{minutes % 60} min" : "")}".TrimEnd() : $"about {minutes} minutes";
     }
 
-    /// (a build or an update under way: nothing else starts)
-    bool Busy => runner != null || launchState == LaunchState.Working;
+    /// (a build or an update under way, the builder's own update's download too, or the build files let go after one: nothing
+    /// else starts)
+    bool Busy => runner != null || launchState == LaunchState.Working || download != null || (face == Face.Build && updating) ||
+                 freeing != null;
 
     void LauncherFoldClick(object sender, RoutedEventArgs e)
     {
@@ -344,6 +349,7 @@ public partial class MainWindow
         BuildLine.ToolTip = idle && readyNote != null ? readyTip : null;
         BuildLine.Visibility = line.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         BuildWhy.Text = tabStopped ? problemWhy : "";
+        BuildWhy.ToolTip = BuildWhy.Text.Length > 0 ? BuildWhy.Text : null;   // (whole: MainWindow.xaml cuts a long one)
         BuildWhy.Visibility = tabStopped ? Visibility.Visible : Visibility.Collapsed;
         BuildStopped.Content = problemIsTools ? "Repair build tools" : "Build stopped";
         BuildStopped.ToolTip = problemIsTools ? "Downloads the build tools again from their official releases" : "Try again";
@@ -368,6 +374,7 @@ public partial class MainWindow
             : "";
         FootNote.Visibility = FootNote.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         FootWhy.Text = launchState == LaunchState.Stopped ? StoppedWhy() : footStopped ? problemWhy : "";
+        FootWhy.ToolTip = FootWhy.Text.Length > 0 ? FootWhy.Text : null;
         FootWhy.Visibility = footStopped ? Visibility.Visible : Visibility.Collapsed;
         if (launchState == LaunchState.Working && work != null) SetBar(FootBar, FootFill, FootBarText, work.Fraction, work.Bar);
         else if (building) SetBar(updating ? FootBar : BuildBar, updating ? FootFill : BuildFill, updating ? FootBarText : BuildBarText,
@@ -391,13 +398,13 @@ public partial class MainWindow
         if (Busy || launchGo != Go.Play) return;
         var c = Picked;
         if (c != null) SaveChoice(launchFolder, c.Key);
-        StartGame(launchFolder);
-        Application.Current.Shutdown();
+        if (StartGame(launchFolder)) Leave();
     }
 
     /// The red button of a build or an update that stopped: it tries again (or repairs the build tools)
     void LauncherStoppedClick(object sender, RoutedEventArgs e)
     {
+        if (Busy) return;
         if (face == Face.Problem)
         {
             RetryProblem(sender, e);
@@ -405,6 +412,18 @@ public partial class MainWindow
         }
         if (launchState != LaunchState.Stopped) return;
         if (workTarget != null) StartWork(workTarget);
+    }
+
+    /// (Dismiss, beside Copy error log: the update that stopped put away, Check for updates in its place)
+    void FootDismissClick(object sender, RoutedEventArgs e)
+    {
+        if (face == Face.Problem && updating) Back(sender, e);
+        else if (launchState == LaunchState.Stopped)
+        {
+            launchState = LaunchState.Idle;
+            ShowDetails(false);
+            FillChoices();
+        }
     }
 
     // ---- a version brought: the launcher stays, and hidden programs do it (Paper: "v2 - Updating", "v2 - Update stopped") ----
@@ -435,6 +454,7 @@ public partial class MainWindow
         workLog.Clear();
         launchState = LaunchState.Working;
         readyNote = null;
+        (BuildCopy.Content, FootCopy.Content) = ("Copy error log", "Copy error log");
         ShowDetails(false);
         // (its steps, in the menu: the builder got first when it is not here; the shaders' step when that version has one and
         // the player has it on. One downloaded is a version that has it)
@@ -459,28 +479,45 @@ public partial class MainWindow
         // (the build memory as saved, as the builder's own update takes it, BeginUpdate: no menu of options is shown here. Tools
         // from before the choice do not read it)
         var memoryGb = BuilderSettings.Load(SettingsPath)?.MemoryGb is int gb && gb > 0 ? gb : (int?)null;
-        // (as the builder's own update does it, UpdateBuild: a folder built with NVIDIA DLSS, its license accepted then, is built
-        // with it again; the build files where the player chose)
-        var dlss = File.Exists(System.IO.Path.Combine(launchFolder, "ngx", "nvngx_dlss.dll")) &&
-                   File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt"));
+        // (as the builder's own update does it, UpdateBuild: the saved NVIDIA DLSS tick, or a folder built with DLSS, its license
+        // accepted then, is built with it; AMD FSR 4 the same; the build files where the player chose. Each said only to tools that
+        // know the word: an older version's make_game.py would stop on an argument it does not know)
+        var saved = BuilderSettings.Load(SettingsPath);
+        var known = MakeGameText(tools!);
+        var dlss = (saved?.Dlss == true ||
+                    (File.Exists(System.IO.Path.Combine(launchFolder, "ngx", "nvngx_dlss.dll")) &&
+                     File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")))) &&
+                   Knows(known, "--fetch-ngx-sdk") && Knows(known, "--accept-nvidia-license");
+        var fsr = ((saved?.Fsr == true && saved.FsrLicense) ||
+                   (File.Exists(System.IO.Path.Combine(launchFolder, ".hookshot_fsr")) &&
+                    File.Exists(System.IO.Path.Combine(launchFolder, "amd_fidelityfx_upscaler_vk.dll")) &&
+                    File.Exists(System.IO.Path.Combine(launchFolder, "LICENSE-AMD-FSR-SDK.md")))) &&
+                  Knows(known, "--fsr") && Knows(known, "--fetch-fsr-runtime") && Knows(known, "--accept-amd-license");
         var args = new List<string> { "--update", launchFolder };
-        if (Storage.WorkChosen) args.AddRange(new[] { "--work", Storage.Work });
+        if (Storage.WorkChosen && Knows(known, "--work")) args.AddRange(new[] { "--work", Storage.Work });
         if (dlss) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
+        if (fsr) args.AddRange(new[] { "--fsr", "--fetch-fsr-runtime", "--accept-amd-license" });
         // (the shaders' step, left to the game's first start when the player unticked it: said only to tools that know the
-        // word. A version from before the step has none to leave, and would stop on an argument it does not know)
+        // word. A version from before the step has none to leave)
         if (!BuilderSettings.PrepareNow(SettingsPath) && KnowsShaderStep(tools!)) args.Add(ShaderStep.Later);
-        launchRunner = new Runner(tools!, args, workers, dlss ? Storage.NgxSdk : null, memoryGb);
+        launchRunner = new Runner(tools!, args, workers, dlss ? Storage.NgxSdk : null, memoryGb, fsr ? Storage.FfxSdk : null);
         launchRunner.Line += l => Dispatcher.BeginInvoke(() => WorkLine(l));
         launchRunner.Finished += failure => Dispatcher.BeginInvoke(() => WorkEnded(failure));
         launchRunner.Start();
     }
 
     /// (that version's make_game.py takes --no-prepare-shaders: read from its text, as each version runs its own tools)
-    static bool KnowsShaderStep(Tools tools)
+    static bool KnowsShaderStep(Tools tools) => MakeGameText(tools).Contains(ShaderStep.Later);
+
+    /// (that version's make_game.py, as text: what it knows is read from it. Empty when it cannot be read)
+    static string MakeGameText(Tools tools)
     {
-        try { return File.ReadAllText(System.IO.Path.Combine(tools.Root, "nx2", "make_game.py")).Contains(ShaderStep.Later); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
+        try { return File.ReadAllText(System.IO.Path.Combine(tools.Root, "nx2", "make_game.py")); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return ""; }
     }
+
+    /// (an option make_game.py declares: its name in quotes, as argparse is given it)
+    static bool Knows(string makeGame, string option) => makeGame.Contains('"' + option + '"');
 
     /// The setup in its engine mode: that release installed beside the others, nothing started, nothing removed. null: done
     async Task<string?> PullEngine(string tag)
@@ -555,9 +592,9 @@ public partial class MainWindow
             if (workTarget?.Tag is { } tag) NextBuilder(tag);
             if (Shot == null) Finder.RefreshShortcuts(launchFolder);   // (the player's shortcuts, onto the folder's launcher again)
             // (as after any build: the build files go but its compiled objects, so the next version compiles only what changed,
-            // and a version's builder that is no longer the one in use)
-            var freed = Storage.KeepBuildFiles ? Task.CompletedTask : Task.Run(() => Storage.Free(afterBuild: true));
-            if (Shot != null) freed.Wait(20000);   // (development: it is out as soon as it is drawn)
+            // and a version's builder that is no longer the one in use. Nothing new starts until they are gone, Busy)
+            _ = FreeAfterBuild();
+            if (Shot != null && freeing?.Wait(20000) == true) freeing = null;   // (development: it is out as soon as it is drawn)
             launchState = LaunchState.Idle;
         }
         else if (failure == "cancelled" || workCancelled) launchState = LaunchState.Idle;
@@ -565,6 +602,7 @@ public partial class MainWindow
         {
             workStopped = failure ?? work?.Error ?? "The build tools stopped without saying why.";
             launchState = LaunchState.Stopped;
+            (BuildCopy.Content, FootCopy.Content) = ("Copy error log", "Copy error log");
             if (current != null && rows.TryGetValue(current, out var row)) row.Stopped();
         }
         if (launchState == LaunchState.Idle) ShowDetails(false);
@@ -572,7 +610,7 @@ public partial class MainWindow
         if (Shot != null)   // (development: drawn as it ended, and out)
         {
             SaveShot(Shot);
-            Application.Current.Shutdown();
+            Leave();
         }
     }
 
@@ -631,8 +669,12 @@ public partial class MainWindow
     }
 
     /// (the version under the button, pressed: the folder it is in)
-    void LauncherFolderClick(object sender, RoutedEventArgs e) =>
-        Process.Start(new ProcessStartInfo(launchFolder) { UseShellExecute = true });
+    void LauncherFolderClick(object sender, RoutedEventArgs e)
+    {
+        if (launchGo == Go.None || !Directory.Exists(launchFolder)) return;
+        try { Process.Start(new ProcessStartInfo(launchFolder) { UseShellExecute = true }); }
+        catch (Exception) { }   // (no Explorer to open it)
+    }
 
     /// (GitHub and Discord: the page in the button's Tag, in the browser)
     void LauncherLinkClick(object sender, RoutedEventArgs e)
@@ -755,6 +797,11 @@ public partial class MainWindow
         {
             foreach (var d in Directory.GetDirectories(System.IO.Path.Combine(Storage.Base, "versions")))
             {
+                // (only a version the setup finished: <tag>.part is one being unpacked, <tag>.gone one being removed, and its
+                // installed.txt is written last, builder/setup/setup.c)
+                if (d.EndsWith(".part", StringComparison.OrdinalIgnoreCase) || d.EndsWith(".gone", StringComparison.OrdinalIgnoreCase) ||
+                    !File.Exists(System.IO.Path.Combine(d, "installed.txt")))
+                    continue;
                 var tools = System.IO.Path.Combine(d, "HookshotBuilder", "tools");
                 var py = System.IO.Path.Combine(tools, "python", "python.exe");
                 var t = new Tools(tools, py);

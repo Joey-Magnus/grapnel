@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using Path = System.Windows.Shapes.Path;
@@ -113,7 +114,7 @@ public partial class MainWindow : Window
             Finder.Shortcuts(testFolder, true, true);
             File.WriteAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "shortcut-test.txt"),
                               $"desktop {File.Exists(Finder.DesktopLink)} start {File.Exists(Finder.StartLink)} error {Finder.ShortcutError}");
-            Application.Current.Shutdown();
+            Leave();
             return;
         }
         if (launchAt is { } launchFolder)   // (hookshot.exe in the game folder, or the game built last: the launcher at once, Launcher.cs)
@@ -137,10 +138,10 @@ public partial class MainWindow : Window
     {
         if (Shot == null) return;
         await Task.Delay(400);
-        while (runner != null || download != null || checking) await Task.Delay(100);
+        while (runner != null || download != null || checking || freeing != null) await Task.Delay(100);
         await Task.Delay(700);
         SaveShot(Shot);
-        Application.Current.Shutdown();
+        Leave();
     }
 
     /// The build's choices on the screen: when there is no game yet (first), or from the menu's "Build from game files". The
@@ -275,12 +276,23 @@ public partial class MainWindow : Window
         return File.Exists(game) ? game : System.IO.Path.Combine(folder, "hookshot.exe");
     }
 
-    /// (the launcher already checked for updates: the game does not ask again)
-    static void StartGame(string folder)
+    /// (the launcher already checked for updates: the game does not ask again). false: it could not be started (an antivirus
+    /// that took bin\hookshot.exe), and the player was told so
+    bool StartGame(string folder)
     {
-        var si = new ProcessStartInfo(GameExe(folder)) { UseShellExecute = false, WorkingDirectory = folder };
-        si.Environment["HOOKSHOT_NO_UPDATE_CHECK"] = "1";
-        Process.Start(si);
+        try
+        {
+            var si = new ProcessStartInfo(GameExe(folder)) { UseShellExecute = false, WorkingDirectory = folder };
+            si.Environment["HOOKSHOT_NO_UPDATE_CHECK"] = "1";
+            Process.Start(si);
+            return true;
+        }
+        catch (Exception e)
+        {
+            MessageBox.Show(this, $"The game could not be started: {e.Message.TrimEnd('.')}. Your antivirus may have removed it.",
+                            "Hookshot", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
     }
 
     // ---- the update track (Updater.cs): Settings' Enable pre-releases, saved; by default these tools' own ----
@@ -820,6 +832,7 @@ public partial class MainWindow : Window
         compileClock.Reset();
         clock.Start();
         Tick();
+        (BuildCopy.Content, FootCopy.Content) = ("Copy error log", "Copy error log");
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
         if (fsr && !args.Contains("--fsr")) args.Add("--fsr");
@@ -1046,10 +1059,22 @@ public partial class MainWindow : Window
     // more (issue 1287). HOOKSHOT_KEEP_BUILD_FILES=1 keeps everything)
     async Task FreeAfterBuild()
     {
-        if (Storage.KeepBuildFiles) return;
-        var left = await Task.Run(() => Storage.Free(afterBuild: true));
+        if (Storage.KeepBuildFiles || freeing != null) return;
+        var task = Task.Run(() => Storage.Free(afterBuild: true));
+        freeing = task;
+        Render();
+        long left;
+        try { left = await task; }
+        finally
+        {
+            freeing = null;
+            Render();
+        }
         if (left >= 100L << 20) AddLog($"build files: {Storage.Gb(left)} could not be deleted (a file in use); they go after the next build");
     }
+    // (FreeAfterBuild under way: nothing new starts until it is done, Busy. A build started at once had its new version's folder
+    // or its translated code deleted under it)
+    Task? freeing;
 
     static string Span(TimeSpan t) => t.TotalHours >= 1 ? $"{(int)t.TotalHours} h {t.Minutes} min" : t.TotalMinutes >= 1 ? $"{(int)t.TotalMinutes} minutes" : $"{t.Seconds} seconds";
 
@@ -1067,8 +1092,7 @@ public partial class MainWindow : Window
 
     void Play(object sender, RoutedEventArgs e)
     {
-        StartGame(finished);
-        WindowState = WindowState.Minimized;
+        if (StartGame(finished)) WindowState = WindowState.Minimized;
     }
 
     // ================= when something goes wrong =================
@@ -1150,11 +1174,18 @@ public partial class MainWindow : Window
         var setup = System.IO.Path.Combine(AppContext.BaseDirectory, "HookshotBuilder-Setup.exe");
         if (File.Exists(setup))
         {
-            Process.Start(new ProcessStartInfo(setup, "--repair") { UseShellExecute = false, WorkingDirectory = AppContext.BaseDirectory });
-            Application.Current.Shutdown();
+            try { Process.Start(new ProcessStartInfo(setup, "--repair") { UseShellExecute = false, WorkingDirectory = AppContext.BaseDirectory }); }
+            catch (Exception x)
+            {
+                MessageBox.Show(this, $"The setup could not be started: {x.Message.TrimEnd('.')}. Your antivirus may have removed it.",
+                                "Hookshot", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            Leave();
             return;
         }
-        Process.Start(new ProcessStartInfo("https://github.com/NotRexed/Hookshot/releases/latest") { UseShellExecute = true });
+        try { Process.Start(new ProcessStartInfo("https://github.com/NotRexed/Hookshot/releases/latest") { UseShellExecute = true }); }
+        catch (Exception) { }   // (no browser to open it)
     }
 
     // ================= the update (Updater.cs): the game started this app with --update <folder> =================
@@ -1231,14 +1262,37 @@ public partial class MainWindow : Window
 
     void Minimize(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 
-    void CloseWindow(object sender, RoutedEventArgs e)
+    void CloseWindow(object sender, RoutedEventArgs e) => Close();
+
+    /// However the window is closed (its own button, Alt+F4, the taskbar): a build or an update under way, the installer's or
+    /// one the launcher started, is asked about first, and the hidden programs doing it stop with the window. Not when the
+    /// builder leaves on purpose, Leave
+    protected override void OnClosing(CancelEventArgs e)
     {
-        // (a build under way, the installer's or one the launcher started)
-        if ((runner != null || LauncherBusy) && MessageBox.Show(this, T(S.CloseQuestion), "Hookshot", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
-        runner?.Cancel();
-        CancelLaunchWork();
-        Close();
+        var busy = runner != null || LauncherBusy || download != null;
+        if (busy && !leaving && Shot == null &&
+            MessageBox.Show(this, T(S.CloseQuestion), "Hookshot", MessageBoxButton.YesNo) != MessageBoxResult.Yes)
+        {
+            e.Cancel = true;
+            return;
+        }
+        if (!leaving)
+        {
+            runner?.Cancel();
+            CancelLaunchWork();
+            download?.Cancel();
+        }
+        base.OnClosing(e);
     }
+
+    /// The builder leaves on purpose: the game started, the setup or another builder started to carry on, a development
+    /// picture drawn. The window closes with nothing asked (OnClosing)
+    internal void Leave()
+    {
+        leaving = true;
+        Application.Current.Shutdown();
+    }
+    bool leaving;
 }
 
 /// One step of the build, a row of the menu as a version is (Paper: "v3 - Building"): dim until it begins, in the accent while

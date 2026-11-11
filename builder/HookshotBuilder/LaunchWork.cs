@@ -51,8 +51,6 @@ sealed class LaunchWork
     public string Title => $"{verb} {name} - {(int)(Fraction * 100)}%";
     /// (in the bar at the menu's foot: "Updating... 43%", "Switching... 12%")
     public string Bar => $"{verb.Split(' ')[0]}... {(int)(Fraction * 100)}%";
-    /// (the menu's heading over the steps: "Updating to v2.2.0")
-    public string Heading => $"{verb} {name}";
     /// (the line under that: "Compiling changed files (7 of 516) · about 3 minutes left")
     public string Detail
     {

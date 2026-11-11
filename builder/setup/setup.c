@@ -95,6 +95,9 @@ static void say(const char *kind, const wchar_t *text) {
     char line[2400];
     int n = snprintf(line, 64, "%s ", kind);
     const int t = WideCharToMultiByte(CP_UTF8, 0, text, -1, line + n, (int)sizeof line - n - 2, NULL, NULL);
+    /* (one line: the launcher reads a line at a time, and a message of several, fail's, kept only its first) */
+    for (int i = n; t > 0 && i < n + t - 1; i++)
+        if (line[i] == '\r' || line[i] == '\n') line[i] = ' ';
     n += t > 0 ? t - 1 : 0;
     line[n++] = '\n';
     DWORD put;

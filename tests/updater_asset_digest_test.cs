@@ -344,6 +344,7 @@ namespace HookshotBuilder
         public void UpdateBuild(Tools tools, string folder) => throw new Exception("Unexpected real build path.");
         public void DownloadProgress(double value) => DigestFixture.State.Current.Progress.Add(value);
         public void DownloadFailed(string reason) => DigestFixture.State.Current.Outcome.TrySetResult(reason);
+        public void Leave() => System.Windows.Application.Current.Shutdown();   // (the window's own: Application.Current.Shutdown)
     }
 }
 

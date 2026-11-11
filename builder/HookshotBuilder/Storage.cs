@@ -92,7 +92,8 @@ static class Storage
         var versions = Path.Combine(Base, "versions");
         if (Directory.Exists(versions))
             foreach (var v in Directory.EnumerateDirectories(versions))
-                if (!Kept(v)) yield return v;
+                // (<tag>.part: a version the setup is unpacking now, the launcher's engine mode beside a build that just ended)
+                if (!Kept(v) && !v.EndsWith(".part", StringComparison.OrdinalIgnoreCase)) yield return v;
     }
 
     /// Bytes in the builder's folder and the build files folder, and in what Free lets go (an object hard-linked in both sa\build and

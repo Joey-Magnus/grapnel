@@ -83,6 +83,17 @@ static class Program
         Require(l.Releases[2].Arrow && !l.Releases[2].Dim, "its builder is installed here: the arrow");
         l = LaunchList.Make(github, "v1.2.0", "v1.1.0", NoBuilders, rebuilds: false, null, false);
         Require(l.Releases[0].Dim && !l.Releases[0].Arrow, "a folder without its game files: nothing can be brought");
+        // (and its dim rows say why: the folder, not the release)
+        Require(l.Releases[0].Tip!.StartsWith("This game folder was built before it kept its game files"), "the dim row's reason: " + l.Releases[0].Tip);
+        l = LaunchList.Make(github, "v1.2.0", "v1.2.0", NoBuilders, rebuilds: true, null, false);
+        Require(l.Releases[1].Tip == "Not on this PC, and its release has no builder to download" && l.Releases[0].Tip == null, "a release with nothing to download says so: " + l.Releases[1].Tip);
+
+        // ---- how a release is brought: the setup's engine mode installs only from a setup list ----
+        Require(LaunchList.ByEngine(new ReleaseInfo("v1.3.0", false, true, SetupList: true), builderHere: false, engineSetup: true), "the setup and its list: the engine mode");
+        Require(!LaunchList.ByEngine(new ReleaseInfo("v1.3.0", false, true, SetupList: false), false, true), "only the zip: the builder's own update, not an engine mode that cannot install it");
+        Require(LaunchList.ByEngine(new ReleaseInfo("v1.3.0", false, true, SetupList: false), builderHere: true, engineSetup: true), "its builder installed here: nothing downloaded, either way");
+        Require(!LaunchList.ByEngine(new ReleaseInfo("v1.3.0", false, true, SetupList: true), false, engineSetup: false), "a setup from before the engine mode: the builder's own update");
+        Require(LaunchList.ByEngine(null, false, true), "a release GitHub did not list: the engine mode, as before");
         // (the same release written with and without its v is one release; GitHub's word on it wins)
         l = LaunchList.Make(new[] { R("v1.1.0") }, "v1.1.0", "1.1.0", new[] { "1.1.0" }, true, null, false);
         Require(l.Releases.Count == 1 && l.Releases[0].Here && l.Releases[0].Label == "v1.1.0 - Latest", "v1.1.0 and 1.1.0 are one");

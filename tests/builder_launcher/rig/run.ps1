@@ -158,9 +158,18 @@ try {
         $drawn = Press "home-known" "v2.2.0,v2.1.0" "" "" -Bare
         Check ($drawn -and (Says "home-known").face -eq "Launcher") "it opened as the launcher"
         "--- the menu: the versions"
+        # (a version the setup is unpacking, and one it never finished (no installed.txt): neither is a builder here)
+        foreach ($half in "v1.9.0.part", "v1.8.0") {
+            $t = "$Out\base\versions\$half\HookshotBuilder\tools"
+            New-Item -ItemType Directory -Force "$t\nx2", "$t\python" | Out-Null
+            Copy-Item "$Out\fakepy.exe" "$t\python\python.exe"
+            Set-Content "$t\nx2\make_game.py" "# stand-in" -Encoding ascii
+            Set-Content "$t\version.txt" ($half -replace "\.part$", "") -Encoding ascii
+        }
         $drawn = Press "menu" "v2.3.0,v2.2.0,v2.1.0" "versions" ""
         $s = Says "menu"
         Check ($drawn -and $s.menu -eq "releases" -and $s.rows -like "v2.3.0 - Latest ``[get``] | v2.2.0 ``[tick``]*") "open on Releases, the folder's version ticked ($($s.rows))"
+        Check ($s.rows -notlike "*v1.9.0*" -and $s.rows -notlike "*v1.8.0*") "a version half unpacked, or never finished, is not listed as installed ($($s.rows))"
         Check ($s.foot -eq "Update Available" -and $s.footline -eq "v2.3.0 Latest") "a newer release: Update Available at its foot ($($s.foot); $($s.footline))"
         "--- the menu's Build tab: the build's choices"
         $drawn = Press "pages" "v2.2.0,v2.1.0" "pages" ""

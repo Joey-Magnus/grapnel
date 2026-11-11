@@ -3,8 +3,10 @@ using System.Text.RegularExpressions;
 namespace HookshotBuilder;
 
 /// A release as GitHub lists it: its tag, whether it is a pre-release, and whether it holds the builder to download (the setup
-/// and its list, or the whole zip). One without can only be played or built here when it is already on this PC
-sealed record ReleaseInfo(string Tag, bool Pre, bool Download);
+/// and its list, or the whole zip). One without can only be played or built here when it is already on this PC. SetupList: it
+/// holds the setup and its list, what the setup's engine mode installs from (one with only the zip is brought by the builder's
+/// own update instead, LaunchList.ByEngine)
+sealed record ReleaseInfo(string Tag, bool Pre, bool Download, bool SetupList = false);
 
 enum LaunchKind { Release, Pre }
 
@@ -18,6 +20,7 @@ sealed class LaunchChoice
     public string? Tag { get; init; }          // (its tag, v1.0.0)
     public bool Here { get; init; }            // (the release the launch folder holds)
     public bool Reach { get; init; }           // (not here, and a press brings it: its builder is installed, or its release has one)
+    public bool Rebuilds { get; init; } = true;   // (the launch folder keeps its game files: it can be built as another release)
     public bool Picked { get; set; }
     public bool Busy { get; set; }             // (the version being brought now: its mark turns)
     public string Key => "release:" + Tag;
@@ -26,7 +29,9 @@ sealed class LaunchChoice
     public bool Ticked => Picked && Here;
     public bool Arrow => !Here && Reach && !Busy;
     public bool Dim => !Here && !Reach && !Picked;
-    public string? Tip => Here ? null : Reach ? "Not on this PC yet" : "Not on this PC, and its release has no builder to download";
+    public string? Tip => Here ? null : Reach ? "Not on this PC yet"
+        : !Rebuilds ? "This game folder was built before it kept its game files: build it again from the Build tab"
+        : "Not on this PC, and its release has no builder to download";
 }
 
 /// The Releases tab's lists (MainWindow.xaml, Paper's "Releases Menu"): what a version is comes first, whether it is on this PC
@@ -67,6 +72,7 @@ static class LaunchList
                 Title = newest ? name + " - Latest" : r.Pre ? name + " - Pre-release" : name,
                 Here = here,
                 Reach = !here && rebuilds && (r.Download || builders.Any(b => SameTag(b, r.Tag))),
+                Rebuilds = rebuilds,
             });
         }
 
@@ -86,6 +92,12 @@ static class LaunchList
         var pre = all.Where(c => c.Kind == LaunchKind.Pre && (c.Here || c.Picked || latest == null || Newer(c.Tag!, latest))).ToList();
         return new Lists(all, open ? releases : stay, older, older > 0 && !open, pre, picked);
     }
+
+    /// How a release is brought: by the setup's engine mode beside the builder in use (true), or by the builder's own update,
+    /// Updater.UpdateFolder (false). The engine mode installs only from a release's setup list: one with only the zip, or a setup
+    /// from before the engine mode, takes the builder's own update. A builder installed here needs nothing downloaded
+    public static bool ByEngine(ReleaseInfo? release, bool builderHere, bool engineSetup) =>
+        builderHere || (engineSetup && release?.SetupList != false);
 
     /// (v1.0.0, 1.0.0, v2.2.0-rc.1: a release's tag, not a branch's or a build's name such as "nightly")
     public static bool IsRelease(string tag) => Regex.IsMatch(tag, @"^v?\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$");
