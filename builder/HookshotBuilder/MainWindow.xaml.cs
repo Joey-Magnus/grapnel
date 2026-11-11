@@ -339,6 +339,7 @@ public partial class MainWindow : Window
         if (tools == null)
         {
             LaunchShareStatus.Text = "The builder's tools were not found: start it again from its own folder.";
+            LaunchShareStatus.ToolTip = LaunchShareStatus.Text;
             return;
         }
         LaunchShare.IsEnabled = false;
@@ -349,6 +350,7 @@ public partial class MainWindow : Window
         if (zip == null)
         {
             LaunchShareStatus.Text = error ?? "The pipeline list could not be saved.";
+            LaunchShareStatus.ToolTip = LaunchShareStatus.Text;   // (whole: the note is cut at three lines)
             return;
         }
         var copied = false;

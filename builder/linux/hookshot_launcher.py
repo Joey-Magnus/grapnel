@@ -1289,8 +1289,10 @@ class Launcher(object):
             y += u(12)
             self.canvas.create_text(u(16), y + u(16), text="Pipeline list", font="LsLabel", fill=WHITE, anchor="w", tags="ui")
             self.link(u(251), y + u(16), "Save", self.share_pressed, anchor="e")
-            y = self.wrapped(u(16), y + u(36), self.share_said or "Helps remove stutter: a zip to attach to the Submit your pipelines issue.",
-                             "LsLabel", OFF_INK, u(205), lines=5)
+            said = self.share_said or "Helps remove stutter: a zip to attach to the Submit your pipelines issue."
+            top = y + u(36)
+            y = self.wrapped(u(16), top, said, "LsLabel", OFF_INK, u(205), lines=3)
+            self.region(u(16), top, u(221), y, tip=said)   # (whole under the pointer: the note is cut at three lines)
         y = self.switch(y + u(12), "Enable pre-releases", self.pre_on(), self.pre_pressed,
                         "Release candidates in Releases, and Check for updates offers them.")
         # (Paper's 189 in Segoe UI; Inter is wider, and 205 breaks its lines where Paper's do)
