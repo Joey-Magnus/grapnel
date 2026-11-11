@@ -17,16 +17,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 GRAPHICS = [
-    ("Resolution and upscaling", ["Output resolution", "Upscaler", "DLSS model", "Render resolution", "Sharpness"]),
+    ("Resolution and upscaling", ["Output resolution", "Profile", "Upscaler", "DLSS model", "Render resolution", "Sharpness"]),
     ("Frame generation and latency", ["Frame generation", "Frame generation by", "Frame pacing", "Game frame rate cap",
                                       "NVIDIA Reflex", "AMD Anti-Lag 2"]),
     ("Detail", ["Anisotropic filtering"]),
     ("GPU and memory", ["GPU device", "VRAM budget", "Mesh shaders"]),
 ]
 DISPLAY = [
-    # (the shape row by its value: named Ultrawide, or Aspect ratio)
-    ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter", "&opts.ultrawide", "Ultrawide menus"]),
-    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast"]),
+    ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter", "Aspect ratio", "Ultrawide menus"]),
+    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast", "HDR tone mapper"]),
     ("Overlays", ["FPS counter", "FPS counter position", "Menu size"]),
 ]
 
