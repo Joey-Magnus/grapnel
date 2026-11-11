@@ -8,17 +8,20 @@ crash is a real one: the driver's process ends (exit 3) at the commit's n-th ste
   save-backup;
 - after a crash at any step, the next start has the old save or the new one, whole, never a mix of the two, and the new
   one exactly when the crash came after the commit point; nothing is left in save-tx; a second start changes nothing;
-- a working copy the game changed but never committed is not loaded at the next start, and is set aside in save-backup
+- a working copy the game changed but never committed is not loaded at the next start, and is set aside in save-tx
   (uncommitted-..., the newest 3), never deleted;
 - a commit with nothing changed writes nothing and makes no backup; backups rotate to the newest 3, oldest first out;
 - a commit the committed save's folder refuses to make way for (POSIX: a folder without write permission; Windows: a
   file held open) waits in save-tx, the game loads it from there, and the next start puts it in place;
+- a Commit that fails leaves the save as it was, and its working copy is set aside at the next start, never committed;
 - links in a save are left out of the copies; names in UTF-8 (Linux);
-- a full disk (Linux: write() fails with ENOSPC from a chosen call on, as a second driver built with it): a Commit that
-  cannot be written leaves the save whole (the in-place fallback never part old, part new, at any call it fails at),
-  the changes are mounted again as they are in the same run (never replaced by the older save, even with no marker on
-  disk), and the next start saves them or, still full, keeps them in save-backup; a commit waiting over a save that was
-  replaced since is never loaded, even when it cannot be moved aside.
+- faults (Linux: a second driver whose write() fails with ENOSPC from a chosen call on, and whose rename() ends the
+  process before, or fails at, a chosen call): a Commit on a full disk still commits (renames only), and says no next
+  working copy could be made; a kill before any rename of a commit leaves the old save or the new one, whole, and the
+  new one exactly from the commit point on; a working copy the game changed after a failed Commit is never committed;
+  a save replaced in place after that stays; a working copy that cannot be set aside is never mounted again; a commit
+  waiting over a save that was replaced since is never loaded, even when it cannot be moved aside; a run with the
+  journal off finds a waiting commit.
 
 python -I -B tests/test_save_journal.py [--cc gcc]
 """
@@ -45,8 +48,8 @@ static void die(int step) { (void)step; fflush(stdout); exit(3); }
 static void say(const char *fmt, ...) { va_list a; va_start(a, fmt); vprintf(fmt, a); va_end(a); putchar('\n'); }
 int main(int argc, char **argv) {
     /* driver <user> <uid> recover | lock <hold s> | unsuitable | session <changes folder or -> <crash at> [commit 0|1]
-       [then: "nowork" (the working copy deleted before Commit), "fallback" (a failed Commit written in place, as nn_fs.c
-       does), "break-tx" (POSIX: save-tx made read-only before Commit: the commit fails)] */
+       [then: "nowork" (the working copy deleted before Commit), "break-tx" (POSIX: save-tx made read-only before Commit:
+       the commit fails)] */
     SaveJournal j;
     if (argc < 4 || !sj_paths(&j, argv[1], argv[2])) return 2;
     sj_log = say;
@@ -79,83 +82,88 @@ int main(int argc, char **argv) {
     const char *then = argc > 7 ? argv[7] : "";
     if (!strcmp(then, "nowork")) remove_tree(j.work);
 #ifndef _WIN32
-    if (!strcmp(then, "break-tx")) {   /* (a staging copy that cannot be made, and a save folder that refuses new files) */
-        char sub[SJ_PATH], deep[SJ_PATH + 8];
-        make_dir(j.fresh), join(sub, j.fresh, "held"), make_dir(sub);
-        snprintf(deep, sizeof deep, "%s/x", sub), close(open(deep, O_CREAT | O_WRONLY, 0644));
-        chmod(sub, 0555);
-        if (argc > 8) chmod(argv[8], 0555);
-    }
+    if (!strcmp(then, "break-tx")) chmod(j.tx, 0555);
 #endif
     int changed = 0;
     char what[512];
-    int r = sj_commit(&j, &changed, what, sizeof what);
+    const int r = sj_commit(&j, &changed, what, sizeof what);
     printf("commit: %d changed %d steps %d: %s\n", r, changed, j.step, what);
-    if (r && (!strcmp(then, "fallback") || !strcmp(then, "break-tx"))) {
-        r = sj_commit_in_place(&j, what, sizeof what);
-        printf("in place: %d: %s\n", r, what);
-    }
-    return r ? 6 : 0;
+#ifndef _WIN32
+    if (!strcmp(then, "break-tx")) chmod(j.tx, 0755);
+#endif
+    return r < 0 ? 6 : 0;
 }
 '''
 
 # Fault injection (Linux): every write() of save_journal.c goes through fi_write, which fails with ENOSPC once its budget
-# of calls is spent (-1: no limit)
+# of calls is spent, and every rename() through fi_rename, which ends the process before its budget is spent or fails
+# (-1: no limit)
 DRIVER_FI = r'''
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
-static long fi_budget = -1;
+#include <stdio.h>
+static long fi_budget = -1, rn_budget = -1;
+static int rn_fail;
 static ssize_t fi_write(int fd, const void *b, size_t n) {
     if (fi_budget == 0) { errno = ENOSPC; return -1; }
     if (fi_budget > 0) fi_budget--;
     return syscall(SYS_write, fd, b, n);
 }
+static int fi_rename(const char *a, const char *b) {
+    if (rn_fail) { errno = EACCES; return -1; }
+    if (rn_budget == 0) { printf("killed before rename %s -> %s\n", a, b); fflush(stdout); _exit(3); }
+    if (rn_budget > 0) rn_budget--;
+    return renameat(AT_FDCWD, a, AT_FDCWD, b);
+}
 #define write fi_write
+#define rename fi_rename
 #include "save_journal.c"
 #undef write
+#undef rename
+#include <sys/stat.h>
 static void say(const char *fmt, ...) { va_list a; va_start(a, fmt); vprintf(fmt, a); va_end(a); putchar('\n'); fflush(stdout); }
 int main(int argc, char **argv) {
-    /* fi <user> <uid> recover <budget>: the start's recovery with that write budget, then the newest save
-       fi <user> <uid> session <changes> <commit budget> <in-place budget> [remount]: a session whose Commit gets the
-       first budget and, failing, its in-place fallback the second (then marked unsaved, as nn_fs.c does); "remount":
-       then, with the marker files gone from disk (as when even they could not be made), the save mounted again in the
-       same run (nn_fs.c: the last Unmount kept it, a MountSaveData follows). Ends without Unmount, as a game closed */
+    /* fi <user> <uid> recover <write budget>: the start's recovery, then the newest save
+       fi <user> <uid> peek: the newest save as a run with the journal off finds it
+       fi <user> <uid> open: the start's recovery, then a working copy (sj_work_open's result)
+       fi <user> <uid> session <changes> <write budget> <rename budget | fail> [<file> <text>]: a session whose Commit
+       gets those budgets (fail: every rename fails); then, the Commit failed, the game writes text to that file of the
+       working copy (half of its next save) and the process ends, as a crash would
+       fi <user> <uid> nocommit <changes>: a session that ends before its Commit */
     SaveJournal j;
-    if (argc < 5 || !sj_paths(&j, argv[1], argv[2])) return 2;
+    if (argc < 4 || !sj_paths(&j, argv[1], argv[2])) return 2;
     sj_log = say;
+    if (!strcmp(argv[3], "peek")) { printf("newest: %s\n", sj_peek_newest(&j)); return 0; }
     if (sj_lock(&j)) return 8;
-    if (!strcmp(argv[3], "recover")) {
-        fi_budget = atol(argv[4]);
-        printf("recover: %s\n", sj_recover(&j));
-        fi_budget = -1;
-        printf("newest: %s\n", sj_newest(&j));
-        return 0;
-    }
-    if (strcmp(argv[3], "session") || argc < 7) return 2;
+    if (!strcmp(argv[3], "recover")) fi_budget = argc > 4 ? atol(argv[4]) : -1;
     printf("recover: %s\n", sj_recover(&j));
+    fi_budget = -1;
+    if (!strcmp(argv[3], "recover")) { printf("newest: %s\n", sj_newest(&j)); return 0; }
+    const int opened = sj_work_open(&j);
+    printf("open: %d\n", opened);
+    if (!strcmp(argv[3], "open") || opened) return opened ? 4 : 0;
     int files = 0, changed = 0;
     uint64_t bytes = 0;
     char what[512];
-    if (sj_work_open(&j) || remove_tree(j.work) || copy_tree(&j, argv[4], j.work, 0, &files, &bytes)) return 4;
+    if (remove_tree(j.work) || copy_tree(&j, argv[4], j.work, 0, &files, &bytes)) return 5;
+    if (!strcmp(argv[3], "nocommit")) return 0;
+    if (argc < 7) return 2;
     fi_budget = atol(argv[5]);
-    int r = sj_commit(&j, &changed, what, sizeof what);
-    printf("commit: %d: %s\n", r, what);
-    if (r) {
-        fi_budget = atol(argv[6]);
-        r = sj_commit_in_place(&j, what, sizeof what);
-        printf("in place: %d: %s\n", r, what);
-        if (r) sj_mark_unsaved(&j);
-    }
-    fi_budget = -1;
-    if (argc > 7 && !strcmp(argv[7], "remount")) {
+    if (!strcmp(argv[6], "fail")) rn_fail = 1;
+    else rn_budget = atol(argv[6]);
+    const int r = sj_commit(&j, &changed, what, sizeof what);
+    fi_budget = rn_budget = -1, rn_fail = 0;
+    printf("commit: %d changed %d: %s\n", r, changed, what);
+    if (r < 0 && argc > 8) {
         char p[SJ_PATH];
-        join(p, j.tx, "unsaved"), remove_file(p);
-        join(p, j.tx, "unsaved.tmp"), remove_file(p);
-        printf("remount: %d\n", sj_work_open(&j));
+        join(p, j.work, argv[7]);
+        FILE *f = fopen(p, "wb");
+        if (f) fputs(argv[8], f), fclose(f);
     }
-    return r ? 6 : 0;
+    return r < 0 ? 6 : r;
 }
 '''
 
@@ -232,9 +240,13 @@ class Check:
         b = Path(user) / "save-backup" / UID
         return sorted(os.listdir(b)) if b.is_dir() else []
 
+    def aside(self, user):   # (the working copies set aside in save-tx)
+        t = Path(user) / "save-tx" / UID
+        return sorted(n for n in os.listdir(t) if n.startswith("uncommitted-")) if t.is_dir() else []
+
     def clean_tx(self, user, why, allowed=()):
         left = sorted(os.listdir(Path(user) / "save-tx" / UID)) if (Path(user) / "save-tx" / UID).is_dir() else []
-        left = [n for n in left if n not in allowed and n not in ("lock", "unsaved.armed")]   # (these stay)
+        left = [n for n in left if n not in allowed and n != "lock" and not n.startswith("uncommitted-")]   # (these stay)
         if left:
             self.fail("%s: left in save-tx: %s" % (why, left))
 
@@ -272,7 +284,7 @@ def main():
             c.fail("the commit did not make the working copy the save:\n" + out)
         if len(c.backups(user)) != 1 or tree(user / "save-backup" / UID / c.backups(user)[0]) != A:
             c.fail("the save the commit replaced is not the backup: %s" % c.backups(user))
-        c.clean_tx(user, "a commit", allowed=("work",))   # (the working copy stays while the game runs)
+        c.clean_tx(user, "a commit", allowed=("work", "work.base"))   # (the working copy stays while the game runs)
         c.run(user, "recover")
         c.clean_tx(user, "the start after a commit")
         print("PASS: a save from before the journal loads unchanged, and a commit replaces it whole (old one backed up)")
@@ -282,12 +294,11 @@ def main():
         write_tree(user / "save" / UID, A)
         out = c.run(user, "session", changes, 1000)
         steps = int(out.split("steps ")[1].split(":")[0])
-        if steps < 9:
+        if steps < 4:
             c.fail("the commit has %d crash points, fewer than its files" % steps)
 
         # A crash at every step: the next start has A or B, whole; B exactly after the commit point
-        files_b = sum(1 for v in B.values() if v is not None)
-        commit_point = files_b + 1   # (each file copied, the copy finished, then the rename: steps after it are past it)
+        commit_point = 1   # (the working copy flushed, then renamed: steps after that are past it)
         seen = set()
         for k in range(1, steps + 1):
             user = c.folder("crash-%02d" % k)
@@ -319,10 +330,10 @@ def main():
             if tree(user / "save-tx" / UID / "work") != B:
                 c.fail("the working copy does not hold the game's changes")
             out = c.run(user, "recover")
-            aside = [n for n in c.backups(user) if n.startswith("uncommitted-")]
+            aside = c.aside(user)
             if c.save(user) != A or "working copy" not in out or len(aside) != min(i + 1, 3):
                 c.fail("changes no Commit took reached the save, or were not set aside (%s):\n%s" % (aside, out))
-            if any(tree(user / "save-backup" / UID / n) != B for n in aside):
+            if any(tree(user / "save-tx" / UID / n) != B for n in aside):
                 c.fail("a working copy set aside is not what the game wrote")
             c.clean_tx(user, "the start after an uncommitted session")
         print("PASS: a working copy never committed is not loaded at the next start, but set aside (the newest 3)")
@@ -430,34 +441,19 @@ def main():
                 c.fail("a plain save folder was refused:\n" + out)
             print("PASS: a save folder that is a link is refused for the journal (it is written in place, as before)")
 
-            # A Commit that fails is written over the save in place instead (as before the journal)
-            user = c.folder("fallback")
+            # A Commit that fails (save-tx refuses the rename) leaves the save as it was; the working copy is set aside at
+            # the next start, never committed
+            user = c.folder("commit-fails")
             write_tree(user / "save" / UID, A)
-            try:
-                out = c.run(user, "session", changes, 0, 1, "break-tx")
-            finally:
-                for d, dirs, _ in os.walk(user):
-                    for n in dirs:
-                        os.chmod(os.path.join(d, n), 0o755)
-            if "commit: -1" not in out or "in place: 0" not in out or c.save(user) != B:
-                c.fail("a failed Commit's changes did not reach the save:\n" + out)
-            print("PASS: a Commit that fails writes the save in place instead, so the progress is kept")
-
-            # And when that fails too, the next start saves it
-            user = c.folder("unsaved")
-            write_tree(user / "save" / UID, A)
-            try:
-                out = c.run(user, "session", changes, 0, 1, "break-tx", user / "save" / UID, code=6)
-            finally:
-                for d, dirs, _ in os.walk(user):
-                    for n in dirs:
-                        os.chmod(os.path.join(d, n), 0o755)
-                os.chmod(user / "save" / UID, 0o755)
+            out = c.run(user, "session", changes, 0, 1, "break-tx", code=6)
+            if "commit: -1" not in out or c.save(user) != A or tree(user / "save-tx" / UID / "work") != B:
+                c.fail("a failed Commit touched the save or lost the working copy:\n" + out)
             out2 = c.run(user, "recover")
-            if "in place: -1" not in out or "SAVED" not in out2 or c.save(user) != B:
-                c.fail("changes no Commit could save were not saved at the next start:\n" + out + out2)
-            c.clean_tx(user, "the start that saved a failed Commit's changes")
-            print("PASS: changes that could not be saved at all are saved at the next start")
+            aside = c.aside(user)
+            if c.save(user) != A or len(aside) != 1 or tree(user / "save-tx" / UID / aside[0]) != B:
+                c.fail("the next start committed a failed Commit's working copy, or did not keep it:\n" + out + out2)
+            c.clean_tx(user, "the start after a failed Commit")
+            print("PASS: a Commit that fails leaves the save as it was; the next start keeps its changes aside, uncommitted")
 
             # A rollback that fails: no save is mounted, never an empty one over the save in save-tx/old
             user = c.folder("stuck-old")
@@ -495,91 +491,124 @@ def full_disk(c, cc, tmp, A, B, changes):
     def work(user):
         return tree(user / "save-tx" / UID / "work")
 
-    # Blocker 1: a full disk at Commit. The save stays A, the changes stay in the working copy, the next start saves them
+    # A full disk at Commit: the commit needs no space and is made; only the next working copy cannot be (nn_fs.c then
+    # writes the rest of the run in place)
     user = c.folder("full")
     write_tree(user / "save" / UID, A)
-    out = fi.run(user, "session", changes, 0, 0, code=6)
-    if c.save(user) != A or work(user) != B or "in place: -1" not in out:
-        c.fail("a Commit on a full disk lost the changes or touched the save:\n" + out)
-    out2 = fi.run(user, "recover", -1)
-    if c.save(user) != B or "SAVED" not in out2:
-        c.fail("the next start did not save the changes a full disk held up:\n" + out + out2)
-    c.clean_tx(user, "the start that saved them")
-    print("PASS: full disk at Commit: the save stays whole, the next start saves the changes")
+    out = fi.run(user, "session", changes, 0, -1, code=1)
+    if c.save(user) != B or "commit: 1 changed 1" not in out or "NO new working copy" not in out:
+        c.fail("a Commit on a full disk was not made, or did not say there is no working copy:\n" + out)
+    out = fi.run(user, "recover")
+    c.clean_tx(user, "the start after a full disk")
+    print("PASS: full disk at Commit: the commit is made (renames only); no next working copy, said")
 
-    # ... and when the disk is still full at the next start: kept in save-backup (a rename needs no space), save whole
-    user = c.folder("full-still")
-    write_tree(user / "save" / UID, A)
-    fi.run(user, "session", changes, 0, 0, code=6)
-    out = fi.run(user, "recover", 0)
-    kept = [n for n in c.backups(user) if n.startswith("unsaved-")]
-    if c.save(user) != A or len(kept) != 1 or tree(user / "save-backup" / UID / kept[0]) != B:
-        c.fail("a start on a still-full disk dropped the unsaved changes:\n" + out)
-    c.clean_tx(user, "the start that kept them")
-    print("PASS: full disk at the next start too: the changes are kept in save-backup, the save stays whole")
-
-    # ... and with no marker on disk at all: the changes are mounted again in the same run (never the older save over
-    # them), and the next start, finding a working copy that differs from the save, never deletes it
-    user = c.folder("full-remount")
-    write_tree(user / "save" / UID, A)
-    (user / "save-tx" / UID).mkdir(parents=True)
-    out = fi.run(user, "session", changes, 0, 0, "remount", code=6)
-    if "remount: 0" not in out or work(user) != B:
-        c.fail("a remount in the same run replaced changes no Commit could save:\n" + out)
-    for n in ("unsaved", "unsaved.armed", "unsaved.tmp"):
-        p = user / "save-tx" / UID / n
-        if p.exists():
-            p.unlink()
-    out = fi.run(user, "recover", 0)
-    aside = [n for n in c.backups(user) if n.startswith(("uncommitted-", "unsaved-"))]
-    if c.save(user) != A or len(aside) != 1 or tree(user / "save-backup" / UID / aside[0]) != B:
-        c.fail("a working copy unlike the save was deleted at the next start:\n" + out)
-    print("PASS: unsaved changes are remounted as they are in the same run, and never deleted at the next start")
-
-    # Blocker 2: the in-place fallback failing at each write() call: the save is A or B, whole, never a mix
-    seen, k = set(), 0
+    # A kill before each rename a Commit makes: the old save or the new one, whole; the new one from the commit point on
+    k, seen = 0, []
     while True:
-        user = c.folder("partial-%03d" % k)
+        user = c.folder("kill-%03d" % k)
         write_tree(user / "save" / UID, A)
-        r = subprocess.run([str(fi.exe), str(user), UID, "session", str(changes), "0", str(k)], capture_output=True, text=True)
+        r = subprocess.run([str(fi.exe), str(user), UID, "session", str(changes), "-1", str(k)], capture_output=True, text=True)
+        out = fi.run(user, "recover")
         got = c.save(user)
         if got not in (A, B):
-            c.fail("the in-place fallback cut short at write call %d left a mix of the old and new save:\n%s" % (k, r.stdout))
-        if got == A and work(user) != B:
-            c.fail("the in-place fallback cut short at write call %d lost the changes:\n%s" % (k, r.stdout))
-        if [q for q in Path(user / "save" / UID).rglob("*.hs-new")]:
-            c.fail("the in-place fallback cut short at write call %d left .hs-new files in the save" % k)
-        seen.add("new" if got == B else "old")
+            c.fail("killed before rename %d of a commit: the next start has a mix:\n%s%s" % (k, r.stdout, out))
+        if (got == B) != (k > 0):
+            c.fail("killed before rename %d of a commit (the commit point is the first): the next start loaded the %s save"
+                   "\n%s%s" % (k, "new" if got == B else "old", r.stdout, out))
+        if got == A and [tree(user / "save-tx" / UID / n) for n in c.aside(user)] != [B]:
+            c.fail("killed before the commit point: the changes were not kept aside\n" + out)
+        c.clean_tx(user, "the start after a kill at rename %d" % k)
+        seen.append("old" if got == A else "new")
         if r.returncode == 0:
             break
         k += 1
-        if k > 400:
-            c.fail("the in-place fallback never got through")
-    print("PASS: the in-place fallback cut short at each of its %d write calls leaves the save whole (%s)"
-          % (k, ", ".join(sorted(seen))))
+        if k > 40:
+            c.fail("the commit never got through")
+    print("PASS: a kill before each of a commit's %d renames leaves the old save or the new one, whole (%s)"
+          % (k, ", ".join(seen)))
 
-    # Should-fix 1: a commit waiting over a save replaced since, which cannot be moved aside: the newer save is loaded
+    # A commit of an empty save (the game deleted every file) killed after it landed, before the replaced save went to
+    # save-backup: the next start keeps the empty save, not the one before it
+    user = c.folder("empty-landed")
+    write_tree(user / "save" / UID, A)
+    write_tree(tmp / "changes-empty", {})
+    r = subprocess.run([str(fi.exe), str(user), UID, "session", str(tmp / "changes-empty"), "-1", "4"], capture_output=True,
+                       text=True)
+    out = fi.run(user, "recover")
+    if "killed before rename" not in r.stdout or c.save(user) != {} or not (user / "save" / UID).is_dir():
+        c.fail("an empty save that was committed was rolled back:\n" + r.stdout + out)
+    if [tree(user / "save-backup" / UID / n) for n in c.backups(user)] != [A]:
+        c.fail("the save an empty commit replaced is not in save-backup:\n" + out)
+    print("PASS: a committed empty save is kept when a crash came before its old save reached save-backup")
+
+    # A Commit that fails; the game then writes half of its next save; a crash: never committed, the save is whole
+    user = c.folder("torn")
+    write_tree(user / "save" / UID, A)
+    fi.run(user, "session", changes, -1, "fail", "a.sav", "A3-half-of-the-next-save", code=6)
+    out = fi.run(user, "recover")
+    aside = c.aside(user)
+    if c.save(user) != A or len(aside) != 1 or tree(user / "save-tx" / UID / aside[0])["a.sav"] != b"A3-half-of-the-next-save":
+        c.fail("a working copy changed after a failed Commit was committed, or lost:\n" + out)
+    print("PASS: a working copy written after a failed Commit is never committed; the save stays whole")
+
+    # ... and a run with the journal off then saved newer progress in place: it stays
+    user = c.folder("stale")
+    write_tree(user / "save" / UID, A)
+    fi.run(user, "session", changes, -1, "fail", code=6)
+    newer = dict(A)
+    newer["slot_00/progress.sav"] = b"N0" * 4000
+    write_tree(user / "save" / UID, newer)
+    out = fi.run(user, "recover")
+    if c.save(user) != newer:
+        c.fail("a newer save made in place after a failed Commit was replaced:\n" + out)
+    print("PASS: a save written in place after a failed Commit stays")
+
+    # A crash before Commit left a torn working copy, and save-tx refuses to set it aside: it is never mounted again
+    user = c.folder("roaside")
+    write_tree(user / "save" / UID, A)
+    fi.run(user, "session", changes, -1, -1)
+    torn = dict(B)
+    torn["slot_01/progress.sav"] = b"TORN"
+    write_tree(tmp / "changes-torn", torn)
+    fi.run(user, "nocommit", tmp / "changes-torn")
+    os.chmod(user / "save-tx" / UID, 0o555)
+    try:
+        out = fi.run(user, "open", code=4)
+    finally:
+        os.chmod(user / "save-tx" / UID, 0o755)
+    if c.save(user) != B or work(user) != torn:
+        c.fail("a torn working copy that could not be set aside was mounted, deleted or committed:\n" + out)
+    print("PASS: a torn working copy that cannot be set aside is not mounted again (the run writes in place), nor lost")
+
+    # A commit waiting over a save replaced since, which cannot be moved aside: the newer save is loaded
     user = c.folder("stale-stuck")
     write_tree(user / "save" / UID, A)
-    c.run(user, "session", changes, 1000)   # (step count: below, a crash just after the commit point)
-    files_b = sum(1 for v in B.values() if v is not None)
-    write_tree(user / "save" / UID, A)
-    shutil.rmtree(user / "save-backup")
-    shutil.rmtree(user / "save-tx")
-    c.run(user, "session", changes, files_b + 2, code=3)
+    c.run(user, "session", changes, 2, code=3)   # (killed just after the commit point: ready-<n> waits)
     newer = dict(A)
     newer["slot_00/progress.sav"] = b"N0" * 4000
     write_tree(user / "save" / UID, newer)
     (user / "save-backup" / UID).mkdir(parents=True, exist_ok=True)
     os.chmod(user / "save-backup" / UID, 0o555)
     try:
-        out = fi.run(user, "recover", -1)
+        out = fi.run(user, "recover")
+        out2 = fi.run(user, "recover")
     finally:
         os.chmod(user / "save-backup" / UID, 0o755)
-    newest = out.split("newest: ")[1].strip()
-    if Path(newest) != user / "save" / UID or c.save(user) != newer:
-        c.fail("a stale commit that could not be moved aside is what the game loads:\n" + out)
-    print("PASS: a stale waiting commit that cannot be moved aside is not loaded; the newer save is")
+    for o in (out, out2):
+        newest = o.split("newest: ")[1].strip()
+        if Path(newest) != user / "save" / UID or c.save(user) != newer:
+            c.fail("a stale commit that could not be moved aside is what the game loads:\n" + out + out2)
+    print("PASS: a stale waiting commit that cannot be moved aside is not loaded, at this start or the next")
+
+    # A run with the journal off finds a commit waiting in save-tx (made over the save as it is)
+    user = c.folder("peek")
+    write_tree(user / "save" / UID, A)
+    c.run(user, "session", changes, 2, code=3)
+    out = fi.run(user, "peek")
+    newest = Path(out.split("newest: ")[1].strip())
+    if newest.parent != user / "save-tx" / UID or tree(newest) != B:
+        c.fail("a run with the journal off does not find the commit waiting:\n" + out)
+    print("PASS: a run with the journal off writes the commit waiting in save-tx, the newest save")
 
 
 if __name__ == "__main__":

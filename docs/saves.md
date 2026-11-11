@@ -55,12 +55,12 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
   `save-tx/<user id>/ready-<n>` and is put in place at the next start, unless `save/<user id>` was changed meanwhile:
   then the changed save stays and the waiting one goes to `save-backup/<user id>/unapplied-<time>`. The script refuses
   to copy while one waits (or `--force`). `save-tx/<user id>/work` is only the game's working copy.
-- A save that could not be committed (a full disk) is written over `save/<user id>` instead: every file is written
-  beside the save first and only then renamed over it, so a failure leaves the save as it was. If even that fails, the
-  changes stay in `save-tx/<user id>/work` (the game keeps using them), the next start saves them, and if it cannot
-  either it keeps them in `save-backup/<user id>/unsaved-<time>`: copy that over the save to have that progress.
-- Changes the game never committed (Hookshot closed or crashed after its last save) are not loaded at the next start,
-  as on a console, but kept in `save-backup/<user id>/uncommitted-<time>` (the newest three).
+- A commit only renames folders, so it needs no free space. Only the game's next working copy does: when the disk is
+  too full for it, the rest of that run writes `save/<user id>` in place, as Hookshot did before (the log says so), and
+  the next start uses the journal again. A commit that fails (a file held open) leaves the save as it was, and the game's
+  next save tries again.
+- Changes the game never committed (Hookshot closed or crashed after its last save, or a commit that failed) are not
+  loaded at the next start, as on a console. They are kept in `save-tx/<user id>/uncommitted-<time>` (the newest three).
 - Hookshot writes the save in place, as before, when `save/<user id>` or `save` is a link (a cloud folder), when it is
   on another drive than `save-tx`, or when another Hookshot is running on the same save (the log says why).
 - NX2navi writes a save to `profile/save-tx` first and moves it into place after. While something is waiting there,
