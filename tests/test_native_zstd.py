@@ -289,6 +289,7 @@ def good(chk, exe, tmp, name, data, frame, split, d=None, kind=None, seed=0, mod
     chk(all(c[0] == 1 for c in calls), "%s: a call was not done on the host" % name)
     got = [signed(c[5]) for c in calls]
     chk(got[-1] == 0 and all(r >= 0 for r in got), "%s: results %s" % (name, got[-4:]))
+    chk([c[6] for c in calls] == [2] * (len(calls) - 1) + [4], "%s: states after each call %s" % (name, [c[6] for c in calls][:6]))
     # (each result is what is still to come: the content less what is out; 0 only once all of it is)
     chk(all(signed(c[5]) == c[7] == len(data) - (c[8] - DST) for c in calls if c[0]),
         "%s: a result is not what is still to come: %s" % (name, [(signed(c[5]), c[7], c[8] - DST) for c in calls][:4]))
