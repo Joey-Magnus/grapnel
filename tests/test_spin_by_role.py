@@ -84,7 +84,7 @@ def main():
     src = (ROOT / "host" / "hos_thread.c").read_text(encoding="utf-8")
     parts = {"@NAMES@": block(src, NAMES), "@SERIAL@": block(src, SERIAL), "@SPIN@": block(src, SPIN)}
     # (wired: a thread's flag follows its name, and every spin asks hos_spin_ns)
-    check("t->serial = serial_name(t->name);" in src, "hos_thread_set_name no longer sets the thread's serial flag")
+    check("__atomic_store_n(&t->serial, serial_name(t->name), __ATOMIC_RELAXED);" in src, "hos_thread_set_name no longer sets the thread's serial flag")
     sync = (ROOT / "host" / "nn_os_sync.c").read_text(encoding="utf-8")
     svc = (ROOT / "host" / "hos_svc.c").read_text(encoding="utf-8")
     check(sync.count("hos_now_ns() + hos_spin_ns()") == 2 and "if (hos_spin_ns() <= 0) return 0;" in sync,
@@ -125,7 +125,7 @@ def main():
             r = run(build(tmp, name, **{part.strip("@").lower(): parts[part].replace(old, new)}), *case)
             check(r.returncode != 0 and "FAIL:" in r.stderr, what)
 
-        broken("no-role", "@SPIN@", "hos_thread_serial(hos_self()) ? serial_ns : other", "serial_ns",
+        broken("no-role", "@SPIN@", "hos_thread_serial(hos_self()) ? b >> 32 : b & 0xFFFFFFFF", "b >> 32",
                (None, None, 20000, 5000), "the others spinning as long as the serial threads passes")
         broken("no-clamp", "@SPIN@", "other > s ? s : other", "other", (None, "50", 20000, 20000),
                "the others spinning longer than HOS_SPIN_US passes")

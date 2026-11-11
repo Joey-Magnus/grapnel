@@ -474,7 +474,7 @@ Ctx *hos_boot_main_thread(uint64_t stack_size) {
     t->ideal_core = 0;
     t->started = 1;
     snprintf(t->name, sizeof t->name, "MainThread");
-    t->serial = 1;
+    __atomic_store_n(&t->serial, 1, __ATOMIC_RELAXED);
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &t->handle, 0, FALSE,
                     DUPLICATE_SAME_ACCESS);   /* a real handle, for the profiler */
     SetThreadDescription(GetCurrentThread(), L"MainThread");   /* (HOS_SAMPLE finds threads by it) */
@@ -587,7 +587,7 @@ void hos_thread_destroy(HosThread *t) {
    the host keeps their short waits short (sleep_ns's pollers, the spin before a wait sleeps: hos_spin_ns). By name, as
    the game names them: kept in the thread's record when it is named, not read from the name while it may change. */
 static int serial_name(const char *name) { return strstr(name, "MainThread") || !strcmp(name, "Presentation Thread"); }
-int hos_thread_serial(const HosThread *t) { return t && t->serial; }
+int hos_thread_serial(const HosThread *t) { return t && __atomic_load_n(&t->serial, __ATOMIC_RELAXED); }
 
 /* How long a wait spins before it sleeps (nn_os_sync.c's events, queues and mutexes; hos_svc.c's mutexes), in ns, for the
    calling thread: HOS_SPIN_US (20 us) on the frame's serial threads, HOS_SPIN_OTHER_US (5 us, never more than HOS_SPIN_US)
@@ -597,22 +597,22 @@ int hos_thread_serial(const HosThread *t) { return t && t->serial; }
    serial threads keep 20 us, as their wait ends are on the frame's path. HOS_SPIN_OTHER_US=20: as before, one spin for all;
    HOS_SPIN_US=0: no spin. */
 int64_t hos_spin_ns(void) {
-    static int64_t serial_ns, other_ns = -1;
-    int64_t other = __atomic_load_n(&other_ns, __ATOMIC_ACQUIRE);
-    if (other < 0) {
+    static int64_t both = -1;   /* (the serial threads' ns << 32 | the others': one atomic word, chosen once) */
+    int64_t b = __atomic_load_n(&both, __ATOMIC_RELAXED);
+    if (b < 0) {
         const char *e = getenv("HOS_SPIN_US"), *o = getenv("HOS_SPIN_OTHER_US");
-        const int64_t s = (e ? atoll(e) : 20) * 1000;
-        other = (o ? atoll(o) : 5) * 1000;
+        int64_t s = (e ? atoll(e) : 20) * 1000, other = (o ? atoll(o) : 5) * 1000;
+        s = s < 0 ? 0 : s > 1000000000 ? 1000000000 : s;
         other = other < 0 ? 0 : other > s ? s : other;
-        serial_ns = s;
-        __atomic_store_n(&other_ns, other, __ATOMIC_RELEASE);
+        b = s << 32 | other;
+        __atomic_store_n(&both, b, __ATOMIC_RELAXED);
     }
-    return hos_thread_serial(hos_self()) ? serial_ns : other;
+    return hos_thread_serial(hos_self()) ? b >> 32 : b & 0xFFFFFFFF;
 }
 
 void hos_thread_set_name(HosThread *t, const char *name) {
     snprintf(t->name, sizeof t->name, "%s", name);
-    t->serial = serial_name(t->name);
+    __atomic_store_n(&t->serial, serial_name(t->name), __ATOMIC_RELAXED);   /* (atomic: SetThreadName may name another thread) */
     if (t->handle) {
         wchar_t w[48];
         MultiByteToWideChar(CP_UTF8, 0, t->name, -1, w, 48);
@@ -1059,8 +1059,10 @@ static void sleep_ns(int64_t ns, int guest) {
 #endif
     /* Under a millisecond: yielded away until the time, or the timer for the game's own sleeps where the processors
        are few (hos_short_sleep_timer). HOS_SHORT_SLEEP_TIMER=1: the timer always, 0: never, not set: by the processors */
-    static int short_timer = -1, poll_cap;
-    if (short_timer < 0) {
+    /* (the choice, how | the cap << 2: one atomic word, so a thread sees both or neither) */
+    static int choice = -1;
+    int chosen = __atomic_load_n(&choice, __ATOMIC_RELAXED);
+    if (chosen < 0) {
         int threads = 0;
 #if defined(_WIN32)   /* (measured on Windows only: elsewhere the timer when asked for) */
         /* (with more than one processor group the mask is one group's, not the process's: not known then) */
@@ -1091,9 +1093,10 @@ static void sleep_ns(int64_t ns, int guest) {
         if (cap && !InterlockedExchange(&told, 1))
             hos_log("sleep: at most %d of the game's threads yield through a short sleep at a time, the others wait on the "
                     "timer (%d logical processors; HOS_SHORT_SLEEP_POLLERS=0: all yield)", cap, threads);
-        poll_cap = cap;
-        short_timer = how;
+        chosen = how | cap << 2;
+        __atomic_store_n(&choice, chosen, __ATOMIC_RELAXED);
     }
+    const int short_timer = chosen & 3, poll_cap = chosen >> 2;
     if (ns < 1000000 && short_timer < (guest ? 1 : 2)) {
         const int counted = guest && poll_cap && !hos_thread_serial(hos_self());
         if (!counted || InterlockedIncrement(&short_pollers) <= poll_cap) {

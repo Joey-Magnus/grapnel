@@ -289,7 +289,8 @@ def main():
                (4, None, 1), "the host's own short sleeps on the timer pass on 4 threads")
         broken(tmp, "one-group", "@SLEEP@", "GetActiveProcessorGroupCount() == 1 && ", "",
                (4, None, 0, 2), "one group's mask taken for the process's processors passes")
-        broken(tmp, "no-limit", "@SLEEP@", "InterlockedIncrement(&short_pollers) <= poll_cap", "1",
+        broken(tmp, "no-limit", "@SLEEP@", "InterlockedIncrement(&short_pollers) <= poll_cap",
+               "(InterlockedIncrement(&short_pollers), 1)",
                (16, None, 0), "the game's short sleeps all yielding past the limit passes")
         broken(tmp, "serial-counted", "@SLEEP@", "guest && poll_cap && !hos_thread_serial(hos_self())", "guest && poll_cap",
                (16, None, 0), "a serial thread sent to the timer at the limit passes")
