@@ -12,10 +12,7 @@
 #include "hos.h"
 #include <stdio.h>
 #include <string.h>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
+#include <windows.h>   /* (VK_F1; host/posix's on Linux) */
 
 const char *hos_game_language(void);   /* nn_applet.c */
 
@@ -112,10 +109,8 @@ uint64_t hos_pausebtn_buttons(uint64_t buttons, uint64_t a) {
         int rx_option(int id, int otherwise);   /* rx_backend.c: 1 the Insert menu is open */
         if ((state == 1 || state == 3) && !rx_option(1, 0)) {
             ours = 1;
-#ifdef _WIN32
             void hos_vk_note_key_press(unsigned key);   /* rx_backend.c: the Insert menu's F1 */
             hos_vk_note_key_press(VK_F1);
-#endif
             hos_log("pause menu: Recomp options: the Insert menu");
         }
     }
