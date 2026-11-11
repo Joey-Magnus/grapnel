@@ -25,6 +25,7 @@ Markdown changes while the server is running, restart it to rerun content prepar
 The check traverses the generated HTML: internal pages and anchors, assets, the `/Hookshot/` project base,
 Report a bug links, the search index and the original logo's exact bytes. Search runs against the production
 Pagefind index after a build; use `npm run preview` when checking search.
+It also runs the compatibility rules against supported, unsupported, incomplete, and low-memory configurations.
 
 ## Edit content and appearance
 
@@ -34,6 +35,9 @@ Pagefind index after a build; use `npm run preview` when checking search.
   unchanged. Generated content, copied public assets, dependencies and build output are ignored in this branch.
 - `src/components/` contains the header, landing-page hero, guide cards and footer.
 - `src/styles/forest.css` defines light/dark themes and responsive layouts.
+- `src/lib/compatibility.mjs` holds the browser-only requirements check. Update its rules and the dated sources in
+  `src/content/docs/compatibility.mdx` together when upstream requirements change. No answers or files are uploaded.
+- `src/content/docs/antivirus.md` records the maintainer's explanation and the date the signing status was checked.
 - `astro.config.mjs` defines navigation and the fork's Pages URL.
 - The logo is copied unchanged from the original README asset. The older GitBook experiment is on `docs/gitbook`.
 

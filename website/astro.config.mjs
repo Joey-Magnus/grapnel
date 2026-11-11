@@ -19,7 +19,9 @@ export default defineConfig({
     tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 2 },
     sidebar: [
       { label: 'Overview', slug: '' },
+      { label: 'Is Hookshot a virus?', slug: 'antivirus' },
       { label: 'Setup and settings', items: [
+        { label: 'Check compatibility', slug: 'compatibility' },
         { label: 'Getting started', slug: 'guides/getting-started' },
         { label: 'Graphics & controls', slug: 'guides/graphics-and-controls' },
         { label: 'Updates & saves', slug: 'guides/updates-and-saves' },

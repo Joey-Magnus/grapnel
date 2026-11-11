@@ -152,10 +152,14 @@ h1#_top { font-family: Georgia, 'Times New Roman', serif; font-weight: 400; lett
 .community-strip h2 { font-size: 1.55rem; }
 .community-strip p:not(.eyebrow) { color: var(--soft-text); font-size: .8rem; margin: .5rem 0 0; }
 .community-strip a { white-space: nowrap; }
-.own-copy-note { display: flex; align-items: flex-start; gap: .8rem; border-radius: 6px; background: var(--panel); padding: 1rem 1.2rem; border-left: 2px solid var(--gold); }
-.own-copy-note > span { color: var(--gold); font-size: 1.2rem; line-height: 1.5; }
-.own-copy-note p { margin: 0; font-size: .74rem; color: var(--soft-text); line-height: 1.8; }
-.own-copy-note strong { color: var(--sl-color-gray-1); font-weight: 500; }
+.own-copy-note { display: flex; align-items: flex-start; gap: .8rem; border-radius: 6px; background: #35191d; padding: 1rem 1.2rem; border: 1px solid #72313a; border-left: 3px solid #c76671; }
+.own-copy-note > span { color: #f0a0a9; font-size: 1.2rem; line-height: 1.5; }
+.own-copy-note p { margin: 0; font-size: .8rem; color: #ebc6cb; line-height: 1.8; }
+.own-copy-note strong { color: #fff0f2; font-weight: 600; }
+.antivirus-feature { border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; background: var(--panel); margin: 0 0 1.5rem; }
+.antivirus-feature h2 { font: 1.6rem/1.3 Georgia, serif; margin: .5rem 0; }
+.antivirus-feature p:not(.eyebrow) { font-size: .9rem; color: var(--sl-color-gray-2); }
+.antivirus-feature a { color: var(--sl-color-text-accent); }
 .own-copy-note + .section-heading { margin-top: 2rem; }
 .field-footer { border-top: 1px solid var(--border); padding: 2rem 0 1rem; margin-top: 2rem; font-size: .75rem; color: var(--soft-text); }
 .field-footer p { display: flex; flex-wrap: wrap; gap: .7rem; margin: 0 0 1rem; }
