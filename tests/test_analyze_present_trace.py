@@ -47,5 +47,19 @@ class TraceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             trace.analyze(self.path, 2, 4)
 
+    def test_phase_columns_preserve_all_interval_checks(self):
+        self.write([10000000]*120 + [100000000])
+        expected = trace.analyze(self.path, 2, 122)
+        lines = self.path.read_text().splitlines()
+        lines[0] += ',present_begin_ns,renderer_begin_ns,renderer_end_ns,vcore_back_ns'
+        for i in range(1, len(lines)):
+            stamp = int(lines[i].split(',')[1])
+            lines[i] += f',{stamp-4},{stamp-3},{stamp-2},{stamp-1}'
+        self.path.write_text('\n'.join(lines)+'\n')
+        self.assertEqual(trace.analyze(self.path, 2, 122), expected)
+        self.path.write_text(self.path.read_text().replace('1020000000', '1020000001', 1))
+        with self.assertRaises(ValueError):
+            trace.analyze(self.path, 2, 122)
+
 if __name__ == '__main__':
     unittest.main()
