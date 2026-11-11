@@ -419,7 +419,7 @@ typedef struct {
 static Delay delays[MAX_DELAYS];
 static void delay_frame(Delay *d, Mix *m) {
     static int off = -1;
-    if (off < 0) off = getenv("HOS_AUDIO_NO_DELAY") != NULL;
+    if (off < 0) off = env_on("HOS_AUDIO_NO_DELAY");
     if (off || !d->enabled || d->n <= 0 || !d->line || d->len < 2) return;
     int dl = (int)((double)d->time_ns * RATE / 1e9);
     if (dl < 1) dl = 1;
@@ -454,13 +454,13 @@ static void delay_frame(Delay *d, Mix *m) {
    Effect handles at 2 x MAX_EFFECTS + index ---- */
 #define MAX_BQFX 16
 typedef struct {
-    int used, mix, enabled, n, seq;
+    int used, mix, enabled, param_on, n, seq;   /* (it runs when SetBiquadFilterEnabled and the parameter's enable are both on) */
     int8_t in[MAX_CH], out[MAX_CH];
     float b[3], a[2], z[MAX_CH][2];
 } BqFx;
 static BqFx bqfx[MAX_BQFX];
 static void bqfx_frame(BqFx *f, Mix *m) {
-    if (!f->enabled || f->n <= 0) return;
+    if (!f->enabled || !f->param_on || f->n <= 0) return;
     const int n = f->n > MAX_CH ? MAX_CH : f->n;
     for (int c = 0; c < n; c++) {
         const int bi = f->in[c], bo = f->out[c];
@@ -2045,7 +2045,7 @@ HLE(_ZN2nn5audio15AddBiquadFilterEPNS0_19AudioRendererConfigEPNS0_16BiquadFilter
     }
     BqFx *f = &bqfx[e];
     memset(f, 0, sizeof *f);
-    f->used = 1, f->mix = m, f->seq = ++fx_seq, f->b[0] = 1.0f;
+    f->used = 1, f->mix = m, f->seq = ++fx_seq, f->b[0] = 1.0f, f->param_on = 1;
     put_handle(ARG(1), K_EFFECT, 2 * MAX_EFFECTS + e);
     au_unlock();
     static int logged;
@@ -2061,7 +2061,9 @@ static int read_bq_float(uint64_t p, float b[3], float a[2]) {
 HLE(_ZN2nn5audio24SetBiquadFilterParameterEPNS0_16BiquadFilterTypeERKNS0_22TBiquadFilterParameterIfEE) {
     BqFx *f = bqfx_of(ARG(0));
     if (!f || !ARG(1)) return;
-    read_bq_float(ARG(1), f->b, f->a);
+    const int on = read_bq_float(ARG(1), f->b, f->a);
+    if (on && !f->param_on) memset(f->z, 0, sizeof f->z);
+    f->param_on = on;
 }
 HLE(_ZN2nn5audio22SetBiquadFilterEnabledEPNS0_16BiquadFilterTypeEb) {
     BqFx *f = bqfx_of(ARG(0));
@@ -2076,7 +2078,6 @@ HLE(_ZN2nn5audio26SetBiquadFilterInputOutputEPNS0_16BiquadFilterTypeEPKaS4_i) {
     for (int k = 0; k < n; k++) f->in[k] = *(int8_t *)GP(ARG(1) + k), f->out[k] = *(int8_t *)GP(ARG(2) + k);
     f->n = n;
 }
-/* (the voices' float filter parameter is PR 669's) */
 
 /* accepted: aux pass-through as before; device and voice-drop settings with nothing behind them here */
 HLE(_ZN2nn5audio13SetAuxEnabledEPNS0_7AuxTypeEb) {}

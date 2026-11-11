@@ -1,12 +1,13 @@
 /* Synthetic signals through the real nn_audio.c delay and mix biquad filter (the section between "---- delay" and
    "fx_seq", with the defines and the Mix type it uses). No device, no game. */
-#define _CRT_SECURE_NO_WARNINGS   /* (the section reads HOS_AUDIO_NO_DELAY with getenv) */
+#define _CRT_SECURE_NO_WARNINGS   /* (the section reads HOS_AUDIO_NO_DELAY with env_on, which calls getenv) */
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "../gpu/vk/compat/hookshot_env.h"
 #include "audio_effects.inc"
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", scenario, __LINE__, #x); exit(1); } } while (0)
@@ -117,7 +118,7 @@ static void biquad_low_pass(void) {
     mix.buffers = 1;
     BqFx f;
     memset(&f, 0, sizeof f);
-    f.used = 1, f.enabled = 1, f.n = 1;
+    f.used = 1, f.enabled = 1, f.param_on = 1, f.n = 1;
     const float p = 0.9f;
     f.b[0] = 1.0f - p, f.a[0] = p;
     const double low = rms_through(&f, 50.0 / RATE), high = rms_through(&f, 12000.0 / RATE);
@@ -132,7 +133,7 @@ static void biquad_unstable(void) {
     mix.buffers = 1;
     BqFx f;
     memset(&f, 0, sizeof f);
-    f.used = 1, f.enabled = 1, f.n = 1;
+    f.used = 1, f.enabled = 1, f.param_on = 1, f.n = 1;
     f.b[0] = 1.0f, f.a[0] = 3.0f;
     for (int fr = 0; fr < 20; fr++) {
         for (int i = 0; i < FRAME; i++) mix.buf[0][i] = 1.0f;
@@ -142,13 +143,29 @@ static void biquad_unstable(void) {
     CHECK(isfinite(f.z[0][0]) && isfinite(f.z[0][1]));
 }
 
+/* the parameter's enable at @0 off: the mix goes through untouched, whatever SetBiquadFilterEnabled says */
+static void biquad_param_off(void) {
+    scenario = "biquad parameter off";
+    memset(&mix, 0, sizeof mix);
+    mix.buffers = 1;
+    BqFx f;
+    memset(&f, 0, sizeof f);
+    f.used = 1, f.enabled = 1, f.param_on = 0, f.n = 1;
+    f.b[0] = 0.1f, f.a[0] = 0.9f;
+    for (int i = 0; i < FRAME; i++) mix.buf[0][i] = (float)(i % 7) - 3.0f;
+    bqfx_frame(&f, &mix);
+    for (int i = 0; i < FRAME; i++) CHECK(mix.buf[0][i] == (float)(i % 7) - 3.0f);
+}
+
 int main(void) {
+    (void)delays, (void)bqfx;   /* (the section's tables: the cases build their own) */
     delay_echoes();
     delay_dry();
     delay_spread();
     delay_nan();
     biquad_low_pass();
     biquad_unstable();
-    puts("audio effects: 6 cases passed");
+    biquad_param_off();
+    puts("audio effects: 7 cases passed");
     return 0;
 }
