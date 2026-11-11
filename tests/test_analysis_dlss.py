@@ -48,6 +48,9 @@ class AnalysisDLSSTests(unittest.TestCase):
         dlss_fixture.AdapterTests().fixture(self.base)
         (self.root / 'scripts').mkdir()
         shutil.copy2(ROOT / 'scripts/dlss5_api.py', self.root / 'scripts/dlss5_api.py')
+        control = ROOT / 'scripts/dlss5_control.py'
+        if control.is_file():
+            shutil.copy2(control, self.root / 'scripts/dlss5_control.py')
         self.prefs = self.base / 'preferences.json'
         self.prefs.write_text('{"workingscale": 0.7, "style": 2, "intensity": 1.2}\n')
         self.game = self.root / 'game'
