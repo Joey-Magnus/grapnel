@@ -20,7 +20,9 @@ def analyze(path, first_frame, last_frame, target_fps=60):
     rows = []
     with Path(path).open(newline='') as stream:
         reader = csv.DictReader(stream)
-        if reader.fieldnames != ['frame', 'return_ns', 'interval_ns']:
+        basic = ['frame', 'return_ns', 'interval_ns']
+        phased = basic + ['present_begin_ns', 'renderer_begin_ns', 'renderer_end_ns', 'vcore_back_ns']
+        if reader.fieldnames not in (basic, phased):
             raise ValueError('Unrecognized native present trace header')
         for row in reader:
             frame = int(row['frame'])
