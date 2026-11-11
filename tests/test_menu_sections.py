@@ -19,7 +19,7 @@ GRAPHICS = [
     ("Frame generation and latency", ["Frame generation", "Frame generation by", "Frame pacing", "Game frame rate cap",
                                       "NVIDIA Reflex", "AMD Anti-Lag 2"]),
     ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter"]),
-    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness"]),
+    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast"]),
     ("Detail", ["Anisotropic filtering"]),
     ("GPU and memory", ["GPU device", "Mesh shaders"]),
 ]
