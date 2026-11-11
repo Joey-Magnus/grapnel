@@ -141,11 +141,15 @@ void hos_posix_window_pixel_size(int *width, int *height) {
 }
 #endif
 
+/* Esc let the captured mouse go just before it opened the Insert menu (Menu shortcut "Insert, F1 or Esc"):
+   the capture that comes back when the menu closes. Spent by the next capture or menu */
+static int esc_had_capture;
 static void mouse_capture(int on) {
     if (on == (int)mouse_captured) return;
     mouse_captured = on;
     InterlockedExchange(&mouse_dx, 0);
     InterlockedExchange(&mouse_dy, 0);
+    if (on) esc_had_capture = 0;
     hos_sdl_relative_mouse(window, on);
 }
 static void set_fullscreen(int on) {
@@ -202,7 +206,8 @@ static void menu_mouse(int open) {
     if (open == menu_open) return;
     menu_open = open;
     if (open) {
-        captured_before_menu = (int)mouse_captured;
+        captured_before_menu = (int)mouse_captured || esc_had_capture;   /* (opened by Esc, which let it go) */
+        esc_had_capture = 0;
         mouse_capture(0);
         hos_pointer_reset(&pointer);
         pointer_update(0, 0);
@@ -352,7 +357,10 @@ void hos_display_loop(void) {
                     break;
                 case HOS_SDL_EV_KEY_DOWN: {
                     const int scancode = e.scancode, mod = e.mod;
-                    if (e.scancode == 41) mouse_capture(0);   /* Esc */
+                    if (e.scancode == 41) {   /* Esc (it may open the Insert menu too: the capture comes back) */
+                        if (!menu_open && mouse_captured) esc_had_capture = 1;
+                        mouse_capture(0);
+                    }
                     if (!e.repeat && ((scancode == 68 && !(mod & 0x0FC3)) || (scancode == 40 && (mod & 0x300)))) set_fullscreen(!fullscreen);   /* F11, Alt+Enter */
                     break;
                 }
