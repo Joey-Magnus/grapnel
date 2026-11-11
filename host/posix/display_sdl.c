@@ -261,7 +261,16 @@ void hos_display_start(void) {
 /* the main thread's loop, until the process ends: the window once asked for, then its events */
 void hos_display_loop(void) {
     if (!sdl_ready) {
-        for (;;) Sleep(1000);
+        /* (HOS_HEADLESS, or no SDL: no window and no events, but the Insert menu's Restart and Quit, which a scripted run
+           can press (RX_VK_MENU_SCRIPT), still end the game as closing the window does, and start it again) */
+        for (;;) {
+            Sleep(50);
+            if (__atomic_load_n(&restart_asked, __ATOMIC_ACQUIRE)) hos_relaunch_ask();
+            if (__atomic_load_n(&restart_asked, __ATOMIC_ACQUIRE) || __atomic_load_n(&close_asked, __ATOMIC_ACQUIRE)) {
+                rx_close_asked();
+                hos_window_closed_exit();
+            }
+        }
     }
     HosSdlEvent e;
     while (!__atomic_load_n(&start_asked, __ATOMIC_ACQUIRE)) hos_sdl_wait_event(&e, 10);   /* (nothing to show yet) */

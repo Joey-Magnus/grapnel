@@ -12,7 +12,7 @@ ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ("headless", "headless_zero", "load_failure", "init_failure", "window_failure",
+CASES = ("headless", "headless_restart", "headless_quit", "headless_zero", "load_failure", "init_failure", "window_failure",
          "visible_success", "thread_failure", "prepare_success", "prepare_no_vulkan",
          "flag_as_romfs", "flag_as_user")
 

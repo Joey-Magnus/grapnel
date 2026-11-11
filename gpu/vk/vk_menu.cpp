@@ -4485,21 +4485,25 @@ void menu_tick() {
         }
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
         const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
-        if (pending && (pending != &r || !mine)) pending = nullptr, changed = true;
+        // (both presses with the game's window in front, or from RX_VK_MENU_SCRIPT, whose runs never have the focus)
+        static const bool scripted = getenv("RX_VK_MENU_SCRIPT") != nullptr;
+        const bool own = mine || scripted;
+        if (pending && (pending != &r || !own)) pending = nullptr, changed = true;
         if (press[7] && confirm_selected) {
-            if (mine && !press[5]) {
+            if (own && !press[5]) {
                 if (pending != &r) {
                     pending = &r, changed = true;
                 } else {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
                     save();
                     pipeline_cache_save(true);
                     pending = nullptr;
+                    // (posted without a window too: a headless run has none, and its loop still serves both, display_sdl.c)
                     if (&r == &rows[kRestartRow]) {   // (the restart question's Restart now: the window closes, then the game starts again)
                         logf("menu: restart");
                         open_now = false, changed = true;
-                        if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
-                    } else if (const HWND window = app_window()) {
-                        PostMessageA(window, WM_CLOSE, 0, 0);
+                        PostMessageA(app_window(), WM_APP + 9, 0, 0);
+                    } else {
+                        PostMessageA(app_window(), WM_CLOSE, 0, 0);
                     }
                 }
             }

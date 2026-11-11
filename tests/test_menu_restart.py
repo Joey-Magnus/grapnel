@@ -154,6 +154,19 @@ def sources():
     keep, load = hos_main.find("hos_relaunch_keep_env();"), hos_main.find("load_hookshot_env();")
     if keep < 0 or keep > load:
         raise SystemExit("hos_main.c: the environment is not kept before hookshot_env.txt is read")
+    # (a run without a window, HOS_HEADLESS with RX_VK_MENU_SCRIPT: the Restart and Quit rows are posted with no window to post
+    # to, both presses count without the focus a headless run never has, and the loop that has no window serves both)
+    for need in ("PostMessageA(app_window(), WM_CLOSE, 0, 0);", 'static const bool scripted = getenv("RX_VK_MENU_SCRIPT") != nullptr;',
+                 "const bool own = mine || scripted;", "if (pending && (pending != &r || !own))", "if (own && !press[5]) {"):
+        if need not in tick:
+            raise SystemExit("menu_tick: the Restart and Quit rows do not work in a scripted run without a window: no " + need)
+    if tick.count("PostMessageA(app_window(), WM_APP + 9, 0, 0);") < 2:
+        raise SystemExit("menu_tick: the Restart row is not posted without a window")
+    headless = sdl[sdl.index("void hos_display_loop(void) {"):]
+    headless = headless[headless.index("if (!sdl_ready) {"):headless.index("HosSdlEvent e;")]
+    for need in ("restart_asked", "close_asked", "hos_relaunch_ask();", "rx_close_asked();", "hos_window_closed_exit();"):
+        if need not in headless:
+            raise SystemExit("display_sdl.c: without a window the menu's Restart and Quit are never served: no " + need)
 
 
 def main():

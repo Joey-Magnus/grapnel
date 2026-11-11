@@ -17,6 +17,7 @@ constexpr unsigned INFINITE = ~0u;
 constexpr unsigned HOS_SDL_VIDEO = 1, HOS_SDL_EVENTS = 2;
 struct HosSdlEvent {};
 struct ProcessExit { int code; };
+struct HeadlessIdle {};
 static int sdl_ready, start_asked, visible_window_started;
 static int game_argc, game_token, event_token;
 static char** game_argv;
@@ -64,11 +65,27 @@ static HANDLE CreateEventA(void*, int, int, void*) { return &event_token; }
     require(h == &event_token, "wrong readiness event");
     ++signals;
 }
-[[noreturn]] static void Sleep(unsigned) {
+[[maybe_unused]] static int restart_asked, close_asked;
+static unsigned restarts, closes, exits;
+static void Sleep(unsigned ms) {
     ++sleeps;
-    throw std::runtime_error("startup entered the hidden-window sleep loop");
+    require(ms == 50 && sleeps == 1, "headless loop did not service its first request");
+    if (mode == "headless") throw HeadlessIdle{};
+    if (mode == "headless_restart") restart_asked = 1;
+    else if (mode == "headless_quit") close_asked = 1;
+    else throw std::runtime_error("startup entered the hidden-window sleep loop");
 }
 [[maybe_unused, noreturn]] static void ExitProcess(unsigned code) { throw ProcessExit{static_cast<int>(code)}; }
+[[maybe_unused]] static void hos_relaunch_ask() { ++restarts; }
+[[maybe_unused]] static void rx_close_asked() {
+    require(restarts == (mode == "headless_restart" ? 1u : 0u), "restart not requested before renderer close");
+    ++closes;
+}
+[[maybe_unused]] static void hos_window_closed_exit() {
+    require(closes == 1, "process exited before renderer close");
+    ++exits;
+    throw ProcessExit{0};
+}
 static int rx_start(void* hwnd) {
     require(!hwnd, "unexpected renderer start in authored fixture");
     ++offscreen;
@@ -118,7 +135,8 @@ static void headless_setting(const char* value) {
 int main(int argc, char** argv) {
     mode = argc == 2 ? argv[1] : "";
     try {
-        headless_setting(mode == "headless" ? "1" : mode == "headless_zero" ? "0" : nullptr);
+        headless_setting(mode == "headless" || mode == "headless_restart" || mode == "headless_quit" ? "1" :
+                         mode == "headless_zero" ? "0" : nullptr);
         char prepare_flag[] = "--prepare-shaders";
         char* prepare_argv[] = {argv[0], argv[1], prepare_flag, nullptr};
         char romfs_flag[] = "--romfs", user_flag[] = "--user";
@@ -130,6 +148,7 @@ int main(int argc, char** argv) {
         int status;
         try { status = app_main(app_argc, app_argv); }
         catch (const ProcessExit& exit) { status = exit.code; }
+        catch (const HeadlessIdle&) { status = 0; }
         require(game_argc == app_argc && game_argv == app_argv, "changed argument handoff");
         if (mode == "load_failure" || mode == "init_failure" || mode == "window_failure") {
             require(status == 1, "unexpected display failure did not exit nonzero");
@@ -140,9 +159,13 @@ int main(int argc, char** argv) {
                     "unexpected startup failure continued offscreen or signaled success");
             require(threads == (mode == "window_failure" ? 1u : 0u),
                     "SDL initialization failure started game work");
-        } else if (mode == "headless") {
-            require(status == 0 && threads == 1 && offscreen == 1 && waited == 1,
-                    "changed explicit headless/offscreen behavior");
+        } else if (mode == "headless" || mode == "headless_restart" || mode == "headless_quit") {
+            require(status == 0 && threads == 1 && offscreen == 1 && waited == 0 && sleeps == 1,
+                    "headless startup did not enter the request loop");
+            const unsigned requested = mode == "headless" ? 0u : 1u;
+            require(closes == requested && exits == requested &&
+                    restarts == (mode == "headless_restart" ? 1u : 0u),
+                    "headless restart/quit request not served exactly once");
             require(!loads && !inits && !windows && !visible_window_started && !flushes,
                     "explicit headless used the display");
         } else if (mode == "visible_success" || mode == "headless_zero" || path_value) {   // (HOS_HEADLESS=0: off, a window)

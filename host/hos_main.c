@@ -1954,7 +1954,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     SetThreadDescription(t, L"Game");
-    if (window) hos_display_loop();   /* (does not return: the window's events until the process ends) */
+    if (!prepare_shaders) hos_display_loop();   /* display events or headless Restart/Quit; preparation exits through its worker */
     WaitForSingleObject(t, INFINITE);
     return 0;
 }
