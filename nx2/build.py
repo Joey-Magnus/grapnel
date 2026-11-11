@@ -339,7 +339,32 @@ def free_mb():
 
 
 def tree_rss(pid):
-    """(linux) The resident bytes of a process and the processes it started (a driver that runs its compiler as a child, or ccache)"""
+    """The resident bytes of a process and its children (a driver that runs its compiler as a child, or ccache)."""
+    if MACOS:
+        # macOS has no /proc tree. One ps snapshot lets the memory gate account for
+        # clang's child processes without polling every PID separately.
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss="], capture_output=True, text=True,
+                             timeout=5, check=True).stdout
+        children, rss = {}, {}
+        for line in out.splitlines():
+            fields = line.split()
+            if len(fields) < 3:
+                continue
+            try:
+                child, parent, kb = map(int, fields[:3])
+            except ValueError:
+                continue
+            children.setdefault(parent, []).append(child)
+            rss[child] = kb << 10
+        total, seen, todo = 0, set(), [pid]
+        while todo:
+            current = todo.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            total += rss.get(current, 0)
+            todo += children.get(current, [])
+        return total
     with open("/proc/%d/statm" % pid) as f:
         n = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
     for task in os.listdir("/proc/%d/task" % pid):
