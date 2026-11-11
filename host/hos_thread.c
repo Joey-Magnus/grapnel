@@ -601,9 +601,10 @@ int64_t hos_spin_ns(void) {
     int64_t b = __atomic_load_n(&both, __ATOMIC_RELAXED);
     if (b < 0) {
         const char *e = getenv("HOS_SPIN_US"), *o = getenv("HOS_SPIN_OTHER_US");
-        int64_t s = (e ? atoll(e) : 20) * 1000, other = (o ? atoll(o) : 5) * 1000;
-        s = s < 0 ? 0 : s > 1000000000 ? 1000000000 : s;
-        other = other < 0 ? 0 : other > s ? s : other;
+        int64_t s = e ? atoll(e) : 20, other = o ? atoll(o) : 5;   /* (us, clamped before they become ns) */
+        s = (s < 0 ? 0 : s > 1000000 ? 1000000 : s) * 1000;
+        other = (other < 0 ? 0 : other > 1000000 ? 1000000 : other) * 1000;
+        other = other > s ? s : other;
         b = s << 32 | other;
         __atomic_store_n(&both, b, __ATOMIC_RELAXED);
     }

@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
 # HOS_SPIN_US, HOS_SPIN_OTHER_US (None: not set), the serial threads' and the others' spin in ns
 CASES = [(None, None, 20000, 5000), ("0", None, 0, 0), (None, "20", 20000, 20000), ("3", None, 3000, 3000),
          (None, "50", 20000, 20000), ("40", None, 40000, 5000), ("40", "10", 40000, 10000), (None, "0", 20000, 0),
-         (None, "-5", 20000, 0), ("0", "5", 0, 0)]
+         (None, "-5", 20000, 0), ("0", "5", 0, 0), (None, "9223372036854776", 20000, 20000), ("9223372036854776", None, 1000000000, 5000)]
 
 
 def main():
