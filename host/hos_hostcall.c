@@ -110,45 +110,51 @@ int a64_call_miss(Ctx *c, uint64_t target) {
 /* HOS_HLE_STATS=1 (off by default): every 5 s, how often each HLE function (hos.h's HLE) and each host call ran in that
    time, the most called first: "hle: <total> calls of <n> functions in 5 s", then lines of "<count> <name>;" (HLE functions
    by their mangled name, cut at 64 characters). scripts/cpu_report.py --calls reads them. HLE functions called from host
-   code (one HLE function calling another) count too. */
+   code (one HLE function calling another) count too; the sdk's NVN exports count as their host call (nvn2_dispatch). */
 int hos_hle_stats;
 static HleCount *volatile hle_list;
-void hos_hle_count(HleCount *h) {
+void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c) {
     if (!h->listed && !InterlockedExchange(&h->listed, 1)) {   /* (its first call puts it on the list, once) */
         HleCount *head;
         do h->next = head = hle_list;
         while (InterlockedCompareExchangePointer((PVOID volatile *)&hle_list, h, head) != head);
     }
     InterlockedIncrement(&h->calls);
+    fn(c);
 }
-typedef struct { const char *name; long n; } HleRow;
+/* (the counts wrap: a 32-bit LONG passes its maximum after 2^31 calls, so a count since the last report is the difference
+   taken unsigned) */
+typedef struct { const char *name; unsigned long n; } HleRow;
 static int hle_row_cmp(const void *a, const void *b) {
-    const long x = ((const HleRow *)a)->n, y = ((const HleRow *)b)->n;
+    const unsigned long x = ((const HleRow *)a)->n, y = ((const HleRow *)b)->n;
     return (x < y) - (x > y);
 }
 static void hle_stats_report(void) {
     enum { TOP = HOS_HOSTCALL_MAX + 2048 };
     static HleRow row[TOP];
     int n = 0;
-    long total = 0;
+    unsigned long long total = 0;
     for (HleCount *h = hle_list; h && n < TOP; h = h->next) {
-        const long now = h->calls, d = now - h->before;
+        const long now = h->calls;
+        const unsigned long d = (unsigned long)now - (unsigned long)h->before;
         h->before = now;
-        if (d > 0) row[n].name = h->name, row[n].n = d, n++, total += d;
+        if (d) row[n].name = h->name, row[n].n = d, n++, total += d;
     }
     const LONG nc = ncalls;
     for (LONG i = 0; i < nc && n < TOP; i++) {
-        const LONG now = calls[i].calls, d = now - calls[i].before;
+        const LONG now = calls[i].calls;
+        const unsigned long d = (ULONG)now - (ULONG)calls[i].before;
         calls[i].before = now;
-        if (d > 0) row[n].name = calls[i].name, row[n].n = d, n++, total += d;
+        if (d) row[n].name = calls[i].name, row[n].n = d, n++, total += d;
     }
     qsort(row, n, sizeof *row, hle_row_cmp);
-    hos_log("hle: %ld calls of %d functions in 5 s", total, n);
+    /* (every row is printed: a row left out would lose its counts for good, as its baseline moved on) */
+    hos_log("hle: %llu calls of %d functions in 5 s", total, n);
     char line[1024];
     int len = 0;
-    for (int i = 0; i < n && i < 150; i++) {
-        len += snprintf(line + len, sizeof line - len, " %ld %.64s;", row[i].n, row[i].name);
-        if (len > 800 || i == n - 1 || i == 149) { hos_log("hle:%s", line); len = 0; }
+    for (int i = 0; i < n; i++) {
+        len += snprintf(line + len, sizeof line - len, " %lu %.64s;", row[i].n, row[i].name);
+        if (len > 800 || i == n - 1) { hos_log("hle:%s", line); len = 0; }
     }
 }
 static DWORD WINAPI hle_stats_thread(void *p) {
