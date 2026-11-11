@@ -53,13 +53,12 @@ typedef struct ZsStream {
     uint64_t guest;   /* the stream object's guest address; 0: a free entry */
     ZSTD_DCtx *z;
     ZsDict *dict;
-    int busy;         /* a call on it is running: never reclaimed then */
 } ZsStream;
 
 static ZsStream zs_stream[ZS_STREAMS];
 static ZsDict zs_dict[ZS_DICTS];
 static ZSTD_DCtx *zs_spare[ZS_STREAMS];   /* finished streams' contexts, for the next ones */
-static int zs_nspare;
+static int zs_nspare, zs_used, zs_peak;   /* (entries in use, and the most so far: logged) */
 static volatile int zs_lock_word;   /* (the tables only: never held while decoding or across a core change) */
 static void zs_lock(void) {
     while (__atomic_exchange_n(&zs_lock_word, 1, __ATOMIC_ACQUIRE)) {
@@ -99,6 +98,7 @@ static void zs_dict_put(ZsDict *d) {
     }
 }
 static void zs_free(ZsStream *s) {
+    zs_used--;
     zs_dict_put(s->dict);
     if (zs_nspare < ZS_STREAMS) zs_spare[zs_nspare++] = s->z;
     else ZSTD_freeDCtx(s->z);
@@ -142,29 +142,26 @@ static ZsDict *zs_dict_get(uint64_t g) {
     return spot;
 }
 
-/* stream object g's entry, marked busy, or NULL (it decodes lifted). start: a new frame, the entry made or reset and its
-   dictionary (ddict, the game's, or 0) taken; *why says why not */
+/* stream object g's entry, or NULL (it decodes lifted). start: a new frame, the entry made or reset and its dictionary
+   (ddict, the game's, or 0) taken; *why says why not.
+   An entry goes when its stream fails or ends, or is reset when its stream object starts the next frame; nothing else
+   frees one (a stream whose object the game no longer uses keeps its entry: only the game knows, and its memory may be
+   gone). With all of them in use a new stream decodes lifted, as before. One thread calls for a stream object at a time
+   (the game's job loop), so an entry is never used by two calls at once. */
 static ZsStream *zs_take(uint64_t g, int start, uint64_t ddict, const char **why) {
     zs_lock();
     ZsStream *s = NULL, *spot = NULL;
+    int peak = 0;
     for (int i = 0; i < ZS_STREAMS && !s; i++) {
         if (zs_stream[i].guest == g) s = &zs_stream[i];
         else if (!zs_stream[i].guest && !spot) spot = &zs_stream[i];
     }
     if (!start) {
-        if (s) s->busy = 1;
         zs_unlock();
         return s;
     }
-    if (!s) {   /* a free entry, or one whose stream object needs no context now (state 1, 3 or 4) */
+    if (!s) {
         s = spot;
-        for (int i = 0; i < ZS_STREAMS && !s; i++) {
-            const uint8_t st = *(const uint8_t *)GP(zs_stream[i].guest);
-            if (!zs_stream[i].busy && (st == 1 || st == 3 || st == 4)) {
-                zs_free(&zs_stream[i]);
-                s = &zs_stream[i];
-            }
-        }
         if (!s) {
             zs_unlock();
             *why = "all host entries in use";
@@ -177,6 +174,7 @@ static ZsStream *zs_take(uint64_t g, int start, uint64_t ddict, const char **why
             return NULL;
         }
         s->guest = g;
+        if (++zs_used > zs_peak) peak = zs_peak = zs_used;
     }
     zs_dict_put(s->dict);
     s->dict = NULL;
@@ -186,14 +184,14 @@ static ZsStream *zs_take(uint64_t g, int start, uint64_t ddict, const char **why
         *why = "a dictionary libzstd does not take as the game's";
         return NULL;
     }
-    s->busy = 1;
     zs_unlock();
+    if (peak) hos_log("zstd: %d stream(s) decoding on the host at once", peak);   /* (each new most) */
     return s;
 }
 static void zs_give(ZsStream *s, int finished) {
+    if (!finished) return;
     zs_lock();
-    s->busy = 0;
-    if (finished) zs_free(s);
+    zs_free(s);
     zs_unlock();
 }
 static void zs_drop(uint64_t g) {   /* (stream object g's context, if it has one, goes) */
