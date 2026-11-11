@@ -895,7 +895,7 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
+    // Controls (13 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background, false, true},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -903,6 +903,11 @@ Row rows[] = {
     {TAB_CONTROLS, "Disable camera centering", &opts.disable_camera_centering, 0, 1, 1, tx_onoff,
      "Stops the camera gradually turning toward the direction you move, useful with native mouse look. Off keeps the "
      "game's standard behavior. Manual camera controls and recentering still work.", nullptr, false, true},
+    {TAB_CONTROLS, "First person", &opts.first_person, 0, 1, 1, tx_onoff,
+     "The view at Link's eyes while he walks and runs, turned by the mouse or the right stick as in third person. The "
+     "game's own camera takes over for aiming, shops and cutscenes, and may for targeting, climbing and swimming. The "
+     "view keeps the game's camera angles, with their downward tilt, and is not held back by walls.", nullptr, false,
+     true},
     {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
      "How far the camera turns for a mouse movement, with either Mouse camera: at 1.00 native look turns 0.1 degree a "
      "count. The - and = keys change it in game too.", nullptr, false, true},

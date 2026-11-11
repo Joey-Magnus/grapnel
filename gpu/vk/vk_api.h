@@ -47,6 +47,9 @@ enum { HOS_OPT_HDR_TONEMAP = 47 };
 /* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
 /* 49 and 50 are reserved for Walk mode and Walk speed (#2345). */
 enum { HOS_OPT_FOV = 51 };
+/* (HOS_OPT_FIRST_PERSON, 47 at this commit: Controls' view at Link's eyes, host/hos_first_person.c: 0 the game's camera,
+   1 his eyes; the Debug tab's free camera wins over it — renumbered off 47 by the next commit, main's HDR tonemap) */
+enum { HOS_OPT_FIRST_PERSON = 47 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:
