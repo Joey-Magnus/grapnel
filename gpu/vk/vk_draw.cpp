@@ -663,9 +663,13 @@ void ensure_layout(Program& p) {
     if (p.layout) return;
     // (one at a time: the preparation behind the game (vk_prepare_play.cpp) makes layouts of programs play may make at the same
     // moment; the check above stays the fast way out)
+    // (only then: with nothing behind the game, as main, no lock)
     static std::mutex layout_mu;
-    std::lock_guard layout_lk(layout_mu);
-    if (p.layout) return;
+    std::unique_lock<std::mutex> layout_lk(layout_mu, std::defer_lock);
+    if (prepare_play_running()) {
+        layout_lk.lock();
+        if (p.layout) return;
+    }
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     uint64_t total = 0;   // (64-bit: a sum of 32-bit counts)
     auto add = [&](VkDescriptorType type, VkShaderStageFlags stage, const auto& descriptors) {
@@ -7872,6 +7876,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
             remove(warming.c_str());
         }
         prepared_for.warmed = warmed;
+        prep_driver_changed();   // (Most and Later: the predicted pipelines, built behind the game, are of the other driver too)
         prepared_write(path + prep_record_suffix(), prepared_for);
         return true;
     }
@@ -7915,7 +7920,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // (hookshot) compute pipelines too, for the driver's own cache: built in play they stopped the game while the driver compiled
     // them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang
     const auto warm_compute = [&](Program& p) {
-        if (warm_cs && warm_compute_one(p)) libs++;
+        prep_gate();   // (behind the game: before each variant's compile)
+        if (warm_cs && !prepare_stopped() && warm_compute_one(p)) libs++;
     };
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
@@ -8015,8 +8021,9 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // (the driver's part left out, by a start that ended in it or in play, is not tried again for this driver: as before)
     prepared_for.warmed = warmed;
     // (behind the game with Compile shaders on Later: beside it until everything is done, vk_prepare_play.cpp moves it over the record)
+    prep_programs_prepared();   // (Most and Later: the other compute variants and the predicted pipelines are what is left; written
+                                // first: a stop between the two leaves them to do, not a folder that reads as all prepared)
     prepared_write(path + prep_record_suffix(), prepared_for);
-    prep_programs_prepared();   // (Most and Later: the other compute variants and the predicted pipelines are what is left)
     return true;
 }
 /// (hookshot) An update (prepare_is_update): the seed is prepared in play, behind the game, too late for the precompile; the pipelines
@@ -8258,7 +8265,13 @@ bool predict_pending() {
     fclose(f);
     return true;
 }
+std::atomic<bool> predict_gave_up_flag{false};
+/// (vk_prepare_play.cpp) the last predict_run gave up on workers stuck in the driver
+bool predict_gave_up() { return predict_gave_up_flag.load(); }
+/// (vk_prepare_play.cpp) pipelines built into the start's cache since it was last saved
+int64_t pcache_unsaved() { return pcache_built_since_save.load(); }
 void predict_run(void (*progress)(size_t done, size_t total)) {
+    predict_gave_up_flag = false;
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
     if (notes.empty() || env_on("RX_VK_NO_PREDICT")) {
@@ -8306,7 +8319,9 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     for (const auto& kv : pre->by_program) pre->keys.push_back(kv.first);
     // (behind the game, in a fixed order: a start that stopped goes on from where it got to, vk_prepare_play.cpp)
     if (prepare_play_running()) std::sort(pre->keys.begin(), pre->keys.end());
-    prep_phase_items(prepare_play::kPredicted, pre->keys.size());
+    // (and its hash: play notes more pipelines, and a list that grew since the record has its positions moved: started again)
+    prep_phase_items(prepare_play::kPredicted, pre->keys.size(),
+                     prepare_play_running() ? prepare_play::list_hash(pre->keys.data(), pre->keys.size()) : 0);
     auto& next = pre->next;
     auto& done = pre->done;
     auto& made = pre->made;
@@ -8350,6 +8365,8 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
                 ensure_layout(p);
                 for (const PipeNote* n : list)
                     if (n->variant == p.variant && !pre->abandoned.load()) {   // (gone on without it: no more of its list)
+                        prep_gate();   // (behind the game: before each pipeline, not each program's list, so the frame's work waits for none)
+                        if (prepare_stopped()) break;
                         // (a mesh fallback program's own topology: its donor's may be an ordinary draw's, pipeline_topology)
                         const VkPrimitiveTopology topo = pipeline_topology(p, (VkPrimitiveTopology)n->topo);
                         const Targets at = note_targets(*n);
@@ -8403,6 +8420,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
                  stall_s > 0 && (faulted || next.load() >= pre->keys.size()) && now - last_change > std::chrono::seconds(stall_s)) {
             pre->abandoned = true;
             gone_on = true;
+            predict_gave_up_flag = true;   // (behind the game: the part is not recorded done, vk_prepare_play.cpp)
             prepare_left_workers_note();
             logf("vk: predicted pipelines: %zu of %zu done, nothing finished for %d s (%s): the rest are built in play", done.load(),
                  predicted_n, stall_s, faulted ? "the driver faulted, and is stuck since" : "the last ones stuck in the driver");
@@ -8495,7 +8513,8 @@ bool compute_rest_run(void (*progress)(size_t done, size_t total)) {
                 continue;
             }
             const SeedVariants v = seed_compute(computes[i], 64, [&](Program& p) {
-                if (warm && warm_compute_one(p)) pipelines++;
+                prep_gate();   // (before each variant's compile, not each program's 64: the frame's work waits for none of them)
+                if (warm && !prepare_stopped() && warm_compute_one(p)) pipelines++;
             });
             variants += v.variants;
             if (!prepare_stopped()) prep_item_done(prepare_play::kComputeRest, i);
@@ -8548,12 +8567,17 @@ void precompile_into_cache(void (*progress)(size_t done, size_t total), const st
         std::sort(gs.begin(), gs.end());
         for (const uint64_t k : gs) items.push_back({k, 2});
     }
-    if (!only) prep_phase_items(prepare_play::kNoted, items.size());
+    if (!only) {   // (the list's hash: the notes and computes play adds move the positions, vk_prepare_play.cpp starts it again)
+        std::vector<uint64_t> keys;
+        keys.reserve(items.size());
+        for (const Item& it : items) keys.push_back(it.key * 3 + (uint64_t)it.kind);
+        prep_phase_items(prepare_play::kNoted, items.size(), prepare_play::list_hash(keys.data(), keys.size()));
+    }
     std::atomic<size_t> next{0}, done{0}, made{0};
     const auto build_notes = [&](const Program& p, const std::vector<const PipeNote*>& list) {
         if (!p.layout) return;
         for (const PipeNote* n : list)
-            if (n->variant == p.variant)
+            if (n->variant == p.variant && (prep_gate(), !prepare_stopped()))   // (each pipeline through the gate)
                 if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), pipeline_topology(p, (VkPrimitiveTopology)n->topo)))
                     vkDestroyPipeline(dev.device, pl, nullptr), made++;
     };
@@ -8769,11 +8793,27 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     // (a program still being translated is waited for, as a draw's is: a dispatch left out is work never done again.
     // MKW updates its terrain height clipmaps a region at a time as the camera moves, and makes its sky's tables
     // once; a skipped update left holes and flat patches in the terrain, garbage in the sky)
+    // (hookshot) On Compile shaders Most and Later a compute program play is not known to dispatch has its base variant alone until
+    // the work behind the game makes the others: another variant's first dispatch goes by When a shader isn't ready, as a draw does
+    // (Wait briefly: out of the frame's budget), never an open-ended wait on the recording thread. Left out, it is the same as
+    // main's dispatch whose pipeline is still compiling. On All every variant is made before play: waited for, as before
     if (cp && !cp->ready.load(std::memory_order_acquire)) {
+        prep_note_miss();
+        const prepare_play::Act act = prepare_level() == prepare_play::Level::All ? prepare_play::Act::Wait : prep_miss_act(true, false);
         const auto t0 = std::chrono::steady_clock::now();
-        jobs_wait(cp->ready);
-        st_waits++;
-        st_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        bool got = true;
+        if (act == prepare_play::Act::Wait) jobs_wait(cp->ready);
+        else if (act == prepare_play::Act::Bounded) got = jobs_wait_for(cp->ready, prep_miss_budget_left());
+        else got = false;
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (act == prepare_play::Act::Bounded) prep_miss_spend((int64_t)(ms * 1000));
+        if (act != prepare_play::Act::LeaveOut) st_waits++, st_wait_ms += ms;
+        if (!got) {
+            static std::atomic<int> told{0};
+            if (told++ < 40) logf("vk: dispatch of a compute variant left out: it is still being translated (When a shader isn't ready)");
+            st_pending_skips++;
+            return;
+        }
     }
     if (!cp || cp->failed) {   // (hookshot) the program's resources, once a control section: what a rejected dispatch reads/writes
         static std::mutex mu2;
@@ -8930,10 +8970,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         // (only the dispatch that started the build waits: later ones while it still compiles are left out at once, not 50 ms
         // each, which stalled every frame by 50 ms per compute program still building)
         const auto t0 = std::chrono::steady_clock::now();
-        // (while the shaders are prepared behind the game (Compile shaders on Most or Later, vk_prepare_play.cpp): up to a second.
-        // More compute variants are not built yet there, and a dispatch left out is work no later frame does again; NVIDIA's come
-        // in milliseconds)
-        const auto limit = std::chrono::milliseconds(prepare_play_running() ? 1000 : 50);
+        const auto limit = std::chrono::milliseconds(50);
         while (fresh && p.compute_state.load(std::memory_order_acquire) != 2 && std::chrono::steady_clock::now() - t0 < limit)
             std::this_thread::sleep_for(std::chrono::microseconds(200));
         if (p.compute_state.load(std::memory_order_acquire) != 2) {
@@ -9301,6 +9338,9 @@ void pipeline_cache_close() {
 
 void pipeline_cache_save(bool force) {
     if (!pcache || pcache_no_save || (!force && pcache_built_since_save < 32)) return;
+    // (not while the work behind the game builds into this cache, but for its own saves with its workers paused: vk_prepare_play.cpp.
+    // Read while pipelines were made into it, Intel's driver crashed)
+    if (!prep_cache_save_ok()) return;
     pcache_built_since_save = 0;
     // (on a thread of its own unless forced, at exit: ~100 MB fetched and written took the replay thread 100+ ms at
     // each scene change; the cache is internally synchronized, pipelines go on being built meanwhile)
@@ -9321,9 +9361,8 @@ void pipeline_cache_save(bool force) {
             // so a folder prepared before the warm pass keeps its libraries through a crash. The window's close does not write it
             // (pipeline_cache_close saves the generation only); a forced save does: Restart now, the prepare. RX_VK_PLAY_SAVE_START_MB=<n>: the growth it is written at in play (64; 0: any, as before))
             static const size_t play_grown = (size_t)(getenv("RX_VK_PLAY_SAVE_START_MB") ? std::max<long long>(0, atoll(getenv("RX_VK_PLAY_SAVE_START_MB"))) : 64) << 20;
-            // (not while the preparation behind the game builds into it (vk_prepare_play.cpp): read while pipelines were made into it,
-            // Intel's driver crashed. It saves it itself between its builds)
-            bool write = !prep_building() && vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n &&
+            // (asked again here, on the save's own thread: the work behind the game may have begun since, vk_prepare_play.cpp)
+            bool write = prep_cache_save_ok() && vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n &&
                          n != pcache_saved_size;
             if (write && !force && play_grown && play_cache_in_use() && n < pcache_saved_size + play_grown) {
                 write = false;

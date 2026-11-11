@@ -58,6 +58,9 @@
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
+double menu_frame_target_ms();   // (vk_menu.cpp: the frame time the fps cap asks for, 0 none)
+}
+namespace mkwvk {
 extern std::atomic<bool> movie_networks_slow;   // (vk_draw.cpp: the movie networks left out, issue 109)
 int64_t presents_now;   // (the presents so far, for SlowWatch)
 void hang_watch_start();   // (EvilOOT, vk_hangdump.cpp: RX_VK_HANG_DUMP)
@@ -3497,6 +3500,16 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         log_frame_stats();
     }
     if (dev.offscreen) frame_log_present();   // (no window: the copy into the offscreen image above is its present)
+    if (hidden && !dev.offscreen) {
+        // (a held frame is not presented, so nothing paces it: Uncapped or a vsync'd present would let the loop run as fast as the
+        // CPU can for the hold's seconds. Paced here at the cap's frame time, 60 fps when there is none)
+        double ms = menu_frame_target_ms();
+        if (ms <= 0) ms = 1000.0 / 60.0;
+        static std::chrono::steady_clock::time_point next{};
+        const auto now = std::chrono::steady_clock::now();
+        if (next > now && next - now < std::chrono::milliseconds(100)) std::this_thread::sleep_until(next);
+        next = std::max(now, next) + std::chrono::microseconds((int64_t)(ms * 1000));
+    }
     if (dev.offscreen || interpolated || hidden) return;
     present_image(src, sw, sh, crop, direct_view);
 }

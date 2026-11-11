@@ -1351,7 +1351,8 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
-    prepare_play_close();   // (preparing in play: stopped, what it made and where it got to kept)
+    // (Compile shaders on Most or Later: the work behind the game stopped, what it made and where it got to kept)
+    const bool stopped = prepare_play_close();
     pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
     if (prep_running.load() && !prepare_stopped()) {
         logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
@@ -1359,6 +1360,16 @@ void mkwvk_close_asked(void) {
         if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
     }
     dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
+    // (a worker behind the game still in a driver call: the device and the driver are not torn down under it, the process ends here,
+    // as a --prepare-shaders run that left workers in the driver does (prepare_end))
+    if (!stopped) {
+        if (host && host->log_flush) host->log_flush();
+        std::fflush(stdout), std::fflush(stderr);
+#ifdef _WIN32
+        TerminateProcess(GetCurrentProcess(), 0);
+#endif
+        std::_Exit(0);
+    }
 }
 
 extern "C"

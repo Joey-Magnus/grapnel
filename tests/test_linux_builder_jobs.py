@@ -100,7 +100,7 @@ class BuilderBuildJobsTests(unittest.TestCase):
         source = ["--nup", gui.nup.get()] if gui.kind.get() == "nup" else ["--romfs", gui.romfs.get(), "--exefs", gui.exefs.get()]
         expected = [sys.executable, "-I", str(ROOT / "nx2" / "make_game.py")] + source + [
             "--out", gui.out.get(), "--language", "en-US"] + ([] if jobs is None else ["--jobs", str(jobs)]) + [
-            "--compile-shaders", "most"]
+            ]
         self.assertEqual(len(harness.processes), 1)
         command, options = harness.processes[0]
         self.assertEqual(command, expected)
@@ -108,7 +108,7 @@ class BuilderBuildJobsTests(unittest.TestCase):
                                        encoding="utf-8", errors="replace", start_new_session=True))
         self.assertEqual(harness.events[0][1], dict(previous="kept", kind=gui.kind.get(), nup=gui.nup.get(),
                                                   romfs=gui.romfs.get(), exefs=gui.exefs.get(), out=gui.out.get(), language="en-US",
-                                                  prepare="1", compile_shaders="most"))
+                                                  prepare="1"))
         self.assertEqual(harness.events[3][1], dict(target=gui.read, args=(gui.proc,), daemon=True))
 
     def test_positive_hookshot_jobs_is_passed_on(self):
@@ -122,13 +122,14 @@ class BuilderBuildJobsTests(unittest.TestCase):
         harness.gui.prepare = value(False)
         harness.run()
         command, _ = harness.processes[0]
-        self.assertEqual(command[-3:], ["--no-prepare-shaders", "--compile-shaders", "most"])
+        self.assertEqual(command[-1], "--no-prepare-shaders")   # (Compile shaders never chosen here: not passed)
         self.assertEqual(harness.events[0][1]["prepare"], "0")
 
     def test_compile_shaders_is_passed_on_and_saved(self):
         for name, level in (("All", "all"), ("Later", "later")):
             harness = BuildHarness(self.folder, {})
             harness.gui.compile_shaders = value(name)
+            harness.gui.compile_chosen = True
             harness.run()
             command, _ = harness.processes[0]
             self.assertEqual(command[-2:], ["--compile-shaders", level])

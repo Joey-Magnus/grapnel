@@ -110,7 +110,10 @@ COMPILE_NAMES = {"all": "All", "most": "Most", "later": "Later"}
 
 def compile_shaders_args(level):
     """"Compile shaders": what of the preparation runs before play. make_game.py writes it to the folder's hookshot_options.ini
-    (compile_shaders=), and leaves the shaders to the game on Later"""
+    (compile_shaders=), and leaves the shaders to the game on Later. None (never chosen here): not passed, the folder keeps what the
+    game's own menu chose"""
+    if level is None:
+        return []
     return ["--compile-shaders", level if level in COMPILE_LEVELS else "most"]
 
 
@@ -452,8 +455,10 @@ class Builder(tk.Tk):
         code = self.cfg.get("language", "en-US")
         self.language = tk.StringVar(value=dict(make_game.LANGUAGES).get(code, names[0]))
         self.prepare = tk.BooleanVar(value=self.cfg.get("prepare", "1") != "0")   # (make_game.py's last step: off, at the first start)
-        # (experimental: the game prepares its shaders while it is played, make_game.py --prepare-in-play)
+        # (Compile shaders on Later: the game prepares its shaders while it is played, make_game.py --compile-shaders later)
         self.compile_shaders = tk.StringVar(value=COMPILE_NAMES.get(self.cfg.get("compile_shaders", "most"), "Most"))
+        self.compile_chosen = self.cfg.get("compile_shaders") in COMPILE_LEVELS   # (only a choice made here is passed and saved)
+        self.compile_shaders.trace_add("write", lambda *_: setattr(self, "compile_chosen", True))
         self.dlss = tk.BooleanVar(value=self.cfg.get("dlss", "0") == "1")
         self.check_text = tk.StringVar()
         self.space_text = tk.StringVar()
@@ -920,7 +925,9 @@ class Builder(tk.Tk):
         self.apply_mode()
 
     def compile_level(self):
-        """The Compile shaders box's choice, as make_game.py takes it"""
+        """The Compile shaders box's choice, as make_game.py takes it; None when it was never chosen here"""
+        if not getattr(self, "compile_chosen", False):
+            return None
         return next((k for k, n in COMPILE_NAMES.items() if n == self.compile_shaders.get()), "most")
 
     def on_dlss_changed(self):
@@ -1193,7 +1200,8 @@ class Builder(tk.Tk):
         code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
         dlss = bool(self.dlss.get()) if hasattr(self, "dlss") else False
         self.cfg.update(kind=self.kind.get(), nup=self.nup.get(), romfs=self.romfs.get(), exefs=self.exefs.get(), out=out, language=code,
-                        prepare="1" if self.prepare.get() else "0", compile_shaders=self.compile_level(),
+                        prepare="1" if self.prepare.get() else "0",
+                        **({"compile_shaders": self.compile_level()} if self.compile_level() else {}),
                         **({"dlss": "1" if dlss else "0"} if hasattr(self, "dlss") else {}))
         save_config(self.cfg)
         # (issue 531) Without HOOKSHOT_JOBS or RX_JOBS, make_game chooses as on Windows, from the memory free now; this window chose

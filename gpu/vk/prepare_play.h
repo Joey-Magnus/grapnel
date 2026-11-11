@@ -78,7 +78,7 @@ inline unsigned workers(unsigned logical, unsigned cores, double avail_gb, doubl
     if (psi_full > 10.0) return 0;
     unsigned n;
     if (cores <= 6) n = 1;
-    else n = std::min({cores - 3, logical > 6 ? logical - 6 : 1u, 8u});
+    else n = std::min({cores - 3, logical > 6 ? logical - 6 : 1u, 6u});   // (below normal priority, not idle: at most 6)
     if (n < 1) n = 1;
     if (avail_gb >= 0 && avail_gb < 6.0) n = 1;
     return n;
@@ -131,7 +131,8 @@ private:
 /// the preparation runs behind the game. The game itself runs on as always: its clock and sound do not wait, only the picture
 /// does.
 /// A load is seen by the draws: frames of few draws (a loading screen draws 2-10, a menu 15-70) for a while, then a frame of
-/// many (an area draws 700 and more); or said by the game (area_loaded)
+/// many (an area draws 700 and more). A load's own hidden frames are capped as a hold is (cap_ns from the first one hidden): a
+/// pause menu, the title or a dark room also draws few, and must not freeze on a pipeline that takes seconds
 struct Hold {
     // (settings)
     int64_t cap_ns = 3000000000LL;   // the longest a hold lasts
@@ -144,11 +145,12 @@ struct Hold {
     int clean = 0;
     int64_t since = 0;
     int64_t hidden = 0;   // frames hidden by the current (or last) hold
+    int64_t load_since = -1;   // (the first of a load's frames hidden; -1 none yet)
     /// A present: its frame's draws and the draws it left out or found not ready (misses); now_ns; enabled: the preparation
-    /// runs behind the game; area_loaded: the game said an area has just loaded. True: this frame is hidden
-    bool frame(int64_t draws, int64_t misses, int64_t now_ns, bool enabled, bool area_loaded = false) {
+    /// runs behind the game. True: this frame is hidden
+    bool frame(int64_t draws, int64_t misses, int64_t now_ns, bool enabled) {
         if (!enabled) {
-            quiet = 0, loading = false, holding = false;
+            quiet = 0, loading = false, holding = false, load_since = -1;
             return false;
         }
         if (holding) {
@@ -162,11 +164,15 @@ struct Hold {
         }
         if (draws < quiet_draws) {
             if (++quiet >= quiet_frames) loading = true;
-            if (loading && misses > 0) return hidden++, true;   // (a load's frame lacking something: the last picture stays)
+            if (loading && misses > 0) {   // (a load's frame lacking something: the last picture stays, up to the cap)
+                if (load_since < 0) load_since = now_ns;
+                if (now_ns - load_since < cap_ns) return hidden++, true;
+            }
             return false;
         }
         quiet = 0;
-        if ((loading && draws >= busy_draws) || area_loaded) {
+        load_since = -1;
+        if (loading && draws >= busy_draws) {
             loading = false;
             if (misses == 0) return false;   // (the area's first frame lacked nothing: nothing to hold)
             holding = true, since = now_ns, clean = 0, hidden = 1;
@@ -188,11 +194,24 @@ struct Progress {
     uint64_t stamp = 0;
     int phase = 0;
     uint64_t at = 0;
+    uint64_t list = 0;   // (the part's item list, hashed: a list that changed since (play notes more pipelines) starts the part again)
 };
 inline std::string progress_text(const Progress& p) {
-    char b[96];
-    snprintf(b, sizeof b, "stamp=%016llx\nphase=%d\nat=%llu\n", (unsigned long long)p.stamp, p.phase, (unsigned long long)p.at);
+    char b[128];
+    snprintf(b, sizeof b, "stamp=%016llx\nphase=%d\nat=%llu\nlist=%016llx\n", (unsigned long long)p.stamp, p.phase,
+             (unsigned long long)p.at, (unsigned long long)p.list);
     return b;
+}
+/// Where a part resumes: at the record's item when the record is of this part and of the same list, else at its first
+inline uint64_t resume_at(const Progress& p, int part, uint64_t list) {
+    return p.phase == part && p.list == list ? p.at : 0;
+}
+/// A list's hash (FNV-1a over its keys, in order)
+inline uint64_t list_hash(const uint64_t* keys, size_t n) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < n; i++)
+        for (int b = 0; b < 64; b += 8) h = (h ^ ((keys[i] >> b) & 0xff)) * 0x100000001b3ull;
+    return h;
 }
 /// The record from its text, for this stamp: another stamp's, or none, starts at the beginning (phase -1: no record)
 inline Progress progress_parse(const char* text, uint64_t stamp) {
@@ -205,6 +224,7 @@ inline Progress progress_parse(const char* text, uint64_t stamp) {
     const int phase = atoi(b + 6);
     if (s != stamp || phase < 0 || phase > kDone) return p;
     p.phase = phase, p.at = phase == kDone ? 0 : at;
+    if (const char* d = strstr(text, "list=")) p.list = strtoull(d + 5, nullptr, 16);
     return p;
 }
 /// The part the work behind the game starts at, for a level and a record (phase -1: none): Most starts at the other compute variants
@@ -212,6 +232,14 @@ inline Progress progress_parse(const char* text, uint64_t stamp) {
 inline int first_part(Level level, int recorded) {
     const int from = level == Level::Later ? kPrograms : kComputeRest;
     return std::max(from, recorded);
+}
+/// What a start on Most finds left to do behind the game, from the record (phase -1: none, or unreadable): with no record, all of
+/// what Most leaves (a folder prepared before these choices, or a lost record: the parts redo quickly from the caches); a driver
+/// change since (driver_changed) needs the predicted pipelines again. kDone: nothing
+inline int most_left(int recorded, bool driver_changed) {
+    int left = recorded < 0 ? kComputeRest : recorded;
+    if (driver_changed && left > kPredicted) left = kPredicted;
+    return left;
 }
 /// In a part whose items finish out of order (several threads), how many from the first are all done: done[i] for each item
 inline uint64_t done_prefix(const std::atomic<uint8_t>* done, uint64_t n, uint64_t from) {

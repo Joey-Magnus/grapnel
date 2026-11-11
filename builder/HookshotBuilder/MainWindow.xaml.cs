@@ -58,6 +58,7 @@ public partial class MainWindow : Window
         TrackBox.ItemsSource = TrackNames;
         TrackBox.SelectedIndex = Array.IndexOf(TrackIds, Track);
         TrackBox.SelectionChanged += TrackChanged;
+        CompileBox.SelectionChanged += CompileChanged;
         clock.Tick += (_, _) => Tick();
         Drop += Dropped;
         SourceInitialized += (_, _) =>
@@ -429,7 +430,10 @@ public partial class MainWindow : Window
         s.Romfs = BuilderHome.LoadPath(s.Romfs);
         s.Exefs = BuilderHome.LoadPath(s.Exefs);
         PrepareTick.IsChecked = !s.PrepareLater;
+        compileChosen = s.CompileShaders != null;
+        settingCompile = true;
         CompileBox.SelectedIndex = Array.IndexOf(ShaderStep.Levels, ShaderStep.Level(s.CompileShaders));
+        settingCompile = false;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         FsrTick.IsChecked = s.Fsr;
@@ -462,7 +466,7 @@ public partial class MainWindow : Window
                                           Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
-                                          CompileShaders = ChosenLevel(),
+                                          CompileShaders = compileChosen ? ChosenLevel() : null,
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
                                           Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
@@ -882,7 +886,7 @@ public partial class MainWindow : Window
         else return;
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
         if (FsrTick.IsChecked == true) args.Add("--fsr");   // (an --update of the folder keeps it: make_game.py's mark)
-        compileLevel = ChosenLevel();
+        compileLevel = compileChosen ? ChosenLevel() : null;
         prepareNow = ShaderStep.Shown(PrepareTick.IsChecked == true, compileLevel);
         Run(tools, ShaderStep.Args(args, PrepareTick.IsChecked == true, compileLevel), dlss: DlssTick.IsChecked == true,
             fsr: FsrTick.IsChecked == true && fsrLicense);
@@ -953,8 +957,13 @@ public partial class MainWindow : Window
     // (this build prepares the shaders: the tick for a build, the saved choice for an update. The game's @@stage shaders came, and
     // make_game's line when it left them to the first start: the row's end says which)
     bool prepareNow, shadersBegan;
-    string compileLevel = ShaderStep.DefaultLevel;   // (Compile shaders: the box's for a build, the saved choice for an update)
+    string? compileLevel;   // (Compile shaders: the box's for a build, the saved choice for an update; null: never chosen here)
+    bool compileChosen, settingCompile;   // (the box changed by the player, not by ApplySettings)
     string ChosenLevel() => ShaderStep.Levels[Math.Clamp(CompileBox.SelectedIndex, 0, ShaderStep.Levels.Length - 1)];
+    void CompileChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!settingCompile) compileChosen = true;
+    }
     string? shadersLater;
     TimeSpan? builtIn;   // (at @@times: the build without the shaders' minutes, as build_times.json keeps it)
 

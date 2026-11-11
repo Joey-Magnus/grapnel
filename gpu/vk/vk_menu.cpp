@@ -871,7 +871,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Mesh shaders", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
      "How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which "
      "every GPU has. Applies after a restart.", hn_mesh_mode, true, true},
-    // (hookshot, experimental: vk_prepare_play.cpp; the builders' tick writes the same prepare_in_play=)
+    // (hookshot: vk_prepare_play.cpp; the builders write the same compile_shaders=)
     {TAB_GRAPHICS, "Compile shaders", &opts.compile_shaders, 0, 2, 1, tx_compile_shaders,
      "When the game's shaders are made ready: all before the game starts, most before and the rest while you play, or all while you "
      "play. Applies after a restart.", hn_compile_shaders, true, true},
@@ -3227,7 +3227,7 @@ struct Tab {
 /// 4 s, a thin line over a soft fill, one column a frame span with its slowest frame (a stutter never falls between two), a
 /// faint dashed line at the cap's frame time, red ticks over frames past twice it; the Breakdown's bar of where the time
 /// goes, its legend with the values, the GPU's time and the stutters' causes (their columns get a red tick too).
-/// (hookshot, experimental: preparing in play, vk_prepare_play.cpp) "Preparing shaders NN%" in small outlined letters, as the FPS
+/// (hookshot: the work behind the game, vk_prepare_play.cpp) "Shaders: NN%" in small outlined letters, as the FPS
 /// counter's, in a bottom corner (the left one; the right when the counter is there), no plate under it
 void draw_prep(ui::Ctx& c, const char* text) {
     const float s = c.s, px = 13 * s, o = std::max(1.0f, s);
@@ -3542,6 +3542,7 @@ void menu_init() {
     }
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
         has_options = true;
+        bool has_shader_miss = false;   // (When a shader isn't ready never chosen: its default follows Compile shaders)
         char line[80];
         bool has_resolution = false;
         bool v2 = false;
@@ -3564,6 +3565,7 @@ void menu_init() {
             if (!strcmp(line, "menu_size") && atoi(eq + 1) == 0) menu_auto = true;
             if (!strcmp(line, "memory_budget")) opts.budget = std::min(std::max(atoi(eq + 1), 0), 5), has_memory_budget = true;
             has_vram_budget |= !strcmp(line, "vram_budget");
+            has_shader_miss |= !strcmp(line, "shader_miss");
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
                 while (!mic_want.empty() && (mic_want.back() == '\n' || mic_want.back() == '\r')) mic_want.pop_back();
@@ -3578,6 +3580,9 @@ void menu_init() {
             mic_tell_host();
         }
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
+        // (When a shader isn't ready, never chosen, on Compile shaders All: Skip, what main did; Wait briefly is the default of Most
+        // and Later, whose first hours build what All builds before the game)
+        if (!has_shader_miss && opts.compile_shaders == 0) opts.shader_miss = 2;
         if (menu_auto) opts.menu_size = 2;
         opts.rumble = rumble_step(opts.rumble);   // (a hand-edited 60: 50, on the arrows' steps)
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players

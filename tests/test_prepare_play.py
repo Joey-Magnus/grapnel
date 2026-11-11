@@ -1,14 +1,13 @@
 """Compile shaders (All, Most, Later) and When a shader isn't ready (Wait, Wait briefly then skip, Skip): gpu/vk/prepare_play.h,
 vk_prepare_play.cpp. Checks, with no game and no GPU:
-- the rules themselves, compiled from prepare_play.h and run: the option from hookshot_options.ini and RX_VK_PREPARE_IN_PLAY (off
-  unless asked), the threads the preparation gets for a CPU and the memory free (none when memory is short, one on a small CPU,
-  never more than 8), which draws wait and which are left out, the frame's wait budget (a share of the capped frame), the hold of an
-  area's first frames, the resume record, the overlay's percentage;
-- the plumbing: the back end starts it before the start-up screen only when asked, every worker of the preparation goes through its
-  gate (priorities: the frame's own work first) and its thread count, the draws ask it only while it runs, the menu has its rows
-  and its overlay, the host reports the area only when the back end wants it;
-- the builders: make_game.py's --prepare-in-play writes prepare_in_play= into the folder's hookshot_options.ini (keeping the file's
-  other lines) and skips the build's preparation; the WPF, Qt and Linux builders have the tick, save it and pass it.
+- the rules themselves, compiled from prepare_play.h and run: the choices from hookshot_options.ini and the environment, the threads
+  the work behind the game gets for a CPU and the memory free, which draws wait and which are left out, the frame's wait budget, the
+  hold of an area's first frames and its cap (a load's frames too), the resume record and its list (a grown list starts again),
+  what Most finds left with no record or after a new driver, the overlay's percentage;
+- the plumbing: where each choice starts its work, every worker through the gate one variant or pipeline at a time, below normal
+  priority, the cache saved only with the workers paused, the dispatch's 50 ms and its budget, the close that never tears the device
+  down under a worker, the menu's rows and defaults, the host's area posted only;
+- make_game.py's --compile-shaders and the shipped list, and the three builders (passing the choice only when it was made there).
 
 python -I -B tests/test_prepare_play.py [--cxx g++]
 """
@@ -44,18 +43,18 @@ int main() {
     assert(miss_of("shader_miss=2\n", nullptr) == Miss::Skip && miss_of("shader_miss=2\n", "0") == Miss::Wait);
 
     // the threads: what the game leaves (2 busy + the renderer), at most 8, one on small CPUs, none with memory short
-    assert(workers(24, 12, 20, 0) == 8);   // (a 7900X: 12 cores, 24 threads)
+    assert(workers(24, 12, 20, 0) == 6);   // (a 7900X: 12 cores, 24 threads; at most 6, below normal priority)
     assert(workers(12, 6, 20, 0) == 1);    // (6 cores or fewer: one)
     assert(workers(8, 4, 20, 0) == 1);     // (a Steam Deck)
     assert(workers(16, 8, 20, 0) == 5);    // (8 cores: 8 - 3)
-    assert(workers(32, 16, 20, 0) == 8);
+    assert(workers(32, 16, 20, 0) == 6);
     assert(workers(10, 10, 20, 0) == 4);   // (no SMT: 10 cores, 10 threads: 10 - 6 threads left)
     assert(workers(24, 12, 2.5, 0) == 0);  // (under 3 GB available: none)
     assert(workers(24, 12, 5, 0) == 1);    // (under 6 GB: one)
     assert(workers(24, 12, 20, 25) == 0);  // (memory pressure: none)
-    assert(workers(24, 12, -1, 0) == 8);   // (memory unknown: by the CPU)
+    assert(workers(24, 12, -1, 0) == 6);   // (memory unknown: by the CPU)
     assert(workers(0, 0, 20, 0) == 1);
-    assert(workers_started(24, 12) == 8 && workers_started(8, 4) == 1);
+    assert(workers_started(24, 12) == 6 && workers_started(8, 4) == 1);
 
     // the draws: what may not be left out waits whatever the choice
     assert(decide(Miss::Briefly, false, false, true, 1000) == Act::Bounded);
@@ -104,11 +103,27 @@ int main() {
     assert(!h.frame(900, 40, t += 16 * ms, false));
     for (int i = 0; i < 30; i++) h.frame(60, 0, t += 16 * ms, true);  // (menus, then the game: a load too)
     assert(h.frame(1200, 3, t += 16 * ms, true));
+    while (h.frame(1200, 3, t += 16 * ms, true)) {}
+    // (a pause menu or a dark room draws few too: its frames lacking something are hidden for the cap at most, never longer)
+    Hold q;
+    int64_t u = 0;
+    for (int i = 0; i < 30; i++) q.frame(40, 0, u += 16 * ms, true);
+    int hid = 0;
+    for (int i = 0; i < 1000; i++) hid += q.frame(40, 2, u += 16 * ms, true);
+    assert(hid > 100 && hid < 200);   // (3 s at 16 ms)
+    assert(!q.frame(40, 2, u += 16 * ms, true));
 
     // the record
-    Progress p{0x1234, kPredicted, 777};
+    Progress p{0x1234, kPredicted, 777, 0xabc};
     Progress r = progress_parse(progress_text(p).c_str(), 0x1234);
-    assert(r.stamp == 0x1234 && r.phase == kPredicted && r.at == 777);
+    assert(r.stamp == 0x1234 && r.phase == kPredicted && r.at == 777 && r.list == 0xabc);
+    // (a part resumes only in the same list: one that grew since (play noted more pipelines) starts again)
+    assert(resume_at(r, kPredicted, 0xabc) == 777 && resume_at(r, kPredicted, 0xabd) == 0 && resume_at(r, kNoted, 0xabc) == 0);
+    const uint64_t k1[] = {1, 2, 3}, k2[] = {1, 2, 3, 4};
+    assert(list_hash(k1, 3) != list_hash(k2, 4) && list_hash(k1, 3) == list_hash(k2, 3));
+    // (Most: no record does what Most leaves (not "prepared with All"); a new driver needs the predicted pipelines again)
+    assert(most_left(-1, false) == kComputeRest && most_left(kDone, false) == kDone);
+    assert(most_left(kDone, true) == kPredicted && most_left(kComputeRest, true) == kComputeRest);
     r = progress_parse(progress_text(p).c_str(), 0x9999);   // (another translator or seed: no record)
     assert(r.phase == -1 && r.stamp == 0x9999);
     assert(progress_parse(nullptr, 1).phase == -1 && progress_parse("garbage", 1).phase == -1);
@@ -181,7 +196,12 @@ def plumbing():
     begin = body(play, "bool prepare_play_begin()")
     need("prepare_play::Level::All" in begin and "HOOKSHOT_PREPARE_ONLY" in begin, "All or the builder's run would prepare behind the game")
     need("prep_pcache_init()" in begin, "the start's pipeline cache is not read before play")
-    need("prepare_play_close()" in body(main, "void mkwvk_close_asked(void)"), "closing the window does not stop the work behind the game")
+    close = body(main, "void mkwvk_close_asked(void)")
+    need("prepare_play_close()" in close, "closing the window does not stop the work behind the game")
+    need("if (!stopped)" in close and "std::_Exit(0)" in close, "a worker still in the driver at the close: the device would be torn down under it")
+    # (Most with no record, or after a new driver: the parts Most leaves are done again)
+    need("most_left(progress_rec.phase, false)" in body(play, "bool prepare_play_begin()"), "Most reads no record as all prepared")
+    need("prep_driver_changed()" in run_body_driver(draw), "a new driver does not bring the predicted pipelines back on Most")
     # the programs' part: the unlisted compute programs at their base variant, on Most and Later
     run = body(draw, "bool prepare_run(")
     need("prep_compute_every(0)" in run and "seed_compute(k, every ? 64 : 1," in run and "prep_compute_every(key)" in run,
@@ -198,15 +218,40 @@ def plumbing():
     gate = body(play, "void prep_gate()")
     need("jobs_pending() == 0" in gate and "allowed" in gate and "pausing" in gate,
          "the gate does not wait for the frame's own work, the threads allowed and the checkpoints")
-    need("THREAD_PRIORITY_IDLE" in body(play, "void prep_thread_begin("), "the work behind the game is not at idle priority")
+    need("std::lock_guard lk(gate_mu)" in gate and "std::lock_guard lk(gate_mu)" in body(play, "bool pause_and_save()"),
+         "a slot can be taken while a checkpoint saves the cache")
+    begin = body(play, "void prep_thread_begin(")
+    need("THREAD_PRIORITY_BELOW_NORMAL" in begin and "THREAD_PRIORITY_IDLE" not in begin and "THREAD_PRIORITY_IDLE" not in play,
+         "the work behind the game holds play's locks at idle priority")
+    # (the gate before each variant's compile and each pipeline, not each program's whole list)
+    need("prep_gate();" in body(draw, "bool compute_rest_run(").split("seed_compute(computes[i], 64,")[1].split("});")[0],
+         "the compute variants are not gated one by one")
+    pred = body(draw, "void predict_run(")
+    need("prep_gate();" in pred.split("for (const PipeNote* n : list)")[1].split("build_graphics(")[0], "the predicted pipelines are not gated one by one")
+    need("prep_gate()" in body(draw, "void precompile_into_cache(").split("const auto build_notes")[1].split("};")[0],
+         "the noted pipelines are not gated one by one")
+    # (the dispatch: main's 50 ms for a compile; a variant not translated yet by the choice and its budget, never open-ended on Most)
+    disp = body(draw, "void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect)")
+    need("std::chrono::milliseconds(50)" in disp and "? 1000" not in disp, "a dispatch waits longer than main's 50 ms for a compile")
+    need("prep_miss_act(true, false)" in disp and "jobs_wait_for(cp->ready, prep_miss_budget_left())" in disp,
+         "a dispatch's untranslated variant is not waited for by the choice and the frame's budget")
+    # (the cache read for a save only with the workers paused; the record only after the save; checkpoints only on growth)
+    need("prep_cache_save_ok()" in body(draw, "void pipeline_cache_save(bool force)"), "the cache is saved while the work behind the game builds into it")
+    cb = body(play, "void progress_cb(")
+    need("seconds(300)" in cb and "pcache_unsaved() >= 256" in cb, "the checkpoint saves the whole cache every minute")
+    need("record(" not in body(play, "void run()").split("} else {")[-1], "a stop records a position whose pipelines were not saved")
+    need("!predict_gave_up()" in body(play, "void run()"), "a prediction that gave up is recorded done")
+    # (the game's thread only posts its area)
+    need("areas_want" not in body(play, "void mkwvk_area_state(") and "posted_mu" in body(play, "void mkwvk_area_state("),
+         "the game's thread does the areas' work under their lock")
+    # (held frames paced)
+    need("sleep_until(next)" in body(replay, "void do_present("), "held frames run unpaced")
     need("prep_direct_cache()" in body(draw, "VkResult create_cached("), "the preparation's pipelines would go into play's cache")
-    need("!prep_building()" in body(draw, "void pipeline_cache_save(bool force)"), "the cache is saved while the preparation builds into it")
     need("prep_record_suffix()" in run, "prepare_run writes the record before everything is done")
     # the draws: memory writers and new targets always wait; the rest by the choice
     d = body(draw, "void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d)")
     need("prep_miss_act(may_skip)" in d and "!writes_memory(p)" in d, "the pipeline's wait does not go by the choice and the memory rule")
     need("jobs_wait_for(pe->ready, prep_miss_budget_left())" in d, "Wait briefly does not wait out of the frame's budget")
-    need("prepare_play_running() ? 1000 : 50" in draw, "a dispatch's wait is not longer while preparing behind the game")
     need("prep_present_hidden(" in body(replay, "void do_present(") and "|| hidden) return;" in body(replay, "void do_present("),
          "a held frame is still shown")
     # the menu
@@ -217,6 +262,7 @@ def plumbing():
     need("writes the game's memory" in menu, "the row's help does not say memory-writing draws always wait")
     need("prep_overlay_text(" in body(menu, "void menu_record(VkCommandBuffer cmd") and "draw_prep(" in body(menu, "void menu_record(VkCommandBuffer cmd"),
          "the overlay is not drawn")
+    need("!has_shader_miss && opts.compile_shaders == 0" in menu, "All's default for When a shader isn't ready is not main's (Skip)")
     h = (vk / "vk_menu.h").read_text(encoding="utf-8")
     need("int compile_shaders = 1;" in h and "int shader_miss = 1;" in h, "the defaults are not Most and Wait briefly")
     # the host: the area read only when the back end wants it
@@ -269,17 +315,20 @@ def builders():
          "the WPF builder has no Compile shaders box")
     need('SelectedIndex="1"' in xaml[xaml.index('x:Name="CompileBox"'):], "the WPF builder's box is not on Most")
     cs = (b / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
-    need("CompileShaders = ChosenLevel()" in cs and "CompileBox.SelectedIndex = " in cs, "the WPF builder does not save and restore it")
+    need("CompileShaders = compileChosen ? ChosenLevel() : null" in cs and "CompileBox.SelectedIndex = " in cs,
+         "the WPF builder does not save and restore it, or saves a choice never made")
     need(cs.count("ShaderStep.Args(") == 2 and "compileLevel" in cs, "the WPF builder's build and update do not pass it")
     step = (b / "HookshotBuilder" / "ShaderStep.cs").read_text(encoding="utf-8")
     need('Compile = "--compile-shaders"' in step and 'DefaultLevel = "most"' in step, "ShaderStep does not pass the level")
     need("public string? CompileShaders" in (b / "HookshotBuilder" / "BuilderSettings.cs").read_text(encoding="utf-8"),
          "the WPF builder's settings do not keep it")
     qt = (b / "py" / "hookshot_builder" / "window.py").read_text(encoding="utf-8")
-    need('"CompileShaders": COMPILE_LEVELS[' in qt and "self.compile_box" in qt, "the Qt builder has no box, or does not save it")
+    need('"CompileShaders": self.chosen_level()' in qt and "self.compile_box" in qt and "if self.compile_chosen else None" in qt,
+         "the Qt builder has no box, or saves a choice never made")
     need(qt.count("shader_args(") == 3, "the Qt builder's build and update do not pass it")
     lx = (b / "linux" / "hookshot_builder.py").read_text(encoding="utf-8")
-    need("Compile shaders" in lx and "compile_shaders=self.compile_level()" in lx, "the Linux builder has no box, or does not save it")
+    need("Compile shaders" in lx and '{"compile_shaders": self.compile_level()} if self.compile_level()' in lx,
+         "the Linux builder has no box, or saves a choice never made")
     need(lx.count("compile_shaders_args(self.compile_level())") == 2, "the Linux builder's build and update do not pass it")
     ns = {"re": re}
     block = qt[qt.index("SHADERS_LATER = "):qt.index("def shader_args(")]
@@ -287,7 +336,15 @@ def builders():
     need(ns["shader_args"](True, "most") == ["--compile-shaders", "most"], "Qt: prepared now")
     need(ns["shader_args"](False, "all") == ["--no-prepare-shaders", "--compile-shaders", "all"], "Qt: left to the first start")
     need(ns["shader_args"](True, "later") == ["--compile-shaders", "later"], "Qt: Later")
-    need(ns["shader_args"](True, None) == ["--compile-shaders", "most"], "Qt: none saved")
+    need(ns["shader_args"](True, None) == [], "Qt: never chosen, still passed (a rebuild would undo the game menu's choice)")
+    need(ns["shader_args"](False, None) == ["--no-prepare-shaders"], "Qt: never chosen, unticked")
+    need("if (level != null) args.AddRange" in step, "WPF: the level is passed when never chosen")
+
+
+def run_body_driver(draw):
+    """prepare_run's path that remakes the driver's part alone"""
+    run = body(draw, "bool prepare_run(")
+    return run[run.index("their driver's part was made for another driver"):run.index("// (the translator is the same")]
 
 
 def body_py(text, marker):

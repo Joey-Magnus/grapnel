@@ -41,7 +41,10 @@ def compile_level(saved):
 
 
 def shader_args(prepare, level):
-    """make_game's arguments for the shaders' step (ShaderStep.Args)"""
+    """make_game's arguments for the shaders' step (ShaderStep.Args). level: None when Compile shaders was never chosen here: not
+    passed then, and the folder keeps what the game's own menu chose"""
+    if level is None:
+        return [] if prepare else [SHADERS_LATER]
     level = compile_level(level)
     return ([] if prepare or level == "later" else [SHADERS_LATER]) + [COMPILE_SHADERS, level]
 NOT_PREPARED = re.compile(r"^the shaders were not prepared now \((.*)\): ")   # (make_game.py NOT_PREPARED)
@@ -580,7 +583,7 @@ class Window(QWidget):
         self.problem_is_tools = False
         self.elapsed0 = self.compile0 = None
         self.prepare_now, self.shaders_began, self.shaders_later, self.built_in = True, False, None, None
-        self.compile_level = "most"
+        self.compile_level = None
         self.weight = WITHOUT_SHADERS
         self.setWindowTitle("Hookshot")
         self.setWindowIcon(QIcon(os.path.join(paths.ASSETS, "hookshot.ico")))
@@ -754,7 +757,8 @@ class Window(QWidget):
         self.compile_box.setToolTip("All: everything before the game starts (the longest first start). Most: what the game is known to "
                                     "use before it starts, the rest while you play. Later: the game starts at once and prepares its "
                                     "shaders while you play; until that is done, some objects may appear a moment late.")
-        self.compile_box.currentIndexChanged.connect(lambda _: self.save_settings())
+        self.compile_chosen = False   # (the box changed by the player: only then passed and saved)
+        self.compile_box.currentIndexChanged.connect(self.on_compile_changed)
         work_col = holder(vbox(section("BUILD WORKERS"), self.worker_box, 12, self.prepare_tick, 12, section("COMPILE SHADERS"),
                                self.compile_box))
         work_col.setFixedWidth(160)
@@ -1089,6 +1093,7 @@ class Window(QWidget):
             self.out_path.setText(s["Out"])
         self.dlss_tick.setChecked(bool(s.get("Dlss")))
         self.prepare_tick.setChecked(not s.get("PrepareLater"))
+        self.compile_chosen = s.get("CompileShaders") in COMPILE_LEVELS
         self.compile_box.blockSignals(True)   # (not saved back from here: the rest of the settings are not applied yet)
         self.compile_box.setCurrentIndex(COMPILE_LEVELS.index(compile_level(s.get("CompileShaders"))))
         self.compile_box.blockSignals(False)
@@ -1106,7 +1111,15 @@ class Window(QWidget):
         core.save_settings({"Out": self.out_path.text(), "Nup": None if self.romfs else self.chosen_nup, "Romfs": self.romfs,
                             "Exefs": self.exefs, "Dlss": self.dlss_tick.isChecked(),
                             "PrepareLater": not self.prepare_tick.isChecked(),
-                            "CompileShaders": COMPILE_LEVELS[max(0, self.compile_box.currentIndex())]})
+                            "CompileShaders": self.chosen_level()})
+
+    def chosen_level(self):
+        """The Compile shaders box's choice, or None when the player never changed it (not passed: the game's own choice stays)"""
+        return COMPILE_LEVELS[max(0, self.compile_box.currentIndex())] if self.compile_chosen else None
+
+    def on_compile_changed(self, _):
+        self.compile_chosen = True
+        self.save_settings()
 
     def preview(self, what):
         """(development) HOOKSHOT_UI_PREVIEW=build|ready|problem|update|launch: one screen with made-up progress, nothing run"""
@@ -1374,7 +1387,7 @@ class Window(QWidget):
         else:
             return
         args += ["--out", self.out_path.text(), "--language", self.lang[0]]
-        self.compile_level = COMPILE_LEVELS[max(0, self.compile_box.currentIndex())]
+        self.compile_level = self.chosen_level()
         self.prepare_now = self.prepare_tick.isChecked() and self.compile_level != "later"
         args += shader_args(self.prepare_tick.isChecked(), self.compile_level)
         self.run(tools, args, dlss=self.dlss_tick.isChecked())
@@ -1750,7 +1763,7 @@ class Window(QWidget):
         self.version_chip.adjustSize()
         self.version_chip.show()
         saved = core.load_settings()
-        self.compile_level = compile_level(saved.get("CompileShaders"))
+        self.compile_level = saved.get("CompileShaders") if saved.get("CompileShaders") in COMPILE_LEVELS else None
         self.prepare_now = not saved.get("PrepareLater") and self.compile_level != "later"   # (the saved choice: an update never shows the tick)
         self.make_rows(True, self.prepare_now)
         self.build_title.setText("Updating your game")

@@ -69,10 +69,14 @@ PREDICT_HEAD = r'''
 using VkPipeline = uintptr_t;
 using VkPrimitiveTopology = int;
 // (Compile shaders: the work behind the game, vk_prepare_play.cpp; not running here: what each does before the game)
-namespace prepare_play { enum Part { kPrograms = 0, kComputeRest = 1, kPredicted = 2, kNoted = 3 }; }
+namespace prepare_play {
+enum Part { kPrograms = 0, kComputeRest = 1, kPredicted = 2, kNoted = 3 };
+inline uint64_t list_hash(const uint64_t*, size_t) { return 0; }
+}
+std::atomic<bool> predict_gave_up_flag{false};
 constexpr int THREAD_PRIORITY_NORMAL = 0;
 bool prepare_play_running() { return false; }
-void prep_phase_items(int, size_t) {}
+void prep_phase_items(int, size_t, uint64_t = 0) {}
 void prep_thread_begin(int) {}
 void prep_gate() {}
 bool prep_item_skip(int, size_t) { return false; }

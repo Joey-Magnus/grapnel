@@ -42,6 +42,7 @@ bool warm_libraries(void(*)(size_t,size_t)){std::exit(10);}
 struct PreparedFor {int warmed=1;};
 void prepared_write(const std::string&, PreparedFor){std::exit(11);}
 const char* prep_record_suffix(){return "";}
+void prep_driver_changed(){}
 bool fresh_seed=true;
 bool reuse_seed(void(*progress)(size_t,size_t),bool background,bool refresh_states){
  const PreparedFor already{};

@@ -82,7 +82,7 @@ bool targets_persistent(const Targets& at) { return at.persistent; }
 // be left out waits under every choice
 namespace prepare_play { enum class Act { Wait, Bounded, LeaveOut }; }
 void prep_note_miss() {}
-prepare_play::Act prep_miss_act(bool skippable) { return skippable ? prepare_play::Act::LeaveOut : prepare_play::Act::Wait; }
+prepare_play::Act prep_miss_act(bool skippable, bool = true) { return skippable ? prepare_play::Act::LeaveOut : prepare_play::Act::Wait; }
 long long prep_miss_budget_left() { std::abort(); }
 void prep_miss_spend(long long) { std::abort(); }
 bool jobs_wait_for(const std::atomic<bool>&, long long) { std::abort(); }

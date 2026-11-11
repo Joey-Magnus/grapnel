@@ -27,6 +27,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>
 #else
 #include <sched.h>
 #include <unistd.h>
@@ -47,6 +48,8 @@ bool prepare_needed();
 void precompile_into_cache(void (*progress)(size_t done, size_t total), const std::unordered_set<uint64_t>* only);
 bool compute_rest_run(void (*progress)(size_t done, size_t total));
 std::unordered_set<uint64_t> computes_listed();
+int64_t pcache_unsaved();
+bool predict_gave_up();
 uint64_t prepare_play_seed_id();
 void prep_pcache_init();
 void pipeline_cache_save(bool force);
@@ -54,6 +57,8 @@ double menu_frame_target_ms();
 
 namespace {
 using clock_t_ = std::chrono::steady_clock;
+void checkpoint(int k);
+void areas_take_posted();
 
 std::string beside(const char* name) {
     char exe[MAX_PATH];
@@ -75,6 +80,12 @@ bool write_text(const std::string& path, const std::string& text) {
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return false;
     bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
+    ok = fflush(f) == 0 && ok;
+#ifdef _WIN32
+    ok = FlushFileBuffers((HANDLE)_get_osfhandle(_fileno(f))) && ok;   // (on the disk before it is renamed over the last record)
+#else
+    ok = fsync(fileno(f)) == 0 && ok;
+#endif
     ok = fclose(f) == 0 && ok;
     std::error_code ec;
     if (ok) std::filesystem::rename(tmp, path, ec);
@@ -173,6 +184,8 @@ void allowed_refresh() {
 // ---- the workers' slots ----
 std::atomic<int> slots{0};
 std::atomic<bool> pausing{false};
+std::mutex gate_mu;   // (a slot taken and a checkpoint's pause, one at a time: a worker past the check cannot build while it saves)
+std::atomic<bool> saving_now{false};   // (the checkpoint's own save: the one pipeline cache save allowed while the work runs)
 struct Slot {
     bool held = false;
     ~Slot() {
@@ -187,6 +200,7 @@ struct Phase {
     std::unique_ptr<std::atomic<uint8_t>[]> done;
     size_t n = 0;
     uint64_t from = 0;   // (done by an earlier start: skipped)
+    uint64_t list = 0, list_recorded = 0;   // (the part's item list now, and the one the record's position is in)
 };
 Phase phases[prepare_play::kParts];
 std::mutex phase_mu;
@@ -205,7 +219,6 @@ std::atomic<int64_t> st_left_out{0}, st_waited{0}, st_wait_us{0}, st_misses{0}, 
 prepare_play::Hold hold;
 std::atomic<bool> holding{false};
 std::atomic<bool> loading_now{false};   // (frames of a load: what they lack is asked for, the frame not shown)
-std::atomic<bool> area_loaded_flag{false};
 
 // ---- the areas: what each needed, learned as it is played (and shipped, when there is a list) ----
 struct Areas {
@@ -220,6 +233,9 @@ struct Areas {
     std::vector<std::vector<uint64_t>> wanted;   // (the areas to build first, newest last)
 } areas;
 std::mutex met_mu;   // (the draw's side: try_lock only)
+struct Posted { std::string current, next; bool fresh = false; };
+std::mutex posted_mu;   // (the game's thread: held for two strings' copy)
+Posted posted;
 std::vector<uint64_t> met_now;
 std::atomic<bool> learning{false};
 uint64_t area_hash(const char* name) {
@@ -285,6 +301,47 @@ void areas_want(uint64_t area) {
     if (!list.empty()) areas.wanted.push_back(std::move(list));
 }
 
+/// The area the game posted (mkwvk_area_state), taken in on the prefetch thread: a next area's pipelines first, the area's names and
+/// neighbours learned
+void areas_take_posted() {
+    std::string current, next;
+    {
+        std::lock_guard lk(posted_mu);
+        if (!posted.fresh) return;
+        posted.fresh = false;
+        current = posted.current, next = posted.next;
+    }
+    const uint64_t cur = !current.empty() ? area_hash(current.c_str()) : 0;
+    const uint64_t nxt = !next.empty() ? area_hash(next.c_str()) : 0;
+    static uint64_t last_cur = 0, last_next = 0;
+    if (nxt && nxt != last_next && nxt != cur) {   // (a load is coming: its area first)
+        logf("vk: behind the game: the next area is %s: its pipelines first", next.c_str());
+        areas_want(nxt);
+    }
+    last_next = nxt;
+    if (cur && cur != last_cur) {
+        {
+            std::lock_guard lk(areas.mu);
+            char b[160];
+            if (!areas.names.count(cur)) {
+                areas.names[cur] = current;
+                snprintf(b, sizeof b, "a %016llx %.95s\n", (unsigned long long)cur, current.c_str());
+                areas.pending += b;
+            }
+            if (last_cur && areas.next[last_cur].insert(cur).second) {
+                snprintf(b, sizeof b, "n %016llx %016llx\n", (unsigned long long)last_cur, (unsigned long long)cur);
+                areas.pending += b;
+            }
+            areas.current = cur;
+            areas.learn_until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        }
+        if (!last_cur) areas_want(cur);   // (the first area known, the save's: it and its neighbours first)
+        learning = true;
+        logf("vk: behind the game: in area %s", current.c_str());
+        last_cur = cur;
+    }
+}
+
 // ---- the overlay and the log ----
 void progress_cb(size_t done, size_t total) {
     phase_done.store(done, std::memory_order_relaxed), phase_total.store(total, std::memory_order_relaxed);
@@ -304,28 +361,43 @@ void progress_cb(size_t done, size_t total) {
         logf("vk: behind the game: %s (part %d: %zu of %zu), %u threads; draws left out %lld, waited for %lld (%.0f ms), "
              "frames held %lld", t, phase_now.load(), done, total, allowed.load(), (long long)lo, (long long)w, ms, (long long)hid);
     }
-    // (every minute: what is done kept, the pipeline cache saved while no worker builds into it)
-    if (now - last_checkpoint > std::chrono::seconds(60) && phase_now < prepare_play::kParts) {
+    // (every 5 minutes, once enough was built: the pipeline cache saved while no worker builds into it, then where the work got to.
+    // Never the position without the save: a start after a crash would skip items whose pipelines were not kept)
+    // (the predicted pipelines go to the driver's own cache alone, not ours: their position needs no save of ours)
+    if (now - last_checkpoint > std::chrono::seconds(300) && phase_now < prepare_play::kParts &&
+        (pcache_unsaved() >= 256 || phase_now == prepare_play::kPredicted)) {
         last_checkpoint = now;
-        pausing = true;
-        const auto t0 = clock_t_::now();
-        while (slots.load() > 0 && clock_t_::now() - t0 < std::chrono::seconds(30)) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        if (slots.load() == 0) {
-            pipeline_cache_save(true);
-            std::lock_guard lk(phase_mu);
-            Phase& p = phases[phase_now.load()];
-            prepare_play::Progress r = progress_rec;
-            r.phase = phase_now.load();
-            r.at = p.done ? prepare_play::done_prefix(p.done.get(), p.n, 0) : p.from;
-            write_text(progress_path(), prepare_play::progress_text(r));
-        }
-        pausing = false;
+        checkpoint(phase_now.load());
     }
 }
-void record(int phase, uint64_t at) {
+void record(int phase, uint64_t at, uint64_t list = 0) {
     prepare_play::Progress r = progress_rec;
-    r.phase = phase, r.at = at;
+    r.phase = phase, r.at = at, r.list = list;
     write_text(progress_path(), prepare_play::progress_text(r));
+}
+/// The workers paused (none in a build), the start's pipeline cache saved, the workers let go. False: they did not pause in time
+bool pause_and_save() {
+    {
+        std::lock_guard lk(gate_mu);
+        pausing = true;
+    }
+    const auto t0 = clock_t_::now();
+    while (slots.load() > 0 && clock_t_::now() - t0 < std::chrono::seconds(5)) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const bool paused = slots.load() == 0;
+    if (paused) {
+        saving_now = true;
+        pipeline_cache_save(true);
+        saving_now = false;
+    }
+    pausing = false;
+    return paused;
+}
+/// A checkpoint in part k: the cache saved, then the part's position (its items done from the first, in order) recorded
+void checkpoint(int k) {
+    if (!pause_and_save()) return;   // (a worker still in a long compile: the next one)
+    std::lock_guard lk(phase_mu);
+    Phase& p = phases[k];
+    record(k, p.done ? prepare_play::done_prefix(p.done.get(), p.n, 0) : p.from, p.list);
 }
 
 /// The record of a finished phase's preparation (hookshot_prepared.bin.play) moved over hookshot_prepared.bin once everything is done
@@ -336,10 +408,12 @@ void record_in_place() {
     if (ec) logf("vk: behind the game: hookshot_prepared.bin not written (%s)", ec.message().c_str());
 }
 
-/// The prefetch: the pipelines of the areas asked for, built first (one thread, idle priority)
+/// The prefetch: the pipelines of the areas asked for, built first (one thread, below normal priority); and the game's area, posted
+/// by mkwvk_area_state, taken in here (the game's thread only posts it)
 void prefetch_loop() {
-    prep_thread_begin(THREAD_PRIORITY_IDLE);
+    prep_thread_begin(THREAD_PRIORITY_BELOW_NORMAL);
     while (running.load() && !prepare_stopped()) {
+        areas_take_posted();
         std::vector<uint64_t> list;
         {
             std::lock_guard lk(areas.mu);
@@ -358,7 +432,7 @@ void prefetch_loop() {
 }
 
 void run() {
-    prep_thread_begin(THREAD_PRIORITY_IDLE);
+    prep_thread_begin(THREAD_PRIORITY_BELOW_NORMAL);
     started_at = last_checkpoint = clock_t_::now();
     std::thread prefetcher(prefetch_loop);
     {
@@ -379,23 +453,25 @@ void run() {
         if (!ok || from > k) return;
         phase_now = k;
         phase_done = phase_total = 0;
-        fn();
-        ok = !prepare_stopped();
-        if (ok) record(k + 1, 0);
+        ok = fn() && !prepare_stopped();
+        // (the cache saved with the workers paused (the prefetch may be building), then the part recorded done; a save that could
+        // not pause leaves the part to the next start, which goes through it quickly)
+        if (ok && pause_and_save()) record(k + 1, 0);
     };
-    part(prepare_play::kPrograms, [] { prepare_run(progress_cb, false, true); });
-    part(prepare_play::kComputeRest, [] { compute_rest_run(progress_cb); });
+    part(prepare_play::kPrograms, [] { prepare_run(progress_cb, false, true); return true; });
+    part(prepare_play::kComputeRest, [] { compute_rest_run(progress_cb); return true; });
     part(prepare_play::kPredicted, [] {
-        pipeline_cache_save(true);   // (no worker builds now: the compute pipelines made so far, kept)
         predict_run(progress_cb);
+        // (the prediction gave up on workers stuck in the driver (its watchdog): not done, the next start does it again)
+        if (predict_gave_up()) logf("vk: behind the game: the predicted pipelines were not all built (the driver stopped answering)");
+        return !predict_gave_up();
     });
-    if (level == prepare_play::Level::Later) part(prepare_play::kNoted, [] { precompile_into_cache(progress_cb, nullptr); });
+    if (level == prepare_play::Level::Later) part(prepare_play::kNoted, [] { precompile_into_cache(progress_cb, nullptr); return true; });
     else if (ok) record(prepare_play::kDone, 0);   // (Most: the noted pipelines were built before the game)
     running = false;   // (the draws' rules for it end here; the prefetch too)
     prefetcher.join();
     areas_take_met();
     areas_flush();
-    pipeline_cache_save(true);   // (no preparation worker builds now)
     if (ok) {
         record_in_place();
         record(prepare_play::kDone, 0);
@@ -408,12 +484,11 @@ void run() {
              std::chrono::duration<double>(clock_t_::now() - started_at).count(), (long long)lo, (long long)w, ms, (long long)hid);
         finished_once = true;
     } else {
-        std::lock_guard lk(phase_mu);
-        Phase& p = phases[std::min(phase_now.load(), (int)prepare_play::kParts - 1)];
-        const uint64_t at = p.done ? prepare_play::done_prefix(p.done.get(), p.n, 0) : p.from;
-        record(phase_now.load(), at);
-        logf("vk: behind the game: stopped (the window was closed) in part %d at item %llu: the next start goes on from there",
-             phase_now.load(), (unsigned long long)at);
+        // (stopped: the record stays at the last checkpoint, whose pipelines are in the saved cache; what was built since is in the
+        // driver's own cache, and quick to build again. No save here: at a close it would hold the quit for seconds)
+        const prepare_play::Progress r = prepare_play::progress_parse(read_text(progress_path()).c_str(), progress_rec.stamp);
+        logf("vk: behind the game: stopped (the window was closed) in part %d: the next start goes on from part %d item %llu",
+             phase_now.load(), r.phase, (unsigned long long)r.at);
     }
     stop_done = true;
 }
@@ -444,8 +519,25 @@ void prep_programs_prepared() {
     if (had < prepare_play::kComputeRest) prep_record(prepare_play::kComputeRest);
 }
 void prep_all_done() {
+    // (All prepared everything, the predicted pipelines too: said in the record, so a later start on Most knows there is nothing
+    // left (with no record it does the parts Most leaves, which a folder prepared with All has)
+    if (prep_recorded() != prepare_play::kDone) prep_record(prepare_play::kDone);
+}
+void prep_driver_changed() {
+    // (prepare_run before the game remade the driver's part for a new driver: on Most the predicted pipelines, built behind the game,
+    // are the old driver's too. Behind the game (Later) its own parts go on as they are)
+    if (running.load() || prepare_level() == prepare_play::Level::All) return;
     const int had = prep_recorded();
-    if (had >= 0 && had < prepare_play::kDone) prep_record(prepare_play::kDone);
+    const int left = prepare_play::most_left(had, true);
+    if (left != had) {
+        logf("vk: a new GPU driver: the predicted pipelines are built again behind the game");
+        prep_record(left);
+    }
+}
+bool prep_cache_save_ok() {
+    // (while the work behind the game runs, only its own saves, made while its workers are paused (saving_now): another reading the
+    // cache while they build into it crashed Intel's driver. The play cache's own saves go on: they are another cache)
+    return !running.load() || saving_now.load();
 }
 bool prep_compute_every(uint64_t key) {
     if (!key) return prepare_level() == prepare_play::Level::All;
@@ -458,8 +550,11 @@ bool prepare_play_begin() {
     if (level == prepare_play::Level::All || env_on("HOOKSHOT_PREPARE_ONLY")) return false;
     progress_rec = prepare_play::progress_parse(read_text(progress_path()).c_str(), prepare_play_seed_id());
     if (level == prepare_play::Level::Most) {
-        // (after the part before the game: the programs are prepared. No record: prepared by All (or a build before this one), all of it)
-        if (progress_rec.phase < 0 || progress_rec.phase >= prepare_play::kDone) return false;
+        // (after the part before the game: the programs are prepared. No record (a folder prepared before these choices, or the record
+        // lost): what Most leaves is done again, quickly from the caches; kDone: nothing left)
+        const int left = prepare_play::most_left(progress_rec.phase, false);
+        if (left >= prepare_play::kDone) return false;
+        if (left != progress_rec.phase) progress_rec.phase = left, progress_rec.at = 0, progress_rec.list = 0;
     } else {
         // (Later: prepared, all of it, for this translator and seed: a prepared folder's start)
         if (!prepare_needed() && (progress_rec.phase < 0 || progress_rec.phase >= prepare_play::kDone)) {
@@ -479,8 +574,8 @@ bool prepare_play_begin() {
     allowed_at = 0;
     allowed_refresh();
     for (int k = 0; k < prepare_play::kParts; k++) phases[k] = Phase{};
-    if (progress_rec.phase < prepare_play::kParts) phases[progress_rec.phase].from = progress_rec.at;
-    areas_load(beside("hookshot_area_pipelines_shipped.txt"));
+    if (progress_rec.phase < prepare_play::kParts)
+        phases[progress_rec.phase].from = progress_rec.at, phases[progress_rec.phase].list_recorded = progress_rec.list;
     areas_load(areas_path());
     prep_pcache_init();
     running = true;
@@ -489,20 +584,22 @@ bool prepare_play_begin() {
     return true;
 }
 bool prepare_play_running() { return running.load(std::memory_order_relaxed); }
-void prepare_play_close() {
-    if (!running.load()) return;
+bool prepare_play_close() {
+    if (!running.load()) return true;
     logf("vk: the window was closed while shaders were prepared behind the game: stopping, what is done is kept");
     prepare_stop();
+    // (each worker stops before its next pipeline or variant: what keeps one is a compile already in the driver, seconds on some)
     const auto t0 = clock_t_::now();
-    while (!stop_done.load() && clock_t_::now() - t0 < std::chrono::seconds(10)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    if (!stop_done.load()) {
-        // (a worker still in the driver's compile of a pipeline: the process ends under it. The marker that says the driver's
-        // part began and did not end is there to leave out a driver that crashes in it; this is a close, not a crash, and with
-        // the marker kept the next start left every compute pipeline out for good)
-        std::error_code ec;
-        std::filesystem::remove(beside("hookshot_prepared.bin.warming"), ec);
-        logf("vk: behind the game: the preparation did not stop within 10 s: closing anyway (what is done is kept; the rest at the next start)");
-    }
+    while (!stop_done.load() && clock_t_::now() - t0 < std::chrono::seconds(20)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (stop_done.load()) return true;
+    // (a worker still in the driver's compile of a pipeline. The marker that says the driver's part began and did not end is there to
+    // leave out a driver that crashes in it; this is a close, not a crash, and with the marker kept the next start left every compute
+    // pipeline out for good)
+    std::error_code ec;
+    std::filesystem::remove(beside("hookshot_prepared.bin.warming"), ec);
+    logf("vk: behind the game: a worker is still in the driver after 20 s: the process ends without tearing the device down under it "
+         "(what is done is kept; the rest at the next start)");
+    return false;
 }
 
 void prep_thread_begin(int normal_priority) {
@@ -510,10 +607,11 @@ void prep_thread_begin(int normal_priority) {
         if (normal_priority != THREAD_PRIORITY_NORMAL) SetThreadPriority(GetCurrentThread(), normal_priority);
         return;
     }
-    // (idle: behind the game's threads and the back end's workers, which build what the frame needs. Not SCHED_IDLE on Linux:
-    // a worker holds the program cache's lock while it appends a record, and a thread that only runs on an idle CPU could keep a
-    // frame's read of the cache waiting for as long as the CPUs are busy; nice 19 still runs, just last)
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
+    // (below normal, as the preparation before the game: behind the game's threads and the back end's workers, which build what the
+    // frame needs, but never starved. These workers take locks play's threads take too (the program cache's, a program's layout, the
+    // notes'), for one record or one call at a time; at idle priority (Windows' IDLE, nice 19) a holder could wait seconds for a CPU
+    // while the frame waited for it. Fewer of them instead (prepare_play.h workers))
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     direct_cache = true;
 }
 unsigned prep_threads(unsigned normal) {
@@ -531,8 +629,9 @@ void prep_gate() {
             if (go && slots.load() <= (int)allowed.load()) return;
             slot.held = false, slots--;
         } else if (go) {
-            int s = slots.load();
-            if (s < (int)allowed.load() && slots.compare_exchange_weak(s, s + 1)) {
+            std::lock_guard lk(gate_mu);   // (pausing read again under it: a checkpoint that paused sees this slot, or this sees it)
+            if (!pausing.load() && slots.load() < (int)allowed.load()) {
+                slots++;
                 slot.held = true;
                 return;
             }
@@ -540,10 +639,15 @@ void prep_gate() {
         std::this_thread::sleep_for(std::chrono::milliseconds(go ? 20 : 2));
     }
 }
-void prep_phase_items(int phase, size_t n) {
+void prep_phase_items(int phase, size_t n, uint64_t list) {
     if (!running.load() || phase < 0 || phase >= prepare_play::kParts) return;
     std::lock_guard lk(phase_mu);
     Phase& p = phases[phase];
+    p.list = list;
+    if (p.from && p.list_recorded != list) {   // (the list changed since the record: its positions are another list's)
+        logf("vk: behind the game: part %d's list changed since the last start: it starts again", phase);
+        p.from = 0;
+    }
     p.n = n;
     p.done.reset(new std::atomic<uint8_t>[n ? n : 1]);
     for (size_t i = 0; i < n; i++) p.done[i].store(i < p.from ? 1 : 0, std::memory_order_relaxed);
@@ -565,11 +669,12 @@ prepare_play::Miss shader_miss() {
     static const char* env = getenv("RX_VK_SHADER_MISS");
     return (prepare_play::Miss)std::clamp(env && *env ? atoi(env) : opts.shader_miss, 0, 2);
 }
-prepare_play::Act prep_miss_act(bool skippable) {
+prepare_play::Act prep_miss_act(bool skippable, bool allow_hidden) {
     static const bool always_env = getenv("RX_VK_PIPE_SKIP") && atoi(getenv("RX_VK_PIPE_SKIP")) == 0;
     // (hidden: the frames held after a load, and a load's own (Hold): what they lack is asked for, not waited for)
     static const bool hold_off = getenv("RX_VK_PREPARE_HOLD") && atoi(getenv("RX_VK_PREPARE_HOLD")) == 0;
-    const bool hidden = !hold_off && (holding.load(std::memory_order_relaxed) || loading_now.load(std::memory_order_relaxed));
+    const bool hidden = allow_hidden && !hold_off &&
+                        (holding.load(std::memory_order_relaxed) || loading_now.load(std::memory_order_relaxed));
     const prepare_play::Act act = prepare_play::decide(shader_miss(), always_env, hidden, skippable, prep_miss_budget_left());
     if (act == prepare_play::Act::LeaveOut) st_left_out++;
     return act;
@@ -604,7 +709,7 @@ bool prep_present_hidden(int64_t draws_total, bool framegen) {
     (void)set;
     const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now().time_since_epoch()).count();
     const bool was = hold.holding;
-    const bool hidden = hold.frame(draws, misses, now, running.load() && !off && !framegen, area_loaded_flag.exchange(false));
+    const bool hidden = hold.frame(draws, misses, now, running.load() && !off && !framegen);
     if (hold.holding && !was) {
         st_hidden_holds++;
         logf("vk: behind the game: an area's first frames are held until their pipelines are ready (frame of %lld draws, %lld "
@@ -643,35 +748,11 @@ __attribute__((visibility("default")))
 void mkwvk_area_state(const char* current, const char* next) {
     using namespace mkwvk;
     if (!running.load() || !current) return;
-    const uint64_t cur = *current ? area_hash(current) : 0;
-    const uint64_t nxt = next && *next ? area_hash(next) : 0;
-    static uint64_t last_cur = 0, last_next = 0;
-    if (nxt && nxt != last_next && nxt != cur) {   // (a load is coming: its area first)
-        logf("vk: behind the game: the next area is %s: its pipelines first", next);
-        areas_want(nxt);
-    }
-    last_next = nxt;
-    if (cur && cur != last_cur) {
-        {
-            std::lock_guard lk(areas.mu);
-            char b[160];
-            if (!areas.names.count(cur)) {
-                areas.names[cur] = current;
-                snprintf(b, sizeof b, "a %016llx %.95s\n", (unsigned long long)cur, current);
-                areas.pending += b;
-            }
-            if (last_cur && areas.next[last_cur].insert(cur).second) {
-                snprintf(b, sizeof b, "n %016llx %016llx\n", (unsigned long long)last_cur, (unsigned long long)cur);
-                areas.pending += b;
-            }
-            areas.current = cur;
-            areas.learn_until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        }
-        if (!last_cur) areas_want(cur);   // (the first area known, the save's: it and its neighbours first)
-        learning = true;
-        logf("vk: behind the game: in area %s", current);
-        last_cur = cur;
-    }
+    // (the game's thread: the names posted, nothing more; the preparation's prefetch thread takes them in, areas_take_posted)
+    std::lock_guard lk(posted_mu);
+    posted.current = current;
+    posted.next = next ? next : "";
+    posted.fresh = true;
 }
 extern "C"
 #ifdef _WIN32
