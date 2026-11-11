@@ -463,10 +463,11 @@ def background(w, h, scale):
     return np.clip(base + 0.5, 0, 255).astype(np.uint8)
 
 
-def strip(scale, color=PLAY, alpha=1.0):
-    """Play's torn strip, 257 x 98 (RGBA). alpha: the whole of it, as Paper's opacity (0.2 while it cannot be pressed)."""
+def strip(scale, color=PLAY, alpha=1.0, width=257, height=98):
+    """Play's torn strip, 257 x 98 (RGBA; Update beside it, 150 x 72: the same shape stretched, as the Windows launcher's
+    Path with Stretch="Fill"). alpha: the whole of it, as Paper's opacity (0.2 while it cannot be pressed)."""
     subs = parse_path(STRIP)
-    w, h = int(round(257 * scale)), int(round(98 * scale))
+    w, h = int(round(width * scale)), int(round(height * scale))
     mask = fill(_placed(subs, w / 257.0, h / (217.407 - 118.999), -254 * w / 257.0, -118.999 * h / (217.407 - 118.999)), w, h)
     return tinted(mask, color, alpha)
 

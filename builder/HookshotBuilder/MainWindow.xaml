@@ -355,6 +355,34 @@
               </Setter.Value>
             </Setter>
           </Style>
+          <!-- Update beside Play when a newer release is out: the same torn strip, the panel's dark with the accent's words (it
+               rebuilds the game, so it is the second choice, and Play stays the first) -->
+          <Style x:Key="UpdateStrip" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource Ring}"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                  <Grid x:Name="All">
+                    <Path x:Name="Strip" Stretch="Fill" Fill="#2B2B2B" Data="{StaticResource StripShape}"/>
+                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Grid>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                      <Setter TargetName="Strip" Property="Fill" Value="#363636"/>
+                    </Trigger>
+                    <Trigger Property="IsPressed" Value="True">
+                      <Setter TargetName="Strip" Property="Fill" Value="#222222"/>
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                      <Setter TargetName="All" Property="Opacity" Value="0.2"/>
+                      <Setter Property="Cursor" Value="Arrow"/>
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
           <!-- a word on the screen that does something: the version under Play (its folder), Credits -->
           <Style x:Key="Word" TargetType="Button">
             <Setter Property="Foreground" Value="#FFFFFF"/>
@@ -562,12 +590,23 @@
         <TextBlock Style="{StaticResource Line}" Text="Ocarina of Time Remake Recomp" VerticalAlignment="Top"
                    HorizontalAlignment="Center" Margin="0,137,0,0" IsHitTestVisible="False"/>
 
-        <!-- Play (faint while there is nothing to play, or while a build or an update runs) and the version it plays (pressed: its folder) -->
+        <!-- Play (Build while there is no game yet, which opens the build; faint while a build or an update runs) and the version it
+             plays (pressed: its folder) -->
         <Button x:Name="LauncherGo" Style="{StaticResource PlayButton}" Width="257" Height="98" VerticalAlignment="Bottom" HorizontalAlignment="Center"
                 Margin="1,0,0,74" IsDefault="True" Click="LauncherGoClick" AutomationProperties.Name="{Binding Text, ElementName=LauncherGoText}">
           <TextBlock x:Name="LauncherGoText" Text="Play" FontFamily="{DynamicResource Serif}" FontSize="44" Foreground="#37291D">
             <TextBlock.RenderTransform><TranslateTransform x:Name="LauncherGoNudge"/></TextBlock.RenderTransform>
           </TextBlock>
+        </Button>
+        <!-- Update, beside Play while a newer release is out (Play then plays the version in the folder): Play keeps its place, as
+             the menu's panel covers the screen's left -->
+        <Button x:Name="LauncherUpdate" Style="{StaticResource UpdateStrip}" Width="150" Height="72" VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                Margin="0,0,0,87" Click="UpdateClick" Visibility="Collapsed" AutomationProperties.Name="Update">
+          <Button.RenderTransform><TranslateTransform X="217"/></Button.RenderTransform>
+          <StackPanel>
+            <TextBlock Text="Update" FontFamily="{DynamicResource Serif}" FontSize="30" Foreground="#D2823F" HorizontalAlignment="Center"/>
+            <TextBlock x:Name="LauncherUpdateTo" FontFamily="Segoe UI" FontSize="12" Foreground="#D2823F" HorizontalAlignment="Center" Margin="0,-2,0,0"/>
+          </StackPanel>
         </Button>
         <Button x:Name="LauncherVersion" Style="{StaticResource Word}" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,24"
                 ToolTip="Open the game folder" Click="LauncherFolderClick"/>

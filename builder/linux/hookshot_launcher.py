@@ -254,7 +254,8 @@ class Launcher(object):
         for name, size, family, weight in (("LsLine", 16, line, "normal"), ("LsLabel", 12, line, "normal"), ("LsWhy", 13, line, "normal"),
                                            ("LsStrong", 16, strong or line, "normal" if strong else "bold"),
                                            ("LsUnder", 14, strong or line, "normal" if strong else "bold"),
-                                           ("LsGo", 44, word or line, "normal"), ("LsLog", 11, mono, "normal")):
+                                           ("LsGo", 44, word or line, "normal"), ("LsGoSmall", 30, word or line, "normal"),
+                                           ("LsLog", 11, mono, "normal")):
             options = ["-size", -self.u(size), "-weight", weight] + (["-family", family] if family else [])
             app.tk.call("font", "configure" if name in named else "create", name, *options)
 
@@ -938,13 +939,14 @@ class Launcher(object):
         self.point((px, py) if 0 <= px < w and 0 <= py < h else None)
 
     def draw_play(self):
-        """Play (Paper: a torn strip, #D2823F; at 0.2 while there is no game or something is being built or brought), and the
-        version the folder holds under it (pressed: the folder)"""
+        """Play (Paper: a torn strip, #D2823F; at 0.2 while something is being built or brought), Build in its place while there
+        is no game yet (it opens the build), Update beside it while a newer release is out, and the version the folder holds
+        under it (pressed: the folder)"""
         c, u = self.canvas, self.u
         w, h = self.size
         gx, gy, gw, gh = (w - u(257)) // 2, h - u(74) - u(98), u(257), u(98)
         game = self.hb.game_ready(self.folder)
-        can = game and self.state != "working"
+        can = self.state != "working"
         normal = self.photo(("strip", "normal"), lambda: art.strip(self.scale))
         over = self.photo(("strip", "over"), lambda: art.strip(self.scale, art.PLAY_OVER))
         off = self.photo(("strip", "off"), lambda: art.strip(self.scale, alpha=0.2))
@@ -952,10 +954,23 @@ class Launcher(object):
         # (the word's capitals' middle on the strip's)
         ascent = int(self.app.tk.call("font", "metrics", "LsGo", "-ascent"))
         descent = int(self.app.tk.call("font", "metrics", "LsGo", "-descent"))
-        c.create_text(gx + gw // 2, gy + gh // 2 + round(0.35 * u(44) - (ascent - descent) / 2), text="Play", font="LsGo",
-                      fill=GO_INK if can else GO_INK_OFF, tags="ui")
+        c.create_text(gx + gw // 2, gy + gh // 2 + round(0.35 * u(44) - (ascent - descent) / 2), text="Play" if game else "Build",
+                      font="LsGo", fill=GO_INK if can else GO_INK_OFF, tags="ui")
         if can:
-            self.region(gx, gy, gx + gw, gy + gh, press=self.play, over=lambda on: c.itemconfigure(strip, image=over if on else normal))
+            self.region(gx, gy, gx + gw, gy + gh, press=self.play if game else self.open_build,
+                        over=lambda on: c.itemconfigure(strip, image=over if on else normal))
+        # (Update, at Play's right so the menu's panel never covers it: the panel's dark with the accent's words; it brings the
+        # latest release, asked first, as Update Available does. Play then plays the version in the folder)
+        if game and can and self.newer_out() and any(same_tag(ch.tag, self.latest) and ch.reach for ch in self.lists["all"]):
+            ux, uy = gx + gw + u(12), gy + (gh - u(72)) // 2
+            dark = self.photo(("update", "normal"), lambda: art.strip(self.scale, (0x2B, 0x2B, 0x2B), width=150, height=72))
+            lit_ = self.photo(("update", "over"), lambda: art.strip(self.scale, (0x36, 0x36, 0x36), width=150, height=72))
+            item = c.create_image(ux, uy, image=dark, anchor="nw", tags="ui")
+            c.create_text(ux + u(75), uy + u(30), text="Update", font="LsGoSmall", fill=OFFER, tags="ui")
+            c.create_text(ux + u(75), uy + u(54), text="to " + version_name(self.latest), font="LsLabel", fill=OFFER, tags="ui")
+            self.region(ux, uy, ux + u(150), uy + u(72), press=self.update_latest, over=lambda on: c.itemconfigure(item, image=lit_ if on else dark),
+                        tip="Update to %s: your game is rebuilt from your game files (%s). Your saves and settings stay."
+                        % (version_name(self.latest), about(self.typical)))
         picked = self.lists["picked"]
         if not game:
             under = "No game yet"
@@ -1472,8 +1487,16 @@ class Launcher(object):
         except OSError:
             pass   # (nothing to open it with)
 
+    def open_build(self):
+        """Build, with no game yet: the build's choices, in the menu's Build tab"""
+        self.tab, self.menu_open = "build", True
+        self.draw()
+
     def play(self):
-        """Play: the game the folder holds (nothing while there is none, or while it is being built or brought)"""
+        """Play: the game the folder holds (nothing while there is none, or while it is being built or brought); Return with no
+        game yet opens the build, as the button does"""
+        if self.state != "working" and not self.hb.game_ready(self.folder):
+            return self.open_build()
         if self.state != "working" and self.hb.game_ready(self.folder):
             try:
                 self.app.play_and_close(self.folder)

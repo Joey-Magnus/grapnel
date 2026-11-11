@@ -26,8 +26,8 @@ public partial class MainWindow
     bool launchChecking, launchChecked, menuOpen, olderOpen, stepsHalfWay;
     double? typicalBuild;                        // (how long a build took on this PC lately: ReadTypicalBuild)
     RadioButton? menuTab;                         // (the panel's tab last shown)
-    // (Bring: the folder is updated or built again to the version picked first)
-    enum Go { Play, Bring, None }
+    // (Play: the game in the folder; Build: there is no game yet, and the button opens the build in the menu)
+    enum Go { Play, Build }
     Go launchGo;
 
     // (while a version is brought the launcher stays: the programs that do it are hidden, and it says how far they are)
@@ -330,11 +330,11 @@ public partial class MainWindow
     {
         var c = Picked;
         var game = launchFolder.Length > 0 && File.Exists(GameExe(launchFolder));
-        launchGo = game ? Go.Play : Go.None;
-        LauncherGoText.Text = "Play";
+        launchGo = game ? Go.Play : Go.Build;
+        LauncherGoText.Text = launchGo == Go.Build ? "Build" : "Play";
         // (a folder built before it kept its game files has no release here: its version as it says it, else only that it is a game)
         LauncherVersion.Content = c is { Here: true } ? c.Title : game ? (launchBuilt is { } v ? (IsRelease(v) ? VersionName(v) : v) : "Your game") : "No game yet";
-        LauncherVersion.IsHitTestVisible = launchGo != Go.None;
+        LauncherVersion.IsHitTestVisible = launchGo == Go.Play;
         LauncherVersion.ToolTip = "Open the game folder";
         // (the dot on Menu: something newer is in there)
         MenuDot.Visibility = NewerOut() ? Visibility.Visible : Visibility.Collapsed;
@@ -355,7 +355,7 @@ public partial class MainWindow
         var tabWorking = building && !updating;
         var tabStopped = buildStopped && !updating;
         var busy = Busy;
-        LauncherGo.IsEnabled = launchGo != Go.None && !busy;
+        LauncherGo.IsEnabled = !busy;
         MenuButton.Visibility = menuOpen ? Visibility.Collapsed : Visibility.Visible;
 
         // ---- Build ----
@@ -386,6 +386,10 @@ public partial class MainWindow
         LauncherCheck.IsEnabled = !busy;
         UpdateButton.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
         UpdateButton.IsEnabled = !busy;
+        // (and beside Play, on the main screen: Play plays the version in the folder, Update brings the new one)
+        LauncherUpdate.Visibility = available && launchGo == Go.Play ? Visibility.Visible : Visibility.Collapsed;
+        LauncherUpdateTo.Text = available ? "to " + VersionName(latestTag!) : "";
+        LauncherUpdate.ToolTip = available ? $"Update to {VersionName(latestTag!)}: your game is rebuilt from your game files ({AboutTime()}). Your saves and settings stay." : null;
         FootBar.Visibility = footWorking ? Visibility.Visible : Visibility.Collapsed;
         FootStopped.Visibility = footStopped ? Visibility.Visible : Visibility.Collapsed;
         FootStopped.Content = launchState == LaunchState.Stopped && work?.Bar.StartsWith("Switching") == true ? "Switch stopped" : "Update stopped";
@@ -418,10 +422,16 @@ public partial class MainWindow
     /// (why the version brought stopped, whole: Nothing was changed, as the folder is swapped only once the new game is complete)
     string StoppedWhy() => workStopped.TrimEnd('.') + ". Nothing was changed in your game folder.";
 
-    /// Play: the version picked, here
+    /// Play: the version picked, here. Build, with no game yet: the build's choices, in the menu's Build tab
     void LauncherGoClick(object sender, RoutedEventArgs e)
     {
-        if (Busy || launchGo != Go.Play) return;
+        if (Busy) return;
+        if (launchGo == Go.Build)
+        {
+            ShowTab(TabBuild);
+            ShowMenu(true);
+            return;
+        }
         var c = Picked;
         if (c != null) SaveChoice(launchFolder, c.Key);
         if (StartGame(launchFolder)) Leave();
@@ -697,7 +707,7 @@ public partial class MainWindow
     /// (the version under the button, pressed: the folder it is in)
     void LauncherFolderClick(object sender, RoutedEventArgs e)
     {
-        if (launchGo == Go.None || !Directory.Exists(launchFolder)) return;
+        if (launchGo != Go.Play || !Directory.Exists(launchFolder)) return;
         try { Process.Start(new ProcessStartInfo(launchFolder) { UseShellExecute = true }); }
         catch (Exception) { }   // (no Explorer to open it)
     }
