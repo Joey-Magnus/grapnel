@@ -5,7 +5,7 @@
 Extend the existing documentation PR #2083 on `docs/starlight-preview`. The recovered base is
 `ce09826e2f7b0d204ecf8971ff4f94e0510eb41f`; the previously prepared Libertinus font patch is applied alongside
 this feature. The user authorized committing and pushing this documentation update to the existing fork branch
-after local validation. Website deployment and public feed hosting remain separate. No game changes or game builds.
+after local validation. The fork preview now has a scheduled Pages workflow; upstream hosting remains a separate decision. No game changes or game builds.
 
 1. Add `/Hookshot/progress/`, sidebar and home links, accessible search, views, filters and progressive results.
 2. Normalize public upstream issues, pull requests and releases. Include all open items and closed items updated
@@ -45,8 +45,11 @@ immediately available. On refresh failure it serves the last complete data with 
 the snapshot. For busy repositories authentication may be needed to stay within GitHub's API quota.
 
 GitHub Pages cannot run this server. Its static snapshot changes only when a refreshed artifact is deployed.
-Public automatic updates require either the optional server or a host-operated scheduled snapshot deployment.
-Neither is activated by this local change. There is no deploy workflow, remote scheduler or new public service.
+The fork uses `.github/workflows/docs-progress.yml` to collect, build/check and publish every 15 minutes.
+The workflow also supports manual runs; see README.md for default-branch activation, permissions and rollback.
+A failed collection or build does not replace the last successful deployment. The fork is enabled; other repositories require an explicit
+`DOCS_PROGRESS_ENABLED=true` opt-in, so merging the PR alone does not enable upstream publication.
+The same workflow supports upstream adoption on `main`; see README.md for the activation steps.
 The browser checks the feed every five minutes while visible; timestamps describe the data, not just a successful
 HTTP request. This is periodic refresh, not a promise of real-time delivery. A restarted server can use an older
 saved snapshot until GitHub is reachable. Pagination limits fail the entire update rather than truncate silently.
@@ -92,4 +95,4 @@ See [PROGRESS-VALIDATION.md](PROGRESS-VALIDATION.md) for the local checks and re
 - Merged PRs never become releases by inference; a closed report does not promise a fix.
 - Search, filters and clear/reset controls work with keyboard and narrow screens. Status is conveyed by text.
 - Successful data survives a failed refresh; no token or user-entered search is uploaded by this page.
-- Changes stay on the existing source branch for PR #2083. A source push does not deploy the website or feed.
+- Changes stay on the existing source branch for PR #2083. The next successful scheduled run deploys the latest source from that branch and a fresh feed.
