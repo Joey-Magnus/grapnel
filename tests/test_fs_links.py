@@ -59,7 +59,7 @@ def main():
         block(posix, "BOOL FindClose(HANDLE h) {"),
         block(fs, "static int guest_path_ok(const char *rest) {"),
         block(fs, "static void delete_tree(const char *dir) {"),
-        block(mods, "static int index_romfs(const char *host_dir, const char *rel, int depth) {"),
+        block(mods, "static int index_romfs(const char *host_dir, const char *rel, int depth, int mod) {"),
     ]
     fixture = r'''#define _GNU_SOURCE
 #include <windows.h>
@@ -78,7 +78,17 @@ static DWORD last_error;
 static void hos_log(const char *f, ...) { (void)f; }
 static void lower_slash(char *s) { (void)s; }
 static int nput;
-static void put(const char *key, const char *host, uint64_t size, int is_dir) { (void)key; (void)host; (void)size; (void)is_dir; nput++; }
+static void put(const char *key, const char *host, const char *rel, uint64_t size, int is_dir, int mod) {
+    (void)key; (void)host; (void)rel; (void)size; (void)is_dir; (void)mod; nput++;
+}
+typedef struct { int replaced, added; } Mod;   /* (the mod's counts: host/mods.c) */
+static Mod mods[1];
+typedef struct { char *host, *key; int mod, other; } Shipped;   /* (the size tables a mod carries) */
+static Shipped *shipped;
+static int nshipped;
+static char sizes_key[] = "system/resource/resourcesizetable.product.111.nin_ounce_nvn2.rsizetable.zs";
+static int is_sizes(const char *key) { return strstr(key, ".rsizetable.zs") != NULL; }
+static int game_file(const char *rel, char *out, size_t cap) { (void)rel; (void)out; (void)cap; return 0; }
 ''' + "\n".join(pieces) + r'''
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
 int main(int argc, char **argv) {
@@ -104,13 +114,13 @@ int main(int argc, char **argv) {
     snprintf(cmd, sizeof cmd, "mkdir -p '%s/UI' && echo m > '%s/UI/a.bin' && ln -s . '%s/up1' && ln -s . '%s/up2' && "
              "ln -s '%s' '%s/UI/b.bin'", romfs, romfs, romfs, romfs, keep, romfs);
     CHECK(system(cmd) == 0);
-    const int files = index_romfs(romfs, "", 0);
+    const int files = index_romfs(romfs, "", 0, 0);
     CHECK(files == 2);                /* a.bin and the file link b.bin; not the folder links */
     char linked_root[PATH_MAX];       /* a mod whose romfs folder itself is a link */
     snprintf(linked_root, sizeof linked_root, "%s/linked-romfs", argv[1]);
     snprintf(cmd, sizeof cmd, "ln -s '%s' '%s'", romfs, linked_root);
     CHECK(system(cmd) == 0);
-    CHECK(index_romfs(linked_root, "", 0) == 0);
+    CHECK(index_romfs(linked_root, "", 0, 0) == 0);
     char dirlink[PATH_MAX];
     snprintf(dirlink, sizeof dirlink, "%s/up1", romfs);
     CHECK((GetFileAttributesA(dirlink) & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ==

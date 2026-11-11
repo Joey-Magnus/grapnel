@@ -1754,6 +1754,8 @@ static int game_main(int argc, char **argv) {
 #endif
     void hos_mods_init(const char *image_path);
     hos_mods_init(image);   /* mods.c: <exe folder>\mods (RomFS files) */
+    void hos_cheats_init(void);
+    hos_cheats_init();   /* (hookshot) cheats.c: the cheats of the mods that are on */
 
     Ctx *c = hos_boot_main_thread(hos_main_stack_size);
     uint64_t sp = c->x[31];

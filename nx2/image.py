@@ -14,6 +14,7 @@ import kit  # noqa: F401  (sys.path)
 import nso2  # noqa: F401  (DT_RELR)
 import nso
 import nx_image
+import exefs_patches
 
 PAGE = 0x1000
 CODE_39BIT = 0x80000000
@@ -43,6 +44,7 @@ class EdenImage(nx_image.NxImage):
                 m.image.extend(bytes(size - len(m.image)))
             base += size
         self.end = base
+        exefs_patches.apply(self.modules)   # (hookshot) the mods' ExeFS patches, as rtld would find main: before its relocation
         self.mem = bytearray(self.end - nx_image.MAIN_BASE)
         for m in self.modules:
             self.mem[m.base - nx_image.MAIN_BASE:m.base - nx_image.MAIN_BASE + len(m.image)] = m.image

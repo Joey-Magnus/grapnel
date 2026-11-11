@@ -66,8 +66,9 @@ enum MenuTab {
     TAB_AUDIO = 1,
     TAB_GAMEPLAY = 2,
     TAB_CONTROLS = 3,
-    TAB_DEBUG = 4,   // (the OoT debug tools of #785, a tab of their own)
-    TAB_COUNT = 5,
+    TAB_MODS = 4,    // (hookshot: the mods folder's mods and their cheats, shown when there are mods: draw_mods)
+    TAB_DEBUG = 5,   // (the OoT debug tools of #785, a tab of their own)
+    TAB_COUNT = 6,
     TAB_MOTION = TAB_COUNT,   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
     TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
@@ -1117,6 +1118,8 @@ bool is_motion_row(const Row& r) { return r.tab == TAB_CONTROLS && !r.value && !
 // ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
 namespace mr = menu_restart;
 mr::State restart_state;
+int mods_slot = -1;   // (hookshot: the Mods tab's slot in restart_state: its order and switches)
+bool can_mods();      // (the Mods tab, below: whether the host has mods' functions)
 int restart_slot[kRows];             // (a row's slot in restart_state, -1 none)
 const char* restart_names[mr::kMax];
 void restart_init() {
@@ -1127,6 +1130,8 @@ void restart_init() {
         restart_slot[i] = rows[i].restart && rows[i].value ? restart_state.add(*rows[i].value) : -1;
         if (restart_slot[i] >= 0) restart_names[restart_slot[i]] = rows[i].name;
     }
+    mods_slot = restart_state.add(0);   // (hookshot: the Mods tab's order and switches, 0 as the game started)
+    if (mods_slot >= 0) restart_names[mods_slot] = "the mods";
 }
 int restart_slot_of(const Row& r) { return restart_slot[&r - rows]; }
 /// A row that takes a restart, changed from what the game started with (a row past menu_restart.h's kMax has no slot: never)
@@ -1137,6 +1142,10 @@ bool restart_changed(const Row& r) {
 void restart_values(int* now) {
     for (int i = 0; i < kRows; i++)
         if (restart_slot[i] >= 0) now[restart_slot[i]] = *rows[i].value;
+    if (mods_slot >= 0) {   // (the mods' order and switches: 0 while they are the start's, else a number for them)
+        const uint64_t k = can_mods() ? host->mods_changed() : 0;
+        now[mods_slot] = (int)(k ^ k >> 32) | (k ? 1 : 0);
+    }
 }
 /// The rows whose value is not the one the game runs with (a bit a slot)
 unsigned restart_pending() {
@@ -1606,7 +1615,7 @@ float scroll_at[TAB_MOTION + 2];   // (the first row shown, eased toward the sel
                                    // the Controls page: kControlsSlot)
 constexpr int kControlsSlot = TAB_MOTION + 1;
 int wheel_rows[TAB_MOTION + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
-int scrolled_to[TAB_MOTION + 2] = {-1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
+int scrolled_to[TAB_MOTION + 2] = {-1, -1, -1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
 float scroll_want[TAB_MOTION + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
@@ -1975,14 +1984,156 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
     c.d->PopClipRect();
 }
 
+// ---- (hookshot) the Mods tab: the mods of the mods folder (host/mods.c), in their order, each on or off, and the cheats of those
+// that were on at the start (host/cheats.c). Shown only when there are mods. Left and Right (or a click on a half) switch the
+// selected one; Enter picks a mod up, Up and Down move it, Enter or Esc puts it down. The order and the mods' switches apply at the
+// next start (the restart question names them); a cheat's switch at once.
+bool can_mods() {
+    return host && host->version >= 18 && host->mod_info && host->mod_edit && host->mods_changed && host->cheat_info && host->cheat_set;
+}
+bool mods_present() {
+    const char *n, *d, *o;
+    int e;
+    return can_mods() && host->mod_info(0, &n, &d, &o, &e);
+}
+bool tab_shown(int t) { return t != TAB_MODS || mods_present(); }
+struct ModLine {
+    char kind;   // 'm' a mod (index: its place), 'h' the heading over a mod's cheats, 's' a cheat file's own heading, 'c' a cheat
+    int index;   // (the cheat's, for 'h', 's' and 'c')
+};
+std::vector<ModLine> mod_lines() {
+    std::vector<ModLine> out;
+    if (!can_mods()) return out;
+    const char *n, *d, *o, *mod, *last = nullptr;
+    int e, kind, on;
+    for (int i = 0; host->mod_info(i, &n, &d, &o, &e); i++) out.push_back({'m', i});
+    for (int j = 0; host->cheat_info(j, &n, &mod, &o, &kind, &on); j++) {
+        if (!last || strcmp(last, mod)) out.push_back({'h', j}), last = mod;
+        out.push_back({kind == MKWVK_CHEAT_HEADING ? 's' : 'c', j});
+    }
+    return out;
+}
+bool mod_line_chosen(const ModLine& l) { return l.kind == 'm' || l.kind == 'c'; }
+int mods_sel = 0;     // (the selected line: a mod or a cheat)
+int mods_grab = -1;   // (the mod picked up to move: its place; -1 none)
+/// The line after (dir 1) or before (dir -1) sel that can be chosen; sel itself at the ends
+int mods_step(const std::vector<ModLine>& lines, int sel, int dir) {
+    for (int i = sel + dir; i >= 0 && i < (int)lines.size(); i += dir)
+        if (mod_line_chosen(lines[i])) return i;
+    return sel;
+}
+/// The Mods tab's keys (menu_tick): the selection, the switches and the order
+void mods_tick(const bool* press, bool& changed) {
+    const std::vector<ModLine> lines = mod_lines();
+    if (lines.empty()) return;
+    mods_sel = std::clamp(mods_sel, 0, (int)lines.size() - 1);
+    if (!mod_line_chosen(lines[mods_sel])) mods_sel = mods_step(lines, mods_sel, 1);
+    const ModLine l = lines[mods_sel];
+    if (mods_grab >= 0) {   // (a mod picked up: Up and Down move it a place, Enter or Esc put it down)
+        if (press[1] && mods_grab > 0) host->mod_edit(mods_grab, 2), mods_grab--, mods_sel = mods_grab, changed = true;
+        if (press[2] && mods_grab + 1 < (int)std::count_if(lines.begin(), lines.end(), [](const ModLine& x) { return x.kind == 'm'; }))
+            host->mod_edit(mods_grab, 3), mods_grab++, mods_sel = mods_grab, changed = true;
+        if (press[7] || press[5]) mods_grab = -1, changed = true;
+        return;
+    }
+    if (press[1]) mods_sel = mods_step(lines, mods_sel, -1), changed = true;
+    if (press[2]) mods_sel = mods_step(lines, mods_sel, 1), changed = true;
+    if (press[1] || press[2]) return;
+    const char *n, *d, *o;
+    int on = 0, kind = 0;
+    if (l.kind == 'm' && host->mod_info(l.index, &n, &d, &o, &on)) {
+        if (press[3] || press[4]) host->mod_edit(l.index, press[4] ? 1 : 0), changed = true;
+        if (press[7]) mods_grab = l.index, changed = true;
+    } else if (l.kind == 'c' && host->cheat_info(l.index, &n, &d, &o, &kind, &on) && kind == MKWVK_CHEAT_DATA) {
+        if (press[3] || press[4] || press[7]) host->cheat_set(l.index, press[7] ? !on : press[4] ? 1 : 0), changed = true;
+    }
+}
+/// The Mods tab's rows and help, under the tab strip (draw_options)
+void draw_mods(ui::Ctx& c, float cx0, float cx1, float hx0, float hx1, bool narrow, float hh) {
+    const float s = c.s;
+    const std::vector<ModLine> lines = mod_lines();
+    const int count = (int)lines.size();
+    mods_sel = count ? std::clamp(mods_sel, 0, count - 1) : 0;
+    if (count && !mod_line_chosen(lines[mods_sel])) mods_sel = mods_step(lines, mods_sel, 1);
+    // (the help: the selected mod's two lines, or the cheat's mod and state)
+    const char *name = "", *detail = "", *note = "", *mod = "";
+    int on = 0, kind = 0;
+    std::string help, hint;
+    if (count && lines[mods_sel].kind == 'm' && host->mod_info(lines[mods_sel].index, &name, &detail, &note, &on)) {
+        help = detail;
+        hint = *note ? std::string(note) + " " : "";
+        hint += mods_grab >= 0 ? "Up or Down moves it; Enter puts it down."
+                               : "A mod lower in the list wins a file two mods have. Its switch and its place apply at the next start.";
+    } else if (count && host->cheat_info(lines[mods_sel].index, &name, &mod, &note, &kind, &on)) {
+        help = std::string("A cheat of ") + mod + ".";
+        hint = kind == MKWVK_CHEAT_DATA ? "On and Off apply at once."
+             : kind == MKWVK_CHEAT_MASTER ? "Its file's master code: always on while its mod is."
+                                          : std::string("Not supported: ") + note + ".";
+    }
+    const std::string pending_line = restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
+    ui::Prompt prompt_list[5] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "On / Off"}, {ui::kConfirm, "Move"}, {ui::kTabs, "Tabs"},
+                                 {ui::kBack, "Close"}};
+    int prompts_n = 5;
+    if (mods_grab >= 0) prompt_list[0] = {ui::kUpDown, "Move"}, prompt_list[1] = {ui::kConfirm, "Put down"}, prompts_n = 2;
+    else if (count && lines[mods_sel].kind == 'c') {
+        prompt_list[2] = prompt_list[3], prompt_list[3] = prompt_list[4], prompts_n = 4;
+        if (kind != MKWVK_CHEAT_DATA) prompt_list[1] = prompt_list[2], prompt_list[2] = prompt_list[3], prompts_n = 3;
+    }
+    const float bar_top = ui::prompt_bar_top(c);
+    float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;
+    const char* gold = pending_line.empty() ? nullptr : pending_line.c_str();
+    if (narrow) {
+        const float help_h = (bottom - hh) * 0.4f;
+        bottom = std::min(bar_top, c.h - c.safe) - help_h - 16 * s;
+        help_box(c, hx0, hx1, bottom + 8 * s, name, help.c_str(), hint.empty() ? nullptr : hint.c_str(), gold, 0, false, bottom + 8 * s,
+                 bar_top - 10 * s);
+    } else {
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), name, help.c_str(), hint.empty() ? nullptr : hint.c_str(), gold, 0,
+                 false, hh + 18 * s, bar_top - 12 * s);
+    }
+    const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.62f;
+    int shown = 0;
+    const float first = scroll_rows(TAB_MODS, count, mods_sel, top, bottom, pitch, &shown);
+    scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), count, shown, first);
+    marquee_max = 0;
+    c.d->PushClipRect(ImVec2(cx0, top - 8 * s), ImVec2(cx1, bottom + 8 * s));
+    for (int i = 0; i < count; i++) {
+        const float y = top + (i - first) * pitch;
+        if (y + rh < top - 8 * s || y > bottom + 8 * s) continue;
+        const ModLine& l = lines[i];
+        const char *n = "", *d = "", *o = "", *m = "";
+        int e = 0, k = 0;
+        if (l.kind == 'm') host->mod_info(l.index, &n, &d, &o, &e);
+        else host->cheat_info(l.index, &n, &m, &o, &k, &e);
+        if (l.kind == 'h' || l.kind == 's') {   // (a heading: gold for a mod's cheats, quieter for its file's own)
+            const std::string title = l.kind == 'h' ? std::string("Cheats: ") + m : std::string(n);
+            const float ty = y + rh * 0.62f, px = (l.kind == 'h' ? 19 : 17) * s;
+            const std::string t = fit(c, c.f.heading, px, rx1 - rx0 - 40 * s, title, false);
+            const float tw = ui::size_of(c.f.heading, px, t.c_str()).x;
+            ui::text_mid(c, c.f.heading, px, rx0 + 2 * s, ty, l.kind == 'h' ? ui::kGoldHi : ui::kSoft, t.c_str());
+            if (l.kind == 'h') c.d->AddLine(ImVec2(rx0 + tw + 16 * s, ty), ImVec2(rx1, ty), ui::alpha(ui::kEdge, 0.9f), std::max(1.0f, s));
+            continue;
+        }
+        const bool selected = i == mods_sel;
+        name_cell(c, ImVec2(rx0, y), ImVec2(split, y + rh), n, selected);
+        const ImVec2 va(split, y), vb(rx1, y + rh);
+        if (l.kind == 'm' && mods_grab == l.index) choice_cell(c, va, vb, "Moving", selected, l.index > 0, true);
+        else if (l.kind == 'm' || k == MKWVK_CHEAT_DATA) halves_cell(c, va, vb, "Off", "On", e != 0, selected, false);
+        else choice_cell(c, va, vb, k == MKWVK_CHEAT_MASTER ? "Always on" : "Not supported", selected, false, false, true);
+        hits.add(rx0, std::max(y, top - 8 * s), rx1, std::min(y + rh, bottom + 8 * s), menu_hit::kRow, i, va.x, vb.x);
+    }
+    c.d->PopClipRect();
+    ui::prompt_bar(c, prompt_list, prompts_n);
+}
+
 void draw_options(ui::Ctx& c) {
     const float s = c.s, hh = banner_h(c);
     ui::banner(c, hh);
     // the tabs in the banner: dark ink on the tan, the shown one light on a dark inset; the tab keys at their ends (a click there
     // is the previous or the next tab)
-    const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "Debug"};
+    const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "Mods", "Debug"};
     float tw[TAB_COUNT], total = 0;
-    for (int i = 0; i < TAB_COUNT; i++) tw[i] = ui::size_of(c.f.heading, 23 * s, tab_titles[i]).x + 56 * s, total += tw[i];
+    for (int i = 0; i < TAB_COUNT; i++) tw[i] = tab_shown(i) ? ui::size_of(c.f.heading, 23 * s, tab_titles[i]).x + 56 * s : 0, total += tw[i];
     float x = (c.w - total) * 0.5f;
     const float ty = hh * 0.5f + s;
     const char* const keys[2] = {c.pad ? "L" : "Q", c.pad ? "R" : "E"};
@@ -1994,6 +2145,7 @@ void draw_options(ui::Ctx& c) {
         hits.add(i ? cx - 10 * s : 0, 0, i ? c.w : cx + cw + 10 * s, hh, i ? menu_hit::kTabNext : menu_hit::kTabPrev, -1);
     }
     for (int i = 0; i < TAB_COUNT; i++) {
+        if (!tab_shown(i)) continue;   // (the Mods tab without mods)
         const bool shown = i == (cur_tab == TAB_MOTION ? TAB_CONTROLS : cur_tab);   // (the Motion page: under Controls)
         if (shown || i == hover_tab) {
             c.d->AddRectFilled(ImVec2(x, 0), ImVec2(x + tw[i], hh - 3 * s), shown ? ui::kTabInset : ui::alpha(ui::kTabInset, 0.35f));
@@ -2023,6 +2175,10 @@ void draw_options(ui::Ctx& c) {
     bool narrow;
     columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
     column(c, cx0, cx1, hh);
+    if (cur_tab == TAB_MODS) {   // (the Mods tab: its own rows, from the host)
+        draw_mods(c, cx0, cx1, hx0, hx1, narrow, hh);
+        return;
+    }
     const int count = tab_row_count(cur_tab), sel = tab_selected[cur_tab];
     const Row& selr = rows[tab_row_to_global(cur_tab, sel)];
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : nullptr;
@@ -3585,7 +3741,7 @@ void menu_tick() {
             const int ht = hit.part == menu_hit::kTab ? hit.index : hit.part == menu_hit::kTabPrev ? TAB_COUNT
                          : hit.part == menu_hit::kTabNext ? TAB_COUNT + 1 : -1;
             if (ht != hover_tab) hover_tab = ht, changed = true;
-            int& sel = tab_selected[cur_tab];
+            int& sel = cur_tab == TAB_MODS ? mods_sel : tab_selected[cur_tab];   // (the Mods tab: its line, draw_mods)
             const bool on_row = hit.part == menu_hit::kRow || hit.part == menu_hit::kSlider;
             if (drag_row >= 0) {   // (a slider held: it follows the cursor's x until let go)
                 Row& d = rows[tab_row_to_global(cur_tab, drag_row)];
@@ -3607,7 +3763,9 @@ void menu_tick() {
                 if (hit.part == menu_hit::kTabPrev) tab_left = true;
                 else if (hit.part == menu_hit::kTabNext) tab_right = true;
                 else if (hit.part == menu_hit::kTab && hit.index != cur_tab) cur_tab = hit.index, changed = true;
-                else if (hit.part == menu_hit::kSlider) {
+                else if (hit.part == menu_hit::kRow && cur_tab == TAB_MODS) {
+                    if (hit.side) press[hit.side < 0 ? 3 : 4] = true;   // (a switch's halves: Off and On)
+                } else if (hit.part == menu_hit::kSlider) {
                     Row& d = rows[tab_row_to_global(cur_tab, hit.index)];
                     drag_row = hit.index;
                     const int v = menu_hit::slider_value(hit.permille, d.lo, d.hi, d.step);
@@ -3633,61 +3791,70 @@ void menu_tick() {
             if (ptr.wheel && drag_row < 0) wheel_rows[cur_tab] += ptr.wheel, changed = true;
         }
         if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
+        if (press[5] && cur_tab == TAB_MODS && mods_grab >= 0) mods_grab = -1, press[5] = false, changed = true;   // (puts the mod down)
         if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
         else if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false;
         // (the tabs: LB and RB, Q and E, or Tab; from the Motion page, as from Controls)
         if ((tab_left || tab_right) && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS;
-        if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
-        else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;
-        const int tab_count = tab_row_count(cur_tab);
-        int& selected = tab_selected[cur_tab];
-        if (selected >= tab_count) selected = tab_count - 1;   // (a row gone since: the debug tools turned off, HDR turned off: row_shown)
-        auto heading_at = [&](int k) { return rows[tab_row_to_global(cur_tab, k)].heading; };   // (stepped over)
-        if (heading_at(selected)) selected = (selected + 1) % tab_count;
-        if (cur_tab == TAB_DEBUG && (press[1] || press[2])) {   // (the Debug tab: in its layout's order, debug_rows)
-            selected = debug_step(selected, press[2] ? 1 : -1);
+        if (tab_left || tab_right) {   // (the tabs shown: the Mods tab only with mods)
+            do cur_tab = (cur_tab + (tab_left ? TAB_COUNT - 1 : 1)) % TAB_COUNT;
+            while (!tab_shown(cur_tab));
             changed = true;
-        } else {
-            if (press[1]) {
-                do selected = (selected + tab_count - 1) % tab_count;
-                while (heading_at(selected));
-                changed = true;
-            }
-            if (press[2]) {
-                do selected = (selected + 1) % tab_count;
-                while (heading_at(selected));
-                changed = true;
-            }
         }
-        Row& r = rows[tab_row_to_global(cur_tab, selected)];
-        const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
-        if (pending && (pending != &r || !mine)) pending = nullptr, changed = true;
-        if (press[7] && confirm_selected) {
-            if (mine && !press[5]) {
-                if (pending != &r) {
-                    pending = &r, changed = true;
-                } else {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
-                    save();
-                    pipeline_cache_save(true);
-                    pending = nullptr;
-                    if (&r == &rows[kRestartRow]) {   // (the restart question's Restart now: the window closes, then the game starts again)
-                        logf("menu: restart");
-                        open_now = false, changed = true;
-                        if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
-                    } else if (const HWND window = app_window()) {
-                        PostMessageA(window, WM_CLOSE, 0, 0);
-                    }
+        if (!tab_shown(cur_tab)) cur_tab = TAB_GRAPHICS;   // (the Mods tab, its mods gone: never, as the list is the start's)
+        if (cur_tab != TAB_MODS) mods_grab = -1;
+        if (cur_tab == TAB_MODS) mods_tick(press, changed);   // (the Mods tab: its own lines, draw_mods)
+        else {
+            const int tab_count = tab_row_count(cur_tab);
+            int& selected = tab_selected[cur_tab];
+            if (selected >= tab_count) selected = tab_count - 1;   // (a row gone since: the debug tools turned off, HDR turned off: row_shown)
+            auto heading_at = [&](int k) { return rows[tab_row_to_global(cur_tab, k)].heading; };   // (stepped over)
+            if (heading_at(selected)) selected = (selected + 1) % tab_count;
+            if (cur_tab == TAB_DEBUG && (press[1] || press[2])) {   // (the Debug tab: in its layout's order, debug_rows)
+                selected = debug_step(selected, press[2] ? 1 : -1);
+                changed = true;
+            } else {
+                if (press[1]) {
+                    do selected = (selected + tab_count - 1) % tab_count;
+                    while (heading_at(selected));
+                    changed = true;
+                }
+                if (press[2]) {
+                    do selected = (selected + 1) % tab_count;
+                    while (heading_at(selected));
+                    changed = true;
                 }
             }
-        } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
-        else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
-        else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
-        if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
-            if (press[7]) press[4] = true;
-            set_row(r, *r.value + (press[4] ? r.step : -r.step), press[4] ? 1 : -1);
-            changed = true;
+            Row& r = rows[tab_row_to_global(cur_tab, selected)];
+            const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
+            if (pending && (pending != &r || !mine)) pending = nullptr, changed = true;
+            if (press[7] && confirm_selected) {
+                if (mine && !press[5]) {
+                    if (pending != &r) {
+                        pending = &r, changed = true;
+                    } else {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
+                        save();
+                        pipeline_cache_save(true);
+                        pending = nullptr;
+                        if (&r == &rows[kRestartRow]) {   // (the restart question's Restart now: the window closes, then the game starts again)
+                            logf("menu: restart");
+                            open_now = false, changed = true;
+                            if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
+                        } else if (const HWND window = app_window()) {
+                            PostMessageA(window, WM_CLOSE, 0, 0);
+                        }
+                    }
+                }
+            } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
+            else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
+            else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
+            if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
+                if (press[7]) press[4] = true;
+                set_row(r, *r.value + (press[4] ? r.step : -r.step), press[4] ? 1 : -1);
+                changed = true;
+            }
         }
         const int64_t now = prof_now();
         if (changed) {   // (a new row or value: its name from the start, after a rest)

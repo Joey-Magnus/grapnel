@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 17
+#define MKWVK_API_VERSION 18
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -172,7 +172,19 @@ typedef struct MkwVkHost {
     /* (version 17, hookshot) what of the button prompts a change of face or controls reaches at once (host/prompts.c):
        HOS_PROMPTS_LIVE_* bits; 0 none (a mod's files, built without the prompts, or not loaded yet) */
     int (*prompts_live)(void);
+    /* (version 18, hookshot) the Mods tab (host/mods.c, host/cheats.c). mod_info: mod i in the list's order, 0 past the end
+       (name: its folder; detail: what it has; note: what of it is not used and why, "" none); mod_edit: op 0 off, 1 on, 2 up a
+       place, 3 down a place, kept at once and applied at the next start; mods_changed: 0 while the order and the switches are
+       the start's, else a number for them (the restart question). cheat_info: cheat i of the mods that were on at the start,
+       0 past the end (kind: MKWVK_CHEAT_*); cheat_set: a data cheat on or off, at once */
+    int (*mod_info)(int i, const char **name, const char **detail, const char **note, int *enabled);
+    void (*mod_edit)(int i, int op);
+    uint64_t (*mods_changed)(void);
+    int (*cheat_info)(int i, const char **name, const char **mod, const char **note, int *kind, int *on);
+    void (*cheat_set)(int i, int on);
 } MkwVkHost;
+/* (version 18) a cheat's kind: a heading (no opcodes), a data cheat (switched), a master cheat (always on), not supported (note) */
+enum { MKWVK_CHEAT_HEADING, MKWVK_CHEAT_DATA, MKWVK_CHEAT_MASTER, MKWVK_CHEAT_UNSUPPORTED };
 
 /* One completed temporal-upscale sample; all zero while inactive. */
 typedef struct MkwVkJitter {

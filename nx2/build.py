@@ -855,8 +855,8 @@ def main():
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
               (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
               ([stamp_def] if os.path.basename(s) == "hos_main.c" else []) +
-              (["-I" + ZSTD] if os.path.basename(s) == "prompts.c" else []),
-              host_deps + (zstd_api if os.path.basename(s) == "prompts.c" else b"")) for s in host_srcs]
+              (["-I" + ZSTD] if os.path.basename(s) in ("prompts.c", "zs.c") else []),
+              host_deps + (zstd_api if os.path.basename(s) in ("prompts.c", "zs.c") else b"")) for s in host_srcs]
     # libopus 1.5.2 (third_party/opus, from TOTKPort): nn::codec's hardware Opus decoder (host/nn_codec.c)
     # (hookshot: built for the same CPU target as the rest (CPU), so its float code can be vectorized where the target has
     # AVX2: the vendored copy has no x86 intrinsics files of its own)

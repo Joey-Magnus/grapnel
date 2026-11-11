@@ -200,6 +200,19 @@ void hos_region_free(uint64_t addr) {
     if (freed_size) discard_pages(freed, freed_size);
 }
 
+/* (hookshot) whether [addr, addr + n) is guest memory the game was given: the image, the heap so far, or one address region
+   (host/cheats.c checks its reads and writes with it) */
+int hos_mem_mapped(uint64_t addr, uint64_t n) {
+    if (addr + n < addr) return 0;
+    if (addr >= hos_image_base && addr + n <= hos_image_end) return 1;
+    if (addr >= HOS_HEAP_BASE && addr + n <= HOS_HEAP_BASE + hos_heap_size) return 1;
+    int ok = 0;
+    LOCK();
+    for (int i = 0; i < nregions && !ok; i++) ok = addr >= regions[i].addr && addr + n <= regions[i].addr + regions[i].size;
+    UNLOCK();
+    return ok;
+}
+
 /* ---- nn::os memory -------------------------------------------------------------------------------------- */
 
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)

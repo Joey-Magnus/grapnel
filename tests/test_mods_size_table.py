@@ -177,7 +177,8 @@ def merge_checks(cc, src, tmp):
 POSIX_PIECES = ["static DWORD error_of(int e) {", "static void slashes(char *dst, size_t cap, const char *src) {",
                 "DWORD GetFileAttributesA(LPCSTR name) {", "static BOOL find_next(HFind *f, WIN32_FIND_DATAA *fd) {",
                 "HANDLE FindFirstFileA(LPCSTR pattern, WIN32_FIND_DATAA *fd) {",
-                "BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *fd) {", "BOOL FindClose(HANDLE h) {"]
+                "BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *fd) {", "BOOL FindClose(HANDLE h) {",
+                "BOOL CreateDirectoryA(LPCSTR name, void *attr) {", "BOOL MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags) {"]
 
 
 def routing_checks(cc, tmp, zstandard):
@@ -185,7 +186,7 @@ def routing_checks(cc, tmp, zstandard):
     posix = (ROOT / "host/posix/win32_posix.c").read_text(encoding="utf-8")
     src = tmp / "src"
     src.mkdir(parents=True)
-    for f in ("mods.c", "prompts.c"):   # (beside a hos.h of the test's: hos_log, and what the live prompts read: none here)
+    for f in ("mods.c", "prompts.c", "zs.c"):   # (beside a hos.h of the test's: hos_log, and what the live prompts read: none here)
         (src / f).write_bytes((ROOT / "host" / f).read_bytes())
     (src / "hos.h").write_text("#pragma once\n#include <stddef.h>\n#include <stdint.h>\nvoid hos_log(const char *f, ...);\n"
                                "#define HOS_WRITTEN(p, n) ((void)0)\n"
@@ -223,6 +224,7 @@ int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)sti
 void hos_sdl_pad_first_name(char *out, size_t cap) { if (cap) *out = 0; }
 int hos_regions(uint64_t (*out)[2], int cap) { (void)out; (void)cap; return 0; }
 int64_t hos_now_ns(void) { return 0; }
+const char *hos_romfs_dir;   /* (no game RomFS here: mods.c merges no table of its own, the last mod's is the base) */
 int rx_option(int id, int otherwise) { (void)id; return otherwise; }
 void hos_mods_init(const char *image_path);
 int hos_mods_romfs(const char *rel, char *out, size_t cap);
@@ -239,7 +241,7 @@ int main(int argc, char **argv) {
     exe = tmp / "fixture"
     subprocess.run([cc, "-std=gnu11", "-D_GNU_SOURCE", "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0",
                     "-I", str(ROOT / "host"), "-I", str(ROOT / "host/posix"), "-I", str(ZSTD), str(src / "mods.c"),
-                    str(src / "prompts.c"), str(tmp / "posix.c"), str(tmp / "main.c"),
+                    str(src / "prompts.c"), str(src / "zs.c"), str(ROOT / "host/restbl.c"), str(tmp / "posix.c"), str(tmp / "main.c"),
                     *(str(ZSTD / f) for f in ZSTD_SOURCES), "-o", str(exe)], check=True)
 
     def case(name, mods, ours=OURS, opens=(TABLE, FONT)):

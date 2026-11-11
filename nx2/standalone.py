@@ -188,6 +188,13 @@ def write_image_c(gen, img, meta, exefs):
              "const uint64_t hos_entry_nnMain = %#xULL;" % ex.get("nnMain", 0),
              "const uint64_t hos_program_id = %#xULL;   /* (main.npdm's ACI0) */" % program_id,
              'const char hos_main_build_id[] = "%s";' % main_build]
+    main = next((m for m in meta["modules"] if m["name"] == "main"), None)
+    if main:   # (hookshot: host/cheats.c, its regions and the code it cannot write: the code up to .rodata)
+        ro = next((s["addr"] for s in main.get("segments", ()) if s["name"] == ".rodata"), main["base"] + main["size"])
+        lines.append("const uint64_t hos_main_base = %#xULL, hos_main_size = %#xULL, hos_main_code_end = %#xULL;"
+                     % (main["base"], main["size"], ro))
+    else:
+        lines.append("const uint64_t hos_main_base = 0, hos_main_size = 0, hos_main_code_end = 0;")
     for sym in ("_init_libc0", "_init_libc1", "_init_libc2", "nnosInitialize", "nninitInitializeSdkModule",
                 "nvnBootstrapLoaderInternal"):
         lines.append("const uint64_t hos_entry_%s = %#xULL;" % (sym.lstrip("_"), ex.get(sym, 0)))

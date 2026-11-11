@@ -162,7 +162,7 @@ To be safe, copy your saves somewhere first: the `user` folder in the game folde
 | Your saves (`user`, or `~/.local/share/hookshot` on Linux) | The game in `bin` and its files |
 | `hookshot_options.ini`, the in-game menu's choices and your controls | `image.bin` and the shader list |
 | `hookshot_env.txt` | `language.txt`, written again with the game's language |
-| `mods` | |
+| `mods`, and `hookshot_mods.txt` (the Mods tab's order and switches) | `exefs_patches.txt`, written again with the ExeFS patches the build applied |
 
 The game files the first build read are kept in the game folder, so an update does not need your `.nup` again.
 
@@ -507,23 +507,35 @@ its default.
 ## Mods
 
 Put mods in a `mods` folder in the game folder, beside `hookshot.exe` (or point `HOS_MODS` at another folder), in the
-layout emulators use: `mods/<name>/romfs/...` holds files that replace or add to the game's own. Deeper layouts such as
-`mods/contents/<title id>/<name>/romfs` work too. A folder whose name starts with `-` or `_` is off. When two mods
-have the same file, the one whose folder name sorts last wins, so name them `01-...`, `02-...` to set the order.
+layout emulators use: `mods/<name>/romfs/...` holds files that replace or add to the game's own, `mods/<name>/exefs/`
+patches to the game's code (`.ips`, IPS32, `.pchtxt`), and `mods/<name>/cheats/E0F3CCFAF50065AE.txt` Atmosphere cheats.
+Deeper layouts such as `mods/contents/<title id>/<name>/romfs` work too. A folder whose name starts with `-` or `_` is off.
 
-Only RomFS mods are loaded. `exefs` patches (`.pchtxt`, `.ips`) are left out: Hookshot compiles the game's code ahead
-of time, so patching its instructions would need a rebuild. The log (`hookshot_log.txt`) names each mod and the files
-read from it.
+The Insert menu's **Mods** tab (shown when there are mods) lists them in their order, each On or Off: Left and Right
+switch the selected one, Enter picks it up and Up and Down move it. When two mods have the same file, the one lower in
+the list wins; out of the box the list is in the folders' names' order, so `01-...`, `02-...` still set it. The order and
+the switches are kept in `hookshot_mods.txt` in the game folder and apply at the next start (closing the menu offers the
+restart). The log (`hookshot_log.txt`) names each mod and the files read from it.
 
-A mod file larger than the game's own does not load unless the resource size table allows for it:
-`System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs` gives each file the memory the game sets
-aside for it (by the CRC32 of its path without `.zs`; for a texture, its decompressed size + 280). Past that, the game
-goes on without the mod's file, or a loading screen waits for good. A mod that makes files bigger (HD
-textures, longer parameter files) ships the table with its entries grown. Since only one mod's table is used, mods that
-each grow files need one table with all their entries, in the mod that sorts last. Hookshot merges the button prompts'
-entries into that table (each file gets the larger of the two), so your controller's icons stay in texts; the log says
-`(with the button prompts' sizes merged in)` after the table's line. A table it cannot read that way (not the game's
-format, or a zstd frame that does not give its size) is used as it is, with the Switch's icons.
+A mod file larger than the game's own needs a larger entry in the resource size table
+(`System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs`, which gives each file the memory the game
+sets aside for it). Hookshot makes that table at each start with mods: the game's, with every mod's own table merged in
+(the larger entry wins) and the entry of every file a mod serves raised to fit its size, so mods that each grow files
+(HD textures, longer parameter files) load together, without one table holding all their entries. The button prompts'
+entries are kept in it too, so your controller's icons stay in texts. It is written to `modcache/rsizetable.zs` in the
+game folder. If it cannot be made, the last mod's own table is used with the button prompts' entries merged into it, as
+before.
+
+**ExeFS patches** change the game's code, which Hookshot compiles ahead of time: they are applied when the game is
+built, so a new patch, a changed one or a mod with patches switched on or off takes effect after the next build (build
+the same folder again in Hookshot Builder, or `nx2/make_game.py --update <folder>`). The Mods tab says when a mod's
+patches wait for a build. A patch file is for this game when its name (IPS) or its `@nsobid` line (pchtxt) is the code's
+build id, `E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348`; others are left out. `exefs_patches.txt` in the game folder lists
+what the build applied.
+
+**Cheats** of the mods that are on are listed under them on the Mods tab and switched there, at once. Cheats that change
+memory run as Atmosphere runs them, every frame (opcodes 0 to A and C0 to C3); a cheat that writes the game's code is
+listed as not supported (make it an ExeFS patch instead). `{Master}` codes are always on.
 
 ## Build from source
 

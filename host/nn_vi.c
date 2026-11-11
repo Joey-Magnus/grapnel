@@ -503,6 +503,10 @@ void hos_vi_native_presented(const int64_t phases[4]) {
     }
     const int64_t n = InterlockedIncrement64(&presents);
     present_trace(n, now, phases);
+    {   /* (hookshot) the mods' cheats that are on, once a presented frame (host/cheats.c) */
+        void hos_cheats_frame(void);
+        hos_cheats_frame();
+    }
     {   /* HOS_MKW_INTERVAL=<0|1|2>: the interval MKW's pacer is held at, through its own override (+0x210, any
            non-zero value is used as the interval): 1 (the default): a steady 60 fps; 2: 30; 0: the game's choice,
            which with frames between 16.7 and 33 ms swings between the two (25-27 fps, stutters). Its timing counts

@@ -1702,6 +1702,25 @@ def main(a=None):
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
+    # (hookshot) the mods' ExeFS patches (nx2/exefs_patches.py): the lift writes them into main before it translates it, so they
+    # are part of its key; none (no mods, or none with ExeFS patches for this version): the lift and its key as without mods
+    import exefs_patches
+    patch_files = exefs_patches.collect(exefs, out)
+    patches_json = os.path.join(work, "exefs_patches.json")
+    if any(f["kind"] in ("code", "data") for f in patch_files):
+        with open(patches_json, "w", encoding="utf-8") as f:
+            json.dump(patch_files, f)
+        env[exefs_patches.ENV] = patches_json
+        with open(patches_json, "rb") as f:
+            env[exefs_patches.ENV + "_SHA1"] = hashlib.sha1(f.read(), usedforsecurity=False).hexdigest()
+    elif os.path.exists(patches_json):
+        os.remove(patches_json)
+    built_list = os.path.join(work, "exefs_patches.txt")   # (put in the game folder once the build is in: below)
+    if patch_files:
+        exefs_patches.write_list(patch_files, built_list)
+    elif os.path.exists(built_list):
+        os.remove(built_list)
+
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
     # rebuild after a change to host/ alone skips the minutes of the lift)
@@ -1867,6 +1886,12 @@ def main(a=None):
             except OSError:
                 pass
     place_ngx_runtime(out)
+    # (hookshot) which of the mods' ExeFS patch files this game was built with (host/mods.c: the Mods tab says which wait for a build)
+    patch_list = os.path.join(out, "exefs_patches.txt")
+    if os.path.exists(os.path.join(work, "exefs_patches.txt")):
+        shutil.copyfile(os.path.join(work, "exefs_patches.txt"), patch_list)
+    elif os.path.exists(patch_list):
+        os.remove(patch_list)
     if fsr_wanted(a, out) and getattr(a, "fetch_fsr_runtime", False):
         place_fsr_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
