@@ -91,7 +91,8 @@ with tempfile.TemporaryDirectory() as tmp:
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
     toolchain = types.SimpleNamespace(find=lambda name: sys.executable,
                                       macos_target_flags=lambda: ["--target=arm64-apple-macos13.3"],
-                                      macos_sysroot_flags=lambda: ["-isysroot", "/MacOSX.sdk"])
+                                      macos_sysroot_flags=lambda: ["-isysroot", "/MacOSX.sdk"],
+                                      native_target=lambda: ["--target=arm64-apple-macos13.3", "-isysroot", "/MacOSX.sdk"])
     with patch.dict(os.environ, {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl), "HOOKSHOT_FFMPEG": ""}), \
          patch("shutil.which", return_value="tool"), \
          patch("subprocess.run", side_effect=run), \
@@ -135,7 +136,8 @@ with tempfile.TemporaryDirectory() as tmp:
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
     toolchain = types.SimpleNamespace(find=lambda name: sys.executable,
                                       macos_target_flags=lambda: ["--target=arm64-apple-macos13.3"],
-                                      macos_sysroot_flags=lambda: ["-isysroot", "/MacOSX.sdk"])
+                                      macos_sysroot_flags=lambda: ["-isysroot", "/MacOSX.sdk"],
+                                      native_target=lambda: ["--target=arm64-apple-macos13.3", "-isysroot", "/MacOSX.sdk"])
     env = {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl), "HOOKSHOT_FFMPEG": str(ffmpeg)}
     with patch.dict(os.environ, env), patch("shutil.which", return_value="tool"), \
          patch("subprocess.run", side_effect=run), patch("platform.machine", return_value="arm64"), \

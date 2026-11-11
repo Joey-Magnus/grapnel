@@ -109,10 +109,7 @@ def check_vk_symbols(so):
 
 def target():
     """toolchain.native_target(), with the sysroot on Linux"""
-    target = toolchain.macos_target_flags() if MACOS else toolchain.native_target()
-    if MACOS:
-        target += toolchain.macos_sysroot_flags()
-    return target + (["--sysroot=" + SYSROOT] if LINUX and SYSROOT else [])
+    return toolchain.native_target() + (["--sysroot=" + SYSROOT] if LINUX and SYSROOT else [])
 
 
 def no_throttle(handle=None):

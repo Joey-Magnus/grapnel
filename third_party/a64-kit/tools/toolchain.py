@@ -89,6 +89,9 @@ def lld_link():
 
 
 def native_target(host=False):
+    # (macOS: find() names xcrun's clang by its full path, which, run directly, has no SDK: '<string.h>' not found)
+    if macos() and not mingw(host):
+        return macos_target_flags() + macos_sysroot_flags()
     if mingw(host):   # (-fms-extensions: __try/__except and __declspec, which clang takes on this target too)
         return ["--target=x86_64-w64-mingw32", "-fms-extensions", "-D_CRT_SECURE_NO_WARNINGS"]
     return ["--target=x86_64-pc-windows-msvc", "-fms-extensions", "-D_CRT_SECURE_NO_WARNINGS"] if os.name == "nt" else []

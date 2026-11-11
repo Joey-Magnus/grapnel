@@ -20,8 +20,7 @@ def build(force=False):
     if not force and os.path.exists(OUT) and os.path.exists(stamp) and open(stamp).read() == key:
         return OUT
     macos = sys.platform == "darwin"
-    target = (toolchain.macos_target_flags() + toolchain.macos_sysroot_flags()
-              if macos else toolchain.native_target(host=True))
+    target = toolchain.native_target(host=True)
     cmd = [toolchain.need(toolchain.find("clang++", host=True)), "-std=c++20", "-O2",
            "-dynamiclib" if macos else "-shared", "-o", OUT, SRC[0],
            "-Wno-everything"] + target + toolchain.native_link(host=True)

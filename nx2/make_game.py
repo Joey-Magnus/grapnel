@@ -652,6 +652,21 @@ def check_macos_toolchain():
     ffmpeg = os.environ.get("HOOKSHOT_FFMPEG", "")
     if platform.machine() not in ("arm64", "aarch64"):
         fail("The macOS builder requires a native Apple Silicon (arm64) process; Rosetta is not supported.")
+    # (the compiler first, as on the other systems: the libraries below are built with it)
+    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+    import toolchain
+    cc = toolchain.find("clang")
+    if not os.path.isfile(cc):
+        fail("No C compiler (clang) found: install Xcode Command Line Tools (xcode-select --install) to build Hookshot for macOS.")
+    with tempfile.TemporaryDirectory() as d:
+        src, exe = os.path.join(d, "probe.c"), os.path.join(d, "probe")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("int main(void) { return 0; }\n")
+        r = subprocess.run([cc] + toolchain.native_target() + [src, "-o", exe],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode:
+        fail("Xcode Command Line Tools could not link a native arm64 macOS test program: %s"
+             % failure_reason((r.stdout + r.stderr).splitlines()))
     if not os.path.isfile(os.path.join(wgpu, "include", "webgpu", "webgpu.h")):
         fail("macOS needs arm64 wgpu-native with Metal support: set WGPU_NATIVE to its package directory.")
     if not os.path.isfile(os.path.join(wgpu, "lib", "libwgpu_native.dylib")):
@@ -676,21 +691,6 @@ def check_macos_toolchain():
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode:
             fail("macOS dependency must contain native arm64 code: %s" % library)
-    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
-    import toolchain
-    cc = toolchain.find("clang")
-    if not os.path.isfile(cc):
-        fail("Install Xcode Command Line Tools to build Hookshot for macOS.")
-    with tempfile.TemporaryDirectory() as d:
-        src, exe = os.path.join(d, "probe.c"), os.path.join(d, "probe")
-        with open(src, "w", encoding="utf-8") as f:
-            f.write("int main(void) { return 0; }\n")
-        r = subprocess.run([cc] + toolchain.macos_target_flags() + toolchain.macos_sysroot_flags() +
-                           [src, "-o", exe],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if r.returncode:
-        fail("Xcode Command Line Tools could not link a native arm64 macOS test program: %s"
-             % failure_reason((r.stdout + r.stderr).splitlines()))
     if not ffmpeg:
         if not shutil.which("pkg-config"):
             fail("Install pkg-config and arm64 FFmpeg development libraries for the macOS build.")
