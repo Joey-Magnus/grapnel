@@ -302,6 +302,7 @@ public partial class MainWindow : Window
         var s = BuilderSettings.Load(SettingsPath);
         if (s == null) return;
         PrepareTick.IsChecked = !s.PrepareLater;
+        CompileBox.SelectedIndex = Array.IndexOf(ShaderStep.Levels, ShaderStep.Level(s.CompileShaders));
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         FsrTick.IsChecked = s.Fsr;
@@ -332,6 +333,7 @@ public partial class MainWindow : Window
                                           Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
+                                          CompileShaders = ChosenLevel(),
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
                                           Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
@@ -751,8 +753,9 @@ public partial class MainWindow : Window
         else return;
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
         if (FsrTick.IsChecked == true) args.Add("--fsr");   // (an --update of the folder keeps it: make_game.py's mark)
-        prepareNow = PrepareTick.IsChecked == true;
-        Run(tools, ShaderStep.Args(args, prepareNow), dlss: DlssTick.IsChecked == true,
+        compileLevel = ChosenLevel();
+        prepareNow = ShaderStep.Shown(PrepareTick.IsChecked == true, compileLevel);
+        Run(tools, ShaderStep.Args(args, PrepareTick.IsChecked == true, compileLevel), dlss: DlssTick.IsChecked == true,
             fsr: FsrTick.IsChecked == true && fsrLicense);
     }
 
@@ -821,6 +824,8 @@ public partial class MainWindow : Window
     // (this build prepares the shaders: the tick for a build, the saved choice for an update. The game's @@stage shaders came, and
     // make_game's line when it left them to the first start: the row's end says which)
     bool prepareNow, shadersBegan;
+    string compileLevel = ShaderStep.DefaultLevel;   // (Compile shaders: the box's for a build, the saved choice for an update)
+    string ChosenLevel() => ShaderStep.Levels[Math.Clamp(CompileBox.SelectedIndex, 0, ShaderStep.Levels.Length - 1)];
     string? shadersLater;
     TimeSpan? builtIn;   // (at @@times: the build without the shaders' minutes, as build_times.json keeps it)
 
@@ -1254,7 +1259,8 @@ public partial class MainWindow : Window
         StepPill.Visibility = Visibility.Collapsed;
         VersionChip.Visibility = Visibility.Visible;
         VersionChipText.Text = from != null && from != to ? $"{from} → {to}" : to;
-        prepareNow = BuilderSettings.PrepareNow(SettingsPath);
+        compileLevel = BuilderSettings.CompileShadersLevel(SettingsPath);
+        prepareNow = ShaderStep.Shown(BuilderSettings.PrepareNow(SettingsPath), compileLevel);
         // (the updates show no menu: the saved choice, as ApplySettings may not have run)
         MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), BuilderSettings.Load(SettingsPath)?.MemoryGb);
         MakeRows(update: true, shaders: prepareNow);
@@ -1309,7 +1315,8 @@ public partial class MainWindow : Window
                    File.Exists(System.IO.Path.Combine(folder, "LICENSE-AMD-FSR-SDK.md")));
         // (prepareNow: the saved choice, read in BeginUpdate. The launcher's Update and the --update start after a self-update never
         // ran ApplySettings, so the tick there is only its default)
-        Run(tools, ShaderStep.Args(new List<string> { "--update", folder }, prepareNow), keepRows: true, dlss: dlss, fsr: fsr);
+        Run(tools, ShaderStep.Args(new List<string> { "--update", folder }, BuilderSettings.PrepareNow(SettingsPath), compileLevel),
+            keepRows: true, dlss: dlss, fsr: fsr);
     }
 
     // ================= the window =================
