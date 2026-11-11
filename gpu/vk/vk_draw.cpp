@@ -770,12 +770,23 @@ constexpr size_t kPlayFilesKept = 16;
 std::string play_path(uint32_t n) {
     return pcache_dir + "mkw_vk_pipelines_play_" + std::to_string(n) + ".bin";
 }
-/// A cache's data written whole to path, through a .tmp moved over it: its size, 0 when it is not in place
+constexpr int kCopyWaitForced = 30000, kCopyWaitStart = 2000;   // (ms: cache_copy_begin)
+bool cache_copy_begin(int wait_ms);   // (the pipeline cache's copy apart from builds, on the drivers that need it: vk_vendor.h)
+void cache_copy_end();
+/// A cache's data written whole to path, through a .tmp moved over it: its size, 0 when it is not in place (a play file is kept and
+/// tried again at the next save). The copy is held apart from pipeline builds as pcache's is (cache_copy_begin): no build goes into
+/// a generation being written (play_cache_save waits for its users), but Intel's driver is not known to fault only when the
+/// build is into the same cache, so the lock is the same one
 size_t play_file_write(VkPipelineCache cache, const std::string& path) {
     size_t n = 0;
-    if (vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
-    std::vector<uint8_t> data(n);
-    if (vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
+    std::vector<uint8_t> data;
+    if (!cache_copy_begin(kCopyWaitStart)) return 0;
+    {
+        struct End { ~End() { cache_copy_end(); } } end;
+        if (vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
+        data.resize(n);
+        if (vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
+    }
     const std::string tmp = path + ".tmp";
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return 0;
@@ -1221,21 +1232,18 @@ VkResult apart_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo*
     cache_use_end(held);
     return r;
 }
-/// (pcache_apart) The copy of a cache's data held apart from the builds: wait, for as long as it takes (the forced saves: the exit,
-/// Restart now, a warm pass's end); else tried for up to ~2 s and false when the builds kept it (the save in play, tried again at
-/// the next one). A waiting exclusive lock holds back new shared ones (Windows' SRW locks), and the replay's next build would wait
-/// behind a worker's long one: in play the save only tries, as totk-pc-recomp's autosave does
-bool cache_copy_begin(bool wait) {
+/// (pcache_apart) The copy of a cache's data held apart from the builds, tried for up to wait_ms (kCopyWaitForced for the forced
+/// saves: the exit, Restart now, the prepare's end; kCopyWaitStart for a save before play; 0, one try, for a save in play, which is
+/// tried again at the next one); false when the builds kept it. Never a blocking lock: a waiting exclusive lock holds back new
+/// shared ones (Windows' SRW locks), so every later build would wait behind it, and for good when a worker is stuck in the driver
+/// (prepare_left_workers): the save is then left out, and logged
+bool cache_copy_begin(int wait_ms) {
     if (!dev.fixes.pcache_apart) return true;
-    if (wait) {
-        pcache_use.lock();
-        return true;
-    }
-    for (int i = 0; i < 1000; i++) {
+    for (int waited = 0;; waited += 2) {
         if (pcache_use.try_lock()) return true;
+        if (waited >= wait_ms) return false;
         Sleep(2);
     }
-    return false;
 }
 void cache_copy_end() {
     if (dev.fixes.pcache_apart) pcache_use.unlock();
@@ -7710,7 +7718,7 @@ bool prepare_is_update() {
 /// before the stamp says they are: a start that ended before the save would otherwise find them cold for good)
 bool pcache_saved_now() {
     size_t before = 0;
-    if (!pcache || !cache_copy_begin(true)) return false;
+    if (!pcache || !cache_copy_begin(kCopyWaitForced)) return false;
     const VkResult got = vkGetPipelineCacheData(dev.device, pcache, &before, nullptr);   // (apart from builds: cache_copy_begin)
     cache_copy_end();
     if (got != VK_SUCCESS) return false;
@@ -9036,8 +9044,10 @@ void pipeline_cache_save(bool force) {
             std::vector<uint8_t> data;
             bool copied = false;
             // (the copy alone held apart from pipeline builds, where the driver needs it: cache_copy_begin, vk_vendor.h. The file
-            // is written after it, with the builds going on)
-            if (cache_copy_begin(force)) {
+            // is written after it, with the builds going on. In play a single try: such a save mostly finds too little growth to
+            // write anyway (play_grown below), and it comes again at the next one)
+            const int wait_ms = force ? kCopyWaitForced : play_cache_in_use() ? 0 : kCopyWaitStart;
+            if (cache_copy_begin(wait_ms)) {
                 struct End { ~End() { cache_copy_end(); } } end;
                 // (the size last read or written: nothing new, not fetched nor written again; see pcache_saved_size)
                 // (in play only once it has grown by a good deal: what play makes is in the play files, and the little pcache still
@@ -9059,7 +9069,13 @@ void pipeline_cache_save(bool force) {
                     copied = vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS;
                 }
             } else {
-                logf("vk: pipeline cache save put off: pipelines were being built for 2 s (tried again at the next save)");
+                pcache_built_since_save += 32;   // (not saved: the next save point tries again)
+                static std::atomic<int> told{0};
+                if (force)
+                    logf("vk: pipeline cache not saved: pipelines were still being built after %d s (a compile stuck in the driver?)",
+                         wait_ms / 1000);
+                else if (const int k = told++; k < 4 || k % 100 == 0)
+                    logf("vk: pipeline cache save put off: pipelines were being built (tried again at the next save; %d so far)", k + 1);
             }
             if (copied) {
                 const std::string tmp = pcache_path + ".tmp";

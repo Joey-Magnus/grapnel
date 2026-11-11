@@ -28,8 +28,10 @@ struct VendorFixes {
     bool pcache_apart = false;
     // Alpha to coverage set in the pipeline, not as dynamic state (VK_EXT_extended_dynamic_state3). Intel's Windows driver on its
     // integrated GPUs (UHD Graphics, Iris Xe) drew coloured noise on foliage with the dynamic state, and players saw it go with
-    // it off (totk-pc-recomp 905e2e720d, Valiantsin Dzerakh, MIT: its issues 970, 992, 419). Arc cards and Mesa's ANV keep it:
-    // no report there. RX_VK_DYN_A2C=0 / 1
+    // it off (totk-pc-recomp 905e2e720d, Valiantsin Dzerakh, MIT: its issues 970, 992, 419). Every GPU that driver reports as
+    // integrated gets it, so the Arc Graphics built into Meteor, Lunar and Arrow Lake processors too; discrete Arc cards and
+    // Mesa's ANV keep the dynamic state: no report there. Without it the stage libraries (RX_VK_GPL) stay off: they need the
+    // state dynamic (vk_draw.cpp gpl_wanted). RX_VK_DYN_A2C=0 / 1
     bool static_a2c = false;
 };
 

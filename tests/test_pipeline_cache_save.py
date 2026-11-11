@@ -118,6 +118,10 @@ class PipelineCacheSaveTests(unittest.TestCase):
         # cannot have it for its try copies and writes nothing and is tried again; a forced one waits for it.
         self.check_case('put-off')
 
+    def test_in_play_the_copy_is_tried_once(self):
+        # The gate's wait: one try in play, up to 2 s before play, a bounded wait for a forced save.
+        self.check_case('in-play-try')
+
     def check_case(self, case):
         result = self.run_case(case)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

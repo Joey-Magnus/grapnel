@@ -167,6 +167,12 @@ VkResult fake_create(VkPipelineCache c, const FakeCI* ci, VkPipeline* pl) {
     return *pl = &the_pipeline, VK_SUCCESS;
 }
 
+// The pipeline cache copy's gate (vk_draw.cpp cache_copy_begin: apart from pipeline builds on Intel's Windows driver, vk_vendor.h
+// pcache_apart). Open here; a play file's copy is made inside it.
+std::atomic<int> copy_gate_held{0};
+bool cache_copy_begin(int) { return ++copy_gate_held, true; }
+void cache_copy_end() { --copy_gate_held; }
+
 #define MoveFileExA move_into_place
 #include "pipeline_play_cache.inc"
 #undef MoveFileExA

@@ -6,8 +6,8 @@ shader compiler"; RDNA 3/4: LLPC), RADV, AMDVLK, Intel's Windows driver on an in
 llvmpipe. Each fix must be on for the GPUs it is for and off for every other, and NVIDIA's driver must get none: that is
 what keeps the renderer on NVIDIA as it was. The RX_VK_ switches force each one either way.
 Then the source: the device's fixes are made from its properties at device creation, dynamic alpha to coverage is
-switched off with static_a2c, every pipeline build that takes a cache holds it for the build, and every read of the
-pipeline cache's data in play is inside the copy's gate.
+switched off with static_a2c, every pipeline build that takes a cache holds it for the build, every read of a pipeline
+cache's data after the start (pcache's and the play files') is inside the copy's gate, and that gate never blocks.
 
     python -I -B tests/test_vendor_fixes.py --headers <Vulkan-Headers/include> [--cxx g++]
 """
@@ -131,19 +131,29 @@ def check_source():
             raise SystemExit("FAIL: vk_draw.cpp lacks " + text)
     if "if (!cache || !dev.fixes.pcache_apart) return false;" not in cut(draw, "bool cache_use_begin("):
         raise SystemExit("FAIL: a build takes the lock on a driver that does not need it")
-    if "if (!dev.fixes.pcache_apart) return true;" not in cut(draw, "bool cache_copy_begin("):
+    gate = cut(draw, "bool cache_copy_begin(int wait_ms) {")
+    if "if (!dev.fixes.pcache_apart) return true;" not in gate:
         raise SystemExit("FAIL: a save takes the lock on a driver that does not need it")
+    # (never a blocking exclusive lock: a build stuck in the driver would hold it back for good, and every build after it)
+    if ".lock()" in gate or "try_lock()" not in gate:
+        raise SystemExit("FAIL: the copy's gate waits on a blocking lock")
     # (the reads of pcache's data in play: the save's inside its gated block, which ends the gate on the way out; the size the
     # warm pass compares against between cache_copy_begin and cache_copy_end)
     save = cut(draw, "void pipeline_cache_save(bool force) {")
-    gated = cut(save, "if (cache_copy_begin(force)) {")
+    gated = cut(save, "if (cache_copy_begin(wait_ms)) {")
     if "struct End { ~End() { cache_copy_end(); } } end;" not in gated or \
             save.count("vkGetPipelineCacheData(") != 2 or gated.count("vkGetPipelineCacheData(") != 2:
         raise SystemExit("FAIL: pipeline_cache_save reads the cache's data outside the gate")
     saved_now = cut(draw, "bool pcache_saved_now() {")
-    begin, read, end = (saved_now.index(t) for t in ("cache_copy_begin(true)", "vkGetPipelineCacheData(", "cache_copy_end();"))
+    begin, read, end = (saved_now.index(t) for t in ("cache_copy_begin(kCopyWaitForced)", "vkGetPipelineCacheData(", "cache_copy_end();"))
     if not begin < read < end or saved_now.count("vkGetPipelineCacheData(") != 1:
         raise SystemExit("FAIL: pcache_saved_now reads the cache's data outside the gate")
+    # (a play file's copy too: inside the gate's block, which ends it on the way out)
+    play = cut(draw, "size_t play_file_write(")
+    block_at = play.index("struct End { ~End() { cache_copy_end(); } } end;")
+    if play.index("cache_copy_begin(") > block_at or play.count("vkGetPipelineCacheData(") != 2 or \
+            play.index("vkGetPipelineCacheData(") < block_at or play.rindex("vkGetPipelineCacheData(") > play.index("\n    }\n", block_at):
+        raise SystemExit("FAIL: play_file_write reads a cache's data outside the gate")
 
 
 def main():
