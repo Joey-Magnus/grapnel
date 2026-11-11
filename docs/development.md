@@ -81,7 +81,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 
 | Switch | What it does |
 |---|---|
-| `HOS_HEADLESS` (set) | No window: the renderer draws offscreen, for screenshots and frame dumps |
+| `HOS_HEADLESS` (set) | No window: the renderer draws offscreen, for screenshots and frame dumps. The menu's Save my pipeline list then opens nothing (no browser, folder or clipboard) |
 | `HOS_WINDOW_SIZE=<w>x<h>` | The window's size in pixels (1280x720 by default, wider for an ultrawide picture) |
 | `HOS_WINDOW_NOACTIVATE` (set) | The window opens behind the others and does not take the focus (Windows) |
 | `HOS_FULLSCREEN=1` | Starts in fullscreen; the Insert menu's Fullscreen row is then left alone |
@@ -157,6 +157,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
 | `RX_VK_TASK_MESH_FALLBACK=0` or `1` | Task + mesh draws through the compute fallback (1) or the driver's mesh shaders (0). By default the fallback is on for AMD's Navi 21 and Navi 22 on Windows (RX 6800, 6800 XT, 6900 XT, 6950 XT, 6700 XT), where the native path timed out the driver (issue 996) |
 | `RX_VK_DRIVER_FAULTS=0` or `2` | 0: programs the driver's compiler faulted on are asked of it again. By default they are left out for the rest of the run and, through `hookshot_driver_faults.txt` beside the executable, on later runs with the same driver, and on AMD one program's builds go to the driver one at a time (issue 996). 2: one at a time on every driver |
+| `RX_VK_GM_LOOP=0` or `1` | The storage buffer tables of a global memory access searched in a loop (1) or written out entry by entry (0). On by default on Intel, whose compiler did not finish the culling programs with the entries written out |
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |
 | `RX_VK_UB_WORD_HASH=0` | A/B test: use the old low-address-bit index for cached uniform words (default: mix upper address bits to reduce aligned-buffer collisions) |
 | `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |
@@ -191,9 +192,53 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_TARGET=windows` | On Linux: the Windows game, with llvm-mingw's Linux build in `HOOKSHOT_MINGW` |
 | `RX_RELEASE=1` | A release build (`make_game.py` sets it): no console window, the shaders prepared before the title |
 | `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one (`make_game.py` passes the shipped profile) |
+| `RX_HOT_OPT=<level>` | The hot pieces' optimisation level (default `O2`); `O1` for [a faster build for development](#a-faster-build-for-development) |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
+
+#### A faster build for development
+
+The eight hot pieces (`code_hot_*.c`, the functions the game spends its time in) are built at `-O2` with the play
+profile, their hot callees inlined. They are 81 MB of the 1.4 GB of lifted C but about a third of its compile time,
+and each is one of the longest single compiles, so a build after a new lift cannot end before the slowest of them.
+When you are checking that something works (the game starts, a menu, a screenshot, a log) and not how fast it runs,
+build them as every other lifted file is built, at `-O1` and without the profile:
+
+```
+RX_HOT_OPT=O1 python -I nx2/build.py --standalone --jobs 8
+```
+
+`build.py` run on its own uses no profile unless `RX_PGO` is set. `make_game.py` always passes the shipped profile
+(`work/hookshot_pieces.prof`), so `RX_HOT_OPT=O1` through `make_game.py` gives `-O1` with the profile, which saves less.
+Run on its own, `build.py` also lacks the rest of `make_game.py`'s environment (`RX_RELEASE`, `A64_HOT_CHUNK`), so its
+runtime objects differ from a `make_game.py` build's.
+
+The objects are cached by their flags, so `-O1` and `-O2` objects can sit side by side, and `make_game.py` leaves
+`RX_HOT_OPT` and `RX_PGO` out of its lift key. In the checkout's own `work/` folder, or with
+`HOOKSHOT_KEEP_BUILD_FILES=1`, switching back and forth therefore neither translates the game again nor recompiles
+anything built before. In any other `--work` folder, `make_game.py`'s clean-up keeps only the last build's objects and a
+translation that fits them, so each switch translates the game again and recompiles the hot pieces.
+
+What it saves, from the per-file compile times (`build_times.json`) of six earlier full builds on one 24-thread
+desktop, with other work running (not a measured `-O1` build):
+
+| | Hot pieces (`-O2`, profile) | The 72 other lifted files (`-O1`) |
+|---|---|---|
+| Compile time, all of them | 1,270-1,810 s | 2,820-3,750 s |
+| Per MB of C | 16-22 s | 2.2-2.9 s |
+| Longest single file | 300-800 s | ~360 s (`code_021_1.c`, giant functions) |
+| Peak memory per compiler | 0.8-1.7 GB | 1.4-1.6 GB for a 24 MB file |
+
+At the other files' rate the hot pieces should take about 200 s instead of about 1,500 s of compile time, about
+a quarter less in all, and the build's longest file becomes an ordinary one, so a build after a new lift can end several
+minutes sooner on a CPU with many threads. The peak memory hardly changes: the ordinary files set it already.
+The hot code runs slower at `-O1`; the game still plays (the profile-counting build, `RX_PGO=gen`, already builds
+the hot pieces at `-O1` and is played through to record the profile), but check that the frame rate is good enough for
+what you test.
+
+**Never use it for numbers:** no fps or frame-time measurements, build timings, hitch or stutter checks, profiles,
+and no release or player build. Build those with the defaults.
 
 ## The pipeline state list
 
@@ -237,6 +282,14 @@ python -I nx2/pipeline_states.py merge --out merged.bin     # the list make_game
 
 A list depends on the settings it was recorded with: its records hold the target formats and draw state, so one recorded
 at 1440p with DLSS shares few pipelines with one recorded at 360p.
+
+Players send theirs to issue #2034 with **Save my pipeline list** (the menu's Debug tab, under Developer: `gpu/vk/pipeline_share.h` and
+`vk_menu.cpp` `share_pipeline_list`; the builders: `nx2/pipeline_share.py`, which the Linux builder imports and the Windows
+one runs with `--json`). It checks the list as `pipeline_states.py --check` does and writes
+`hookshot-pipelines-<date>.zip` to the Downloads folder with exactly two files, the list and `hookshot_pipeline_report.txt`
+(the issue's template filled in from the run or from the game folder's log and `hookshot_options.ini`), then copies the
+template, shows the folder and opens the issue; never with `HOS_HEADLESS`. `tests/test_pipeline_share.py` checks the zip,
+the template and the refusals for both. By hand: `python -I nx2/pipeline_share.py <game folder> [--out-dir <folder>]`.
 
 Refresh the tour's list before each release, and after a change to the shaders' translation or to the state a pipeline
 is made from. A record that no longer matches what play asks for builds a pipeline nothing uses, and the one play wants

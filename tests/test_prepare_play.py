@@ -204,7 +204,7 @@ def plumbing():
     need("prep_record_suffix()" in run, "prepare_run writes the record before everything is done")
     # the draws: memory writers and new targets always wait; the rest by the choice
     d = body(draw, "void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d)")
-    need("prep_miss_act(may_skip)" in d and "stores_global_memory" in d, "the pipeline's wait does not go by the choice and the memory rule")
+    need("prep_miss_act(may_skip)" in d and "!writes_memory(p)" in d, "the pipeline's wait does not go by the choice and the memory rule")
     need("jobs_wait_for(pe->ready, prep_miss_budget_left())" in d, "Wait briefly does not wait out of the frame's budget")
     need("prepare_play_running() ? 1000 : 50" in draw, "a dispatch's wait is not longer while preparing behind the game")
     need("prep_present_hidden(" in body(replay, "void do_present(") and "|| hidden) return;" in body(replay, "void do_present("),
