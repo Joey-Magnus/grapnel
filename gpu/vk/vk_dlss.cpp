@@ -34,6 +34,7 @@
 #include "upscaler_rows.h"
 #include "vk_menu.h"
 #include "vk_paths.h"
+#include "vk_reactive.h"
 #include "vk_temporal.h"
 #include "vk_texture.h"
 
@@ -49,6 +50,8 @@
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
+
+extern std::atomic<bool> present_native_pq;   // (vk_replay.cpp do_present: the game presents its own HDR10 picture, Native)
 
 namespace {
 int env_switch(const char* name) {   // (-1: unset)
@@ -83,6 +86,10 @@ struct State {
     uint32_t feature_rw = 0, feature_rh = 0, feature_ow = 0, feature_oh = 0;   // (its largest render size, its output)
     uint32_t min_rw = 0, min_rh = 0;
     unsigned feature_preset = ~0u;   // (the preset it was made with: another one from the menu makes it again)
+    // (made for the game's native HDR (the game presenting its own HDR10 picture: present_native_pq): its scene colour goes
+    // past 1 there, and an LDR feature fed the colour clamped to 1 cut every highlight at the paper white, a flat, SDR-looking
+    // picture. Then the feature takes HDR colour, linear, with its own exposure, and the chain does not clamp it: hdr())
+    bool feature_hdr = false;
     uint64_t features_made = 0;      // (how many times: a feature made again in play costs a stall, so each says why)
 };
 State& st() {
@@ -296,13 +303,19 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
             const char** fail) {
     State& s = st();
     const unsigned preset = wanted_preset();
+    // (the game's native HDR: State::feature_hdr. What the game presents, not the option and the swapchain: with Native
+    // picked and the game's picture not PQ, the scene is LDR, and an HDR feature would get LDR colour)
+    // (RX_VK_DLSS_HDR=0: the LDR feature and the clamped colour with Native too, as before this; for comparisons)
+    static const bool hdr_allowed = !getenv("RX_VK_DLSS_HDR") || atoi(getenv("RX_VK_DLSS_HDR")) != 0;
+    const bool hdr = hdr_allowed && present_native_pq.load(std::memory_order_relaxed);
     if (s.feature && s.feature_ow == ow && s.feature_oh == oh && rw <= s.feature_rw && rh <= s.feature_rh &&
-        rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset)
+        rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset && s.feature_hdr == hdr)
         return *in_w = s.feature_rw, *in_h = s.feature_rh, 1;
     // (why it is made: in the log with its time, so a stall in play can be matched with one)
     char why[160];
     if (!s.feature && !s.features_made) snprintf(why, sizeof why, "the first");
     else if (!s.feature) snprintf(why, sizeof why, "again after it was let go");
+    else if (s.feature_hdr != hdr) snprintf(why, sizeof why, "the game's native HDR turned %s", hdr ? "on" : "off");
     else if (s.feature_ow != ow || s.feature_oh != oh)
         snprintf(why, sizeof why, "the output went from %ux%u to %ux%u", s.feature_ow, s.feature_oh, ow, oh);
     else if (s.feature_preset != preset)
@@ -312,8 +325,8 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
         snprintf(why, sizeof why, "the render size %ux%u left its range, %ux%u to %ux%u", rw, rh, s.min_rw, s.min_rh,
                  s.feature_rw, s.feature_rh);
     // (the quality mode whose range of render sizes holds this one: the network's 3/4 is DLSS's MaxQuality range; one it
-    // misses by a pixel or two, a rounded size, takes it too: dlss_checks.h mode_for. DLAA's when the render size is the
-    // output's)
+    // misses by a little, a rounded size, takes it too: at most 1/64 of the range's largest size on each axis (2 pixels
+    // at the least), dlss_checks.h mode_for. DLAA's when the render size is the output's)
     static const NVSDK_NGX_PerfQuality_Value scaled[] = {NVSDK_NGX_PerfQuality_Value_MaxQuality, NVSDK_NGX_PerfQuality_Value_DLAA,
                                                         NVSDK_NGX_PerfQuality_Value_Balanced, NVSDK_NGX_PerfQuality_Value_MaxPerf,
                                                         NVSDK_NGX_PerfQuality_Value_UltraPerformance};
@@ -333,9 +346,17 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
         dlss_checks::ModeRange took;
         const int k = dlss_checks::mode_for(rw, rh, ow, oh, ranges, n, &took);
         if (k < 0) {   // (the size in the log; the feature kept for the sizes it takes, not let go and made again)
-            static char refused[112];
-            snprintf(refused, sizeof refused, "no DLSS mode takes the render size %ux%u for %ux%u", rw, rh, ow, oh);
-            return *fail = refused, 0;
+            // (vk_temporal.cpp's fail() logs a reason again only when its pointer changes: two buffers, the other one for a
+            // new size, so each refused size is logged once, by fail() as any reason)
+            static char refused[2][112];
+            static unsigned last[4];
+            static int at = 0;
+            if (last[0] != rw || last[1] != rh || last[2] != ow || last[3] != oh) {
+                at ^= 1;
+                snprintf(refused[at], sizeof refused[at], "no DLSS mode takes the render size %ux%u for %ux%u", rw, rh, ow, oh);
+                last[0] = rw, last[1] = rh, last[2] = ow, last[3] = oh;
+            }
+            return *fail = refused[at], 0;
         }
         mode = which[k], max_w = took.max_w, max_h = took.max_h, min_w = took.min_w, min_h = took.min_h;
         if (took.max_w != ranges[k].max_w || took.max_h != ranges[k].max_h || took.min_w != ranges[k].min_w ||
@@ -359,8 +380,10 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     NVSDK_NGX_DLSS_Create_Params cp{};
     cp.Feature.InWidth = max_w, cp.Feature.InHeight = max_h, cp.Feature.InTargetWidth = ow, cp.Feature.InTargetHeight = oh;
     cp.Feature.InPerfQualityValue = mode;
-    // (LDR colour, already tonemapped: no exposure; motion at the render size, not jittered; depth not reversed)
-    cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+    // (LDR colour, already tonemapped: no exposure; motion at the render size, not jittered; depth not reversed. With the
+    // game's native HDR the colour goes past 1: an HDR feature, given linear light, with DLSS's own exposure)
+    cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+                              (hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure : 0);
     const auto t0 = std::chrono::steady_clock::now();
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (NGX records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
     const NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT(cmd, 1, 1, &s.feature, s.params, &cp);
@@ -373,11 +396,12 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     }
     s.feature_rw = max_w, s.feature_rh = max_h, s.feature_ow = ow, s.feature_oh = oh, s.min_rw = min_w, s.min_rh = min_h;
     s.feature_preset = preset;
+    s.feature_hdr = hdr;
     s.features_made++;
     logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
-         "preset %c%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
+         "preset %c%s%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
          min_w, min_h, max_w, max_h, ow, oh, (int)mode, upscaler_rows::preset_letter(preset),
-         preset ? "" : " (NVIDIA's default)");
+         preset ? "" : " (NVIDIA's default)", hdr ? ", HDR colour, linear (the game's native HDR)" : "");
     *in_w = s.feature_rw, *in_h = s.feature_rh;
     return 2;   // (a new history)
 }
@@ -395,6 +419,15 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     ep.InRenderSubrectDimensions = {f.render_w, f.render_h};
     ep.InReset = f.reset ? 1 : 0;
     ep.InMVScaleX = ep.InMVScaleY = 1.0f;
+    // (what the scene's transparent draws changed, when RX_VK_REACTIVE asks for it and there were any (vk_reactive.h):
+    // DLSS's mask of where to lean on this frame's colour, as large as the chain's inputs. Without one the parameter stays
+    // null, as before)
+    NVSDK_NGX_Resource_VK bias{};
+    if (reactive::Mask m; reactive::mask(cmd, f.render_w, f.render_h, f.color.width, f.color.height, f.color.view, m)) {
+        bias = NVSDK_NGX_Create_ImageView_Resource_VK(m.view, m.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, m.format,
+                                                      m.image_width, m.image_height, false);
+        ep.pInBiasCurrentColorMask = &bias;
+    }
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (NGX records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
     const NVSDK_NGX_Result r = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, s.feature, s.params, &ep);
     note_work();   // (as at its creation: the barrier after it, and the game's next one, are recorded)
@@ -420,7 +453,13 @@ uint64_t memory() {
     return s.caps && NVSDK_NGX_SUCCEED(NGX_DLSS_GET_STATS(s.caps, &ngx)) ? (uint64_t)ngx : 0;
 }
 
-const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory};
+/// Its feature takes HDR colour (made for the game's native HDR): the chain gives it linear light, unclamped
+bool hdr() {
+    State& s = st();
+    return s.feature && s.feature_hdr;
+}
+
+const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory, hdr};
 
 }  // namespace
 
@@ -507,6 +546,7 @@ struct Fg {
     float pos[3], up[3], right[3], fwd[3];
     float jitter[2]{}, near_z = 0.1f, far_z = 1000.0f, fov = 1.0f, aspect = 16.0f / 9.0f;
     bool inputs_reset = true;
+    bool depth_reversed = false;      // (the chain's depth is 1 - d: FSR 3.1 on the chain, TemporalFrame::depth_reversed)
     float last_vp[16]{};
     bool have_last = false;
     uint64_t inputs = 0, used = 0;    // (how many inputs were taken, and the last one a present used)
@@ -773,6 +813,7 @@ void dlss_fg_inputs(VkCommandBuffer cmd, const TemporalFrame& f, const float pro
         g.fwd[i] = -cam[i * 4 + 2];
     }
     g.jitter[0] = f.jitter[0], g.jitter[1] = f.jitter[1];
+    g.depth_reversed = f.depth_reversed;
     g.near_z = f.near_z > 0 ? f.near_z : 0.1f;
     g.far_z = f.far_z > g.near_z ? f.far_z : 100000.0f;
     g.fov = f.fov_y > 0 ? f.fov_y : 1.0f;
@@ -878,7 +919,7 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
     std::memcpy(o.cameraRight, g.right, sizeof g.right), std::memcpy(o.cameraFwd, g.fwd, sizeof g.fwd);
     o.cameraNear = g.near_z, o.cameraFar = g.far_z, o.cameraFOV = g.fov, o.cameraAspectRatio = g.aspect;
     o.colorBuffersHDR = false;
-    o.depthInverted = false;            // (the chain's depth: [0, 1], not reversed)
+    o.depthInverted = g.depth_reversed;   // (the chain's depth: [0, 1], reversed for FSR 3.1 on the chain: depth_reversed)
     o.cameraMotionIncluded = true;      // (its motion is the whole of it: camera and actors)
     // (a new history after a present NGX did not make, a cut the chain saw, or a new feature)
     o.reset = g.inputs_reset || !g.last_sequence || sequence != g.last_sequence + 1;
