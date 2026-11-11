@@ -112,20 +112,15 @@ for name, data in (("cut inside a chunk's length", whole[:35]), ("cut inside its
     finally:
         os.remove(path)
 
-# ---- the picture it ships, and the window made of it ----
-picture = art.picture()
-check("launcher/picture.png is there", picture is not None)
-if picture is not None:
-    check("the picture is wide enough for a window", picture.shape[1] >= 960 and picture.shape[0] >= 640 and picture.shape[2] == 3, picture.shape)
-    # (12% of the picture over #121212: nothing brighter than 18 + 0.12 * (255 - 18))
-    check("the picture is dim, as the window shows it", int(picture.max()) <= 47 and int(picture.min()) >= 15, (int(picture.min()), int(picture.max())))
-    for w, h in ((960, 640), (1600, 640), (700, 900)):
-        ground = art.background(w, h, 1.0)
-        check("the window's ground at %d x %d" % (w, h), ground.shape == (h, w, 3) and ground.dtype == np.uint8, ground.shape)
-    ground = art.background(960, 640, 1.0)
-    white = ground[art.WORDMARK_TOP + 30, (960 - 416) // 2 + 14]
-    check("the wordmark is white on it, 59 from the top", min(int(v) for v in white) > 245, tuple(int(v) for v in white))
-    check("and nothing is drawn above it", int(ground[art.WORDMARK_TOP - 3, (960 - 416) // 2 + 14].max()) <= 47)
+# ---- the window's ground: the page's colour (no picture of the game ships) and the wordmark ----
+check("no picture of the game ships with the launcher", not os.path.exists(os.path.join(art.ASSETS, "picture.png")))
+for w, h in ((960, 640), (1600, 640), (700, 900)):
+    ground = art.background(w, h, 1.0)
+    check("the window's ground at %d x %d" % (w, h), ground.shape == (h, w, 3) and ground.dtype == np.uint8, ground.shape)
+ground = art.background(960, 640, 1.0)
+white = ground[art.WORDMARK_TOP + 30, (960 - 416) // 2 + 14]
+check("the wordmark is white on it, 59 from the top", min(int(v) for v in white) > 245, tuple(int(v) for v in white))
+check("and the page's colour around it", tuple(int(v) for v in ground[art.WORDMARK_TOP - 3, 10]) == art.PAGE, tuple(int(v) for v in ground[art.WORDMARK_TOP - 3, 10]))
 
 if failed:
     print("\n".join(failed))

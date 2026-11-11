@@ -155,7 +155,7 @@ jobs:
           dotnet restore tests/builder_workers/BuilderWorkersTests.csproj --configfile tests/builder_workers/NuGet.Config
           dotnet run --project tests/builder_workers/BuilderWorkersTests.csproj --configuration Release --no-restore -- (Get-Command python).Source
       - name: Check the launcher's version lists
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.shard == '1/2' }}
         shell: pwsh
         run: |
           dotnet restore tests/builder_launcher/BuilderLauncherTests.csproj --configfile tests/builder_launcher/NuGet.Config

@@ -24,11 +24,10 @@
     <DebugType>none</DebugType>
   </PropertyGroup>
 
-  <!-- Inter and Marcellus (SIL Open Font License, Fonts/*-LICENSE.txt), the hookshot and the launcher's picture, inside the app -->
+  <!-- Inter and Marcellus (SIL Open Font License, Fonts/*-LICENSE.txt) and the hookshot, inside the app -->
   <ItemGroup>
     <Resource Include="Fonts\*.ttf" />
     <Resource Include="Images\hookshot.png" />
-    <Resource Include="Images\launcher.jpg" />
     <None Include="Fonts\*-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

@@ -1066,7 +1066,9 @@ public partial class MainWindow : Window
     async Task FreeAfterBuild()
     {
         if (Storage.KeepBuildFiles || freeing != null) return;
-        var task = Task.Run(() => Storage.Free(afterBuild: true));
+        // (the builder of the release the folder holds now stays: switched back to an older one, switching again downloads nothing)
+        var keep = launchBuilt is { } built && LaunchList.IsRelease(built) ? built : null;
+        var task = Task.Run(() => Storage.Free(afterBuild: true, keep));
         freeing = task;
         Render();
         long left;

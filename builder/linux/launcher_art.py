@@ -399,44 +399,7 @@ def read_png(path):
     return flat.reshape(h, w, n)
 
 
-def cover(picture, w, h):
-    """picture scaled to cover w x h, cut evenly at the sides (WPF's UniformToFill, centred): h x w x 3, float."""
-    ph, pw = picture.shape[:2]
-    scale = max(w / pw, h / ph)
-    xs = (np.arange(w) + 0.5) / scale + (pw - w / scale) / 2 - 0.5
-    ys = (np.arange(h) + 0.5) / scale + (ph - h / scale) / 2 - 0.5
-    x0 = np.clip(np.floor(xs).astype(int), 0, pw - 1)
-    y0 = np.clip(np.floor(ys).astype(int), 0, ph - 1)
-    x1, y1 = np.minimum(x0 + 1, pw - 1), np.minimum(y0 + 1, ph - 1)
-    fx = np.clip(xs - x0, 0, 1).astype(np.float32)[None, :, None]
-    fy = np.clip(ys - y0, 0, 1).astype(np.float32)[:, None, None]
-    out = np.empty((h, w, 3), dtype=np.float32)
-    for start in range(0, h, 256):   # (in bands: a 4K window's picture at once is hundreds of megabytes)
-        rows = slice(start, min(start + 256, h))
-        top = picture[y0[rows]][:, :, :3].astype(np.float32)
-        low = picture[y1[rows]][:, :, :3].astype(np.float32)
-        top = top[:, x0] * (1 - fx) + top[:, x1] * fx
-        low = low[:, x0] * (1 - fx) + low[:, x1] * fx
-        out[rows] = top * (1 - fy[rows]) + low * fy[rows]
-    return out
-
-
 # ---- what the launcher is made of ----
-_picture = None
-
-
-def picture():
-    """launcher/picture.png: the picture of the game as the window shows it, already dim (12% of it over the page's colour,
-    MainWindow.xaml's Opacity), made from builder/HookshotBuilder/Images/launcher.jpg by launcher/make_picture.py. None: missing."""
-    global _picture
-    if _picture is None:
-        try:
-            _picture = read_png(os.path.join(ASSETS, "picture.png"))
-        except (OSError, ValueError, zlib.error, MemoryError):   # (missing or damaged: the page's colour instead)
-            _picture = False
-    return None if _picture is False else _picture
-
-
 WORDMARK_TOP = 59   # (the drawing's: the letters' box from the window's top, centred across it)
 
 
@@ -452,13 +415,10 @@ def wordmark(scale):
 
 
 def background(w, h, scale):
-    """The window behind everything: the dim picture and the white wordmark, w x h pixels (bytes, h x w x 3)."""
-    pic = picture()
-    if pic is not None:
-        base = cover(pic, w, h)
-    else:
-        base = np.empty((h, w, 3), dtype=np.float32)
-        base[:] = PAGE
+    """The window behind everything: the page's colour and the white wordmark, w x h pixels (bytes, h x w x 3). (No picture of
+    the game ships with the launcher, which is the game's art: original art takes its place here)"""
+    base = np.empty((h, w, 3), dtype=np.float32)
+    base[:] = PAGE
     over(base, wordmark(scale), WHITE, at=(int(round((w - 416 * scale) / 2)), int(round(WORDMARK_TOP * scale))))
     return np.clip(base + 0.5, 0, 255).astype(np.uint8)
 

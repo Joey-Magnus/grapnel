@@ -210,7 +210,9 @@ version: the builders, the setup, the game's update check and the parts lookup r
 ## Update tracks
 
 The launchers (Windows and Linux) choose the track with **Enable pre-releases** in their Settings tab: off is the
-Release track, on the Release candidate track, and a Nightly chosen before stays Nightly while it is on. By default it
+Release track, on the Release candidate track. Nightly is not chosen there: a player who wants it installs the `nightly`
+release's own `HookshotBuilder.exe` (Windows) or AppImage (Linux), whose track is then Nightly (the switch shows on), and it
+stays Nightly until the switch is turned off; turned on again, it is the Release candidate track. By default it
 is the track of the build installed, read from its version: `v2.0.7` is a release, `v2.1.0-rc.1` a release candidate,
 and git describe's `v2.1.0-rc.1-3-g1a2b3c4` the nightly (named with `--long`, so a nightly built on a tagged commit is
 `-0-g...` and still says so). A choice is saved with the builder's settings. With it on, the Releases tab lists the

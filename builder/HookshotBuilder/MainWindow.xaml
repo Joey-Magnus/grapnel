@@ -575,9 +575,8 @@
           </Style>
         </Grid.Resources>
 
-        <!-- the picture of the game, dim behind everything (it covers the window, cut evenly at the sides) -->
-        <Image Source="pack://application:,,,/Images/launcher.jpg" Stretch="UniformToFill" Opacity="0.12" HorizontalAlignment="Center"
-               VerticalAlignment="Center" IsHitTestVisible="False" RenderOptions.BitmapScalingMode="HighQuality"/>
+        <!-- (the page's own colour behind everything: no picture of the game ships with the launcher, which is the game's art.
+             Original art takes its place here) -->
 
         <!-- the wordmark, in white, and what the game is -->
         <Viewbox Width="416" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,59,0,0" IsHitTestVisible="False">
