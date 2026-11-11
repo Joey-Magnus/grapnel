@@ -735,6 +735,8 @@ bool nvn_sampler_of(int id, nvn_samp_par* p);   // rx_nvn.cpp: the registered sa
 /// The driver's constant bank c0 (storage buffer table) / c2 (texture and sampler handle tables) of a stage as the
 /// NVN driver lays them out (0xA00 bytes): what translated programs read for their bindings
 void nvn_driver_bank(const NvnState& s, int bank, int stage, uint8_t out[0xA00]);
+/// (macOS / WebGPU, as gpu/vk compute_ssbo_table) where the bound compute program's storage buffer table is in c0.
+void nvn_compute_ssbo_table(const NvnState& s, uint32_t* base, uint32_t* count, uint32_t* layout_end);
 
 /// What a shader can read of a uniform buffer bound with `size` bytes: the console's driver binds whole 256-byte
 /// blocks (RX_NVN_UBO_EXACT=1: only the bytes bound)

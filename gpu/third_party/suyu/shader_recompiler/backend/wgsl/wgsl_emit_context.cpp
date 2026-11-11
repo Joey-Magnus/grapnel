@@ -235,22 +235,31 @@ void EmitContext::DefineBuiltins() {
 }
 
 void EmitContext::DefineConstantBuffers(Bindings& bindings) {
-    for (const auto& desc : info.constant_buffer_descriptors) {
-        if (cbuf_in_ub[desc.index]) {
-            continue;
+    std::bitset<18> declared{};
+    const auto declare = [&](u32 index, u32 count) {
+        if (index >= 18 || cbuf_in_ub[index] || declared[index]) {
+            return;
         }
+        declared[index] = true;
         // not in the uniform block (indexed at run time, or no room): a read-only storage buffer of the bound size
         header += fmt::format("@group({}) @binding({}) var<storage, read> {}_cbuf{}: array<vec4<u32>>;\n", group,
-                              bindings.unified, stage_name, desc.index);
+                              bindings.unified, stage_name, index);
         // reads at a run-time offset (CbufAt): past the bound size the hardware reads 0, where WebGPU's bounds checks
         // would give the buffer's last vec4 (TOTK's particle programs index their emitter's tables so: long spikes)
         if (!CbufClamp()) {
             header += fmt::format("fn {0}_cbuf{1}_at(i: u32) -> vec4<u32> {{ if (i < arrayLength(&{0}_cbuf{1})) {{ "
                                   "return {0}_cbuf{1}[i]; }} return vec4<u32>(0u); }}\n",
-                                  stage_name, desc.index);
+                                  stage_name, index);
         }
-        cbuf_bindings.push_back({bindings.unified, desc.index});
-        bindings.unified += desc.count;
+        cbuf_bindings.push_back({bindings.unified, index});
+        bindings.unified += count;
+    };
+    for (const auto& desc : info.constant_buffer_descriptors) {
+        declare(desc.index, desc.count);
+    }
+    // Global-memory helpers read SSBO descriptors from these cbufs; declare any the program did not otherwise touch.
+    for (const auto& desc : info.storage_buffers_descriptors) {
+        declare(desc.cbuf_index, 1);
     }
 }
 
@@ -414,7 +423,9 @@ void EmitContext::DefineHelperFunctions() {
         header += "fn CasMaxS32(op_a: u32, op_b: u32) -> u32 { return u32(max(i32(op_a), i32(op_b))); }\n";
     }
     if (info.uses_global_memory) {
-        throw NotImplementedException("WGSL global memory (64-bit addresses)");
+        // (macOS / WebGPU) search the bound storage buffers by guest address, as the GLSL backend does.
+        // Addresses are vec2<u32> after LowerInt64ToInt32 (WebGPU has no uint64 in core WGSL).
+        header += DefineGlobalMemoryFunctions();
     }
     if (info.loads_indexed_attributes) {
         std::string func{"fn IndexedAttrLoad(offset: i32) -> f32 {\n"
@@ -434,6 +445,80 @@ void EmitContext::DefineHelperFunctions() {
         func += "    default: { return 0.0f; }\n  }\n}\n";
         header += func;
     }
+}
+
+std::string EmitContext::DefineGlobalMemoryFunctions() {
+    // Guest addresses are vec2<u32> (lo, hi). Compare and subtract without uint64.
+    std::string out =
+        "fn gm_ge_(a: vec2<u32>, b: vec2<u32>) -> bool { return (a.y > b.y) || (a.y == b.y && a.x >= b.x); }\n"
+        "fn gm_lt_(a: vec2<u32>, b: vec2<u32>) -> bool { return (a.y < b.y) || (a.y == b.y && a.x < b.x); }\n"
+        "fn gm_add_size_(base: vec2<u32>, size: vec2<u32>) -> vec2<u32> {\n"
+        "  let lo = base.x + size.x;\n"
+        "  let carry = select(0u, 1u, lo < base.x);\n"
+        "  return vec2<u32>(lo, base.y + size.y + carry);\n"
+        "}\n"
+        "fn gm_off_(addr: vec2<u32>, base: vec2<u32>) -> u32 { return addr.x - base.x; }\n";
+    const auto cbuf_word = [&](u32 cbuf_index, u32 byte_offset) {
+        const char swz = "xyzw"[(byte_offset / 4) % 4];
+        const u32 vec = byte_offset / 16;
+        if (cbuf_index < 18 && cbuf_in_ub[cbuf_index]) {
+            return fmt::format("{}[{}u + {}u].{}", ub_name, ub_cbuf_base[cbuf_index], vec, swz);
+        }
+        return fmt::format("{}_cbuf{}[{}u].{}", stage_name, cbuf_index, vec, swz);
+    };
+    const auto define_body = [&](std::string& func, size_t index, std::string_view body) {
+        const auto& ssbo{info.storage_buffers_descriptors[index]};
+        const u32 align_mask{~(static_cast<u32>(profile.min_ssbo_alignment) - 1U)};
+        const std::string addr_lo{cbuf_word(ssbo.cbuf_index, ssbo.cbuf_offset)};
+        const std::string addr_hi{cbuf_word(ssbo.cbuf_index, ssbo.cbuf_offset + 4)};
+        const std::string size_lo{cbuf_word(ssbo.cbuf_index, ssbo.cbuf_offset + 8)};
+        const std::string size_hi{cbuf_word(ssbo.cbuf_index, ssbo.cbuf_offset + 12)};
+        func += fmt::format(
+            "  {{\n"
+            "    let base = vec2<u32>({} & {}u, {});\n"
+            "    let size = vec2<u32>({}, {});\n"
+            "    let end = gm_add_size_(base, size);\n"
+            "    if (gm_ge_(addr, base) && gm_lt_(addr, end)) {{\n"
+            "      let off = gm_off_(addr, base);\n"
+            "      {}\n"
+            "    }}\n"
+            "  }}\n",
+            addr_lo, align_mask, addr_hi, size_lo, size_hi, body);
+    };
+    std::string write32{"fn WriteGlobal32(addr: vec2<u32>, data: u32) {\n"};
+    std::string write64{"fn WriteGlobal64(addr: vec2<u32>, data: vec2<u32>) {\n"};
+    std::string write128{"fn WriteGlobal128(addr: vec2<u32>, data: vec4<u32>) {\n"};
+    std::string load32{"fn LoadGlobal32(addr: vec2<u32>) -> u32 {\n"};
+    std::string load64{"fn LoadGlobal64(addr: vec2<u32>) -> vec2<u32> {\n"};
+    std::string load128{"fn LoadGlobal128(addr: vec2<u32>) -> vec4<u32> {\n"};
+    const size_t num_buffers{info.storage_buffers_descriptors.size()};
+    for (size_t index = 0; index < num_buffers; ++index) {
+        define_body(write32, index, SsboStore(static_cast<u32>(index), "off >> 2u", "data") + " return;");
+        define_body(write64, index,
+                    SsboStore(static_cast<u32>(index), "off >> 2u", "data.x") +
+                        SsboStore(static_cast<u32>(index), "(off + 4u) >> 2u", "data.y") + " return;");
+        define_body(write128, index,
+                    SsboStore(static_cast<u32>(index), "off >> 2u", "data.x") +
+                        SsboStore(static_cast<u32>(index), "(off + 4u) >> 2u", "data.y") +
+                        SsboStore(static_cast<u32>(index), "(off + 8u) >> 2u", "data.z") +
+                        SsboStore(static_cast<u32>(index), "(off + 12u) >> 2u", "data.w") + " return;");
+        define_body(load32, index, fmt::format("return {};", SsboLoad(static_cast<u32>(index), "off >> 2u")));
+        define_body(load64, index,
+                    fmt::format("return vec2<u32>({},{});", SsboLoad(static_cast<u32>(index), "off >> 2u"),
+                                SsboLoad(static_cast<u32>(index), "(off + 4u) >> 2u")));
+        define_body(load128, index,
+                    fmt::format("return vec4<u32>({},{},{},{});", SsboLoad(static_cast<u32>(index), "off >> 2u"),
+                                SsboLoad(static_cast<u32>(index), "(off + 4u) >> 2u"),
+                                SsboLoad(static_cast<u32>(index), "(off + 8u) >> 2u"),
+                                SsboLoad(static_cast<u32>(index), "(off + 12u) >> 2u")));
+    }
+    write32 += "}\n";
+    write64 += "}\n";
+    write128 += "}\n";
+    load32 += "  return 0u;\n}\n";
+    load64 += "  return vec2<u32>(0u);\n}\n";
+    load128 += "  return vec4<u32>(0u);\n}\n";
+    return out + write32 + write64 + write128 + load32 + load64 + load128;
 }
 
 void EmitContext::DefineConstants() {

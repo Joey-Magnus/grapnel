@@ -289,6 +289,13 @@ Nvn2CsLayout nvn2_cs_layout(const NvnState& s) {
     return l;
 }
 
+void nvn_compute_ssbo_table(const NvnState& s, uint32_t* base, uint32_t* count, uint32_t* layout_end) {
+    const Nvn2CsLayout l = nvn2_cs_layout(s);
+    if (count) *count = l.ssbo;
+    if (layout_end) *layout_end = l.end();
+    if (base) *base = l.ssbo ? l.ssbo_at() : 0;
+}
+
 void nvn_driver_bank(const NvnState& s, int bank, int stage, uint8_t d[0xA00]) {
     std::memset(d, 0, 0xA00);
     if (stage < 0 || stage > 5) return;

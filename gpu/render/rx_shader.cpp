@@ -27,6 +27,7 @@
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
+#include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/object_pool.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/program_header.h"
@@ -1163,6 +1164,7 @@ public:
     void Dump(u64, u64) override {}
 
     std::vector<uint32_t> c2_reads;   // texture handle words the translation read (what its answers depend on)
+    const NvnState& state() const { return s; }
 
 private:
     const NvnState& s;
@@ -1184,6 +1186,25 @@ std::unique_ptr<Translated> nvn_translate(NvnEnvironment& env, bool graphics) {
     host.support_float64 = false;
     host.support_int64 = false;
     host.min_ssbo_alignment = dev.limits.minStorageBufferOffsetAlignment;
+    struct ResetNvn2Table {
+        bool armed = false;
+        ~ResetNvn2Table() {
+            if (!armed) return;
+            Shader::Optimization::g_nvn2_compute_ssbo_base = 0;
+            Shader::Optimization::g_nvn2_compute_ssbo_count = 16;
+            Shader::Optimization::g_nvn2_compute_layout_end = 0;
+        }
+    } reset_nvn2;
+    if (!graphics) {
+        // (as gpu/vk) NVN2 compute's storage buffer table is not at Maxwell's 0x310: without this, global loads
+        // searched an empty table and OoT's culling / exposure writes were lost (white 3D).
+        uint32_t base = 0, count = 0, end = 0;
+        nvn_compute_ssbo_table(env.state(), &base, &count, &end);
+        Shader::Optimization::g_nvn2_compute_ssbo_base = count ? base : 0;
+        Shader::Optimization::g_nvn2_compute_ssbo_count = count ? count : 16;
+        Shader::Optimization::g_nvn2_compute_layout_end = count ? end : 0;
+        reset_nvn2.armed = true;
+    }
     t->program = Shader::Maxwell::TranslateProgram(t->insts, t->blocks, env, cfg, host);
     // RX_WARP_LOG=1: programs using the warp's lane id, shuffles, votes or lane masks (the WGSL backend has no warps)
     static const bool warp_log = env_flag("RX_WARP_LOG");
