@@ -104,6 +104,9 @@ h1#_top { font-family: Georgia, 'Times New Roman', serif; font-weight: 400; lett
 .hero-intro { max-width: 26rem; font-size: .91rem; line-height: 1.8; color: #bdcbb7; margin: 0; }
 .hero-credit { margin: .6rem 0 0; font-size: .8rem; color: #bdcbb7; }
 .hero-credit a { color: #e0c98a; text-decoration-color: #e0c98a66; }
+.release-badge { display: inline-flex; align-items: center; gap: .65rem; flex-wrap: wrap; margin-top: 1rem; padding: .45rem .7rem; border: 1px solid #526d51; border-radius: 5px; background: #18392b; color: #e1ebd7; font-size: .75rem; text-decoration: none; }
+.release-badge:hover { border-color: #b5d5a6; background: #224b37; }
+.release-dot { width: 6px; height: 6px; border-radius: 50%; background: #b5d5a6; }
 .hero-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.8rem; }
 .button-primary, .button-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 1.1rem; text-decoration: none; font-size: .77rem; font-weight: 600; padding: .8rem 1rem; border-radius: 5px; transition: background .18s, border-color .18s; }
 .button-primary { background: #d5bf83; color: #1b3021; border: 1px solid #d5bf83; }

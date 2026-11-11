@@ -8,7 +8,7 @@ const out = path.join(site, 'src/content/docs/generated');
 const base = '/Hookshot/';
 const pages = new Map();
 for (const name of await readdir(path.join(root, 'docs'))) {
-  if (!name.endsWith('.md') || ['README.md', 'SUMMARY.md', 'gitbook-publishing.md'].includes(name)) continue;
+  if (!name.endsWith('.md') || name === 'README.md') continue;
   pages.set(`docs/${name}`, `guides/${name.slice(0, -3)}`);
 }
 pages.set('readme.md', 'reference/manual');
@@ -28,7 +28,6 @@ function urlFor(value, source) {
   const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(source), pathname));
   if (pages.has(resolved)) return base + (pages.get(resolved) ? `${pages.get(resolved)}/` : '') + fragment;
   if (publicAssets.has(resolved)) return base + resolved + fragment;
-  if (resolved === 'docs/gitbook-publishing.md') return base + 'about/';
   return `https://github.com/NotRexed/Hookshot/blob/main/${resolved}${fragment}`;
 }
 await rm(out, { recursive: true, force: true });

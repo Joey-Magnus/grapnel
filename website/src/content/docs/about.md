@@ -5,7 +5,7 @@ editUrl: https://github.com/bibigurl-yum/Hookshot/edit/docs/starlight-preview/we
 ---
 
 This documentation preview is maintained on **bibigurl-yum's fork** of Hookshot. It is not the official
-Hookshot documentation, and no upstream pull request has been opened.
+Hookshot documentation. The upstream maintainers decide whether to adopt and host it.
 
 The site uses the original Hookshot logo from the project's README.
 

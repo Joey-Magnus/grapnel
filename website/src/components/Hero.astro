@@ -10,6 +10,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') + '/';
     <h1 id="_top" data-page-title>Hookshot<br /><em>documentation.</em></h1>
     <p class="hero-intro">A Native Recompilation Of The Legend Of Zelda: Ocarina Of Time Nintendo Switch 2 Remake</p>
     <p class="hero-credit">by <a href="https://github.com/NotRexed">NotRexed</a></p>
+    <a class="release-badge" id="latest-release" href="https://github.com/NotRexed/Hookshot/releases/latest"><span class="release-dot" aria-hidden="true"></span><span id="latest-release-label">View latest stable release</span><span aria-hidden="true">↗</span></a>
     <div class="hero-actions">
       <a class="button-primary" href={`${base}guides/getting-started/`}>Install Hookshot <span aria-hidden="true">→</span></a>
       <a class="button-secondary" href={`${base}guides/common-issues/`}>Common issues</a>
@@ -22,3 +23,15 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') + '/';
     <img src={`${base}assets/hookshot.png`} width="292" height="277" alt="" fetchpriority="high" />
   </div>
 </section>
+<script>
+  import { getLatestRelease } from '../lib/latest-release.mjs';
+  const link = document.querySelector<HTMLAnchorElement>('#latest-release');
+  const label = document.querySelector('#latest-release-label');
+  if (link && label) {
+    getLatestRelease().then(release => {
+      if (!release) return;
+      label.textContent = `Latest stable release: ${release.version}`;
+      link.href = release.url;
+    });
+  }
+</script>
