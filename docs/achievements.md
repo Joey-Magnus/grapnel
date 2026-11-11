@@ -16,6 +16,11 @@ not unlocked from a boss reward alone, since that would incorrectly award no-hit
 
 Achievement IDs are the indexes in `gpu/vk/oot_achievements.h`. Keep existing IDs stable when adding or changing entries.
 
+The 97 base-set achievements use their original RetroAchievements badge artwork. The source IDs and achievement mapping are
+recorded in `assets/oot-achievement-badges.json`, and the PNGs are bundled with Hookshot so the menu works offline. Locked
+badges are rendered in grayscale; unlocked badges and unlock notifications use the original colors. Hookshot's local-only
+“Hey, Listen me!” entry has a small custom fairy badge because it has no RetroAchievements badge.
+
 ## Remaining trigger work
 
 The catalog entries marked `OOT_ACH_MANUAL` need game-event tracking. Implement them in these layers:

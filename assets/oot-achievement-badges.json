@@ -1,0 +1,496 @@
+{
+  "source": "https://retroachievements.org/game/10113",
+  "guide": "https://raw.githubusercontent.com/wiki/RetroAchievements/guides/The-Legend-of-Zelda:-Ocarina-of-Time-(Nintendo-64).md",
+  "icons": [
+    {
+      "id": 0,
+      "title": "Bring Me to the Bottom of the Oceans",
+      "badge": "158133"
+    },
+    {
+      "id": 1,
+      "title": "A Breath of Fresh Air",
+      "badge": "158134"
+    },
+    {
+      "id": 2,
+      "title": "Entrusted Mission",
+      "badge": "158118"
+    },
+    {
+      "id": 3,
+      "title": "Rise and Shine!!",
+      "badge": "158119"
+    },
+    {
+      "id": 4,
+      "title": "A Royal Autograph",
+      "badge": "158120"
+    },
+    {
+      "id": 5,
+      "title": "Hey, Listen me!",
+      "badge": null
+    },
+    {
+      "id": 6,
+      "title": "Bunches of Twigs",
+      "badge": "158156"
+    },
+    {
+      "id": 7,
+      "title": "Spider Net",
+      "badge": "158117"
+    },
+    {
+      "id": 8,
+      "title": "Sniper Fury",
+      "badge": "158148"
+    },
+    {
+      "id": 9,
+      "title": "Money Solves Everything",
+      "badge": "158150"
+    },
+    {
+      "id": 10,
+      "title": "Troublemaker",
+      "badge": "158151"
+    },
+    {
+      "id": 11,
+      "title": "Shield Raider",
+      "badge": "158157"
+    },
+    {
+      "id": 12,
+      "title": "Catch Me If You Can",
+      "badge": "158158"
+    },
+    {
+      "id": 13,
+      "title": "Cuccos' Revenge",
+      "badge": "158159"
+    },
+    {
+      "id": 14,
+      "title": "A Man's Best Friend",
+      "badge": "158194"
+    },
+    {
+      "id": 15,
+      "title": "Dance Into the Fire",
+      "badge": "158121"
+    },
+    {
+      "id": 16,
+      "title": "Bullseye!!",
+      "badge": "158154"
+    },
+    {
+      "id": 17,
+      "title": "You Can Be a Star",
+      "badge": "158155"
+    },
+    {
+      "id": 18,
+      "title": "Super Cucco Catching",
+      "badge": "158152"
+    },
+    {
+      "id": 19,
+      "title": "You Make Me Feel So Good",
+      "badge": "158153"
+    },
+    {
+      "id": 20,
+      "title": "Happy Mask Salesman",
+      "badge": "158172"
+    },
+    {
+      "id": 21,
+      "title": "A Pretty Face",
+      "badge": "158170"
+    },
+    {
+      "id": 22,
+      "title": "Bombalicious",
+      "badge": "158122"
+    },
+    {
+      "id": 23,
+      "title": "Soul Brothers",
+      "badge": "158123"
+    },
+    {
+      "id": 24,
+      "title": "You Spin Me Round",
+      "badge": "158162"
+    },
+    {
+      "id": 25,
+      "title": "Walking on a Tightrope",
+      "badge": "158161"
+    },
+    {
+      "id": 26,
+      "title": "Roll Roll and Away",
+      "badge": "158160"
+    },
+    {
+      "id": 27,
+      "title": "Bombchu Bowling Star",
+      "badge": "158163"
+    },
+    {
+      "id": 28,
+      "title": "Mouse Ka-Boom",
+      "badge": "158164"
+    },
+    {
+      "id": 29,
+      "title": "Who Let the Dogs Out",
+      "badge": "158149"
+    },
+    {
+      "id": 30,
+      "title": "On Fire",
+      "badge": "158165"
+    },
+    {
+      "id": 31,
+      "title": "Stocking Nuts",
+      "badge": "511029"
+    },
+    {
+      "id": 32,
+      "title": "Magic Beans",
+      "badge": "158167"
+    },
+    {
+      "id": 33,
+      "title": "The Way the World Learns to Dive",
+      "badge": "158561"
+    },
+    {
+      "id": 34,
+      "title": "Take Me Away",
+      "badge": "158169"
+    },
+    {
+      "id": 35,
+      "title": "Rolling Thunder",
+      "badge": "158124"
+    },
+    {
+      "id": 36,
+      "title": "Wedding Band",
+      "badge": "158125"
+    },
+    {
+      "id": 37,
+      "title": "Fishing Lessons",
+      "badge": "158200"
+    },
+    {
+      "id": 38,
+      "title": "A Horrible Face",
+      "badge": "511028"
+    },
+    {
+      "id": 39,
+      "title": "Damsel in Distress",
+      "badge": "158126"
+    },
+    {
+      "id": 40,
+      "title": "Last Breath",
+      "badge": "158171"
+    },
+    {
+      "id": 41,
+      "title": "Secrets Detector",
+      "badge": "158195"
+    },
+    {
+      "id": 42,
+      "title": "A Woman's Best Friend",
+      "badge": "158196"
+    },
+    {
+      "id": 43,
+      "title": "Hero of Time",
+      "badge": "158127"
+    },
+    {
+      "id": 44,
+      "title": "Hook Me Away",
+      "badge": "158174"
+    },
+    {
+      "id": 45,
+      "title": "The Great Escape",
+      "badge": "158128"
+    },
+    {
+      "id": 46,
+      "title": "Heat Resistant Tunic",
+      "badge": "158181"
+    },
+    {
+      "id": 47,
+      "title": "Kiss That Frog",
+      "badge": "158182"
+    },
+    {
+      "id": 48,
+      "title": "Biggoron's Sword",
+      "badge": "158186"
+    },
+    {
+      "id": 49,
+      "title": "Drunken Master",
+      "badge": "158129"
+    },
+    {
+      "id": 50,
+      "title": "Awakening",
+      "badge": "158130"
+    },
+    {
+      "id": 51,
+      "title": "Sniper Elite",
+      "badge": "158180"
+    },
+    {
+      "id": 52,
+      "title": "Hot Hot Hot",
+      "badge": "158131"
+    },
+    {
+      "id": 53,
+      "title": "Eternal Brothers",
+      "badge": "158132"
+    },
+    {
+      "id": 54,
+      "title": "Pierre the Wanderer",
+      "badge": "158177"
+    },
+    {
+      "id": 55,
+      "title": "Day of the Tentacles",
+      "badge": "158135"
+    },
+    {
+      "id": 56,
+      "title": "Bride to Be",
+      "badge": "158136"
+    },
+    {
+      "id": 57,
+      "title": "The Flaming Arrow",
+      "badge": "158183"
+    },
+    {
+      "id": 58,
+      "title": "Seeing Is Believing",
+      "badge": "158185"
+    },
+    {
+      "id": 59,
+      "title": "Invisible One",
+      "badge": "158137"
+    },
+    {
+      "id": 60,
+      "title": "The Shadow of the Hylians",
+      "badge": "158138"
+    },
+    {
+      "id": 61,
+      "title": "Gerudo's Fan Club",
+      "badge": "158139"
+    },
+    {
+      "id": 62,
+      "title": "Ultimate Horse Master",
+      "badge": "158187"
+    },
+    {
+      "id": 63,
+      "title": "Nayru's Love",
+      "badge": "158189"
+    },
+    {
+      "id": 64,
+      "title": "Musician",
+      "badge": "158190"
+    },
+    {
+      "id": 65,
+      "title": "Infamous Silver Gauntlets",
+      "badge": "158140"
+    },
+    {
+      "id": 66,
+      "title": "Twins of Evil",
+      "badge": "158141"
+    },
+    {
+      "id": 67,
+      "title": "Brainwashed",
+      "badge": "158142"
+    },
+    {
+      "id": 68,
+      "title": "Graduate of Gerudo's Training Ground",
+      "badge": "158188"
+    },
+    {
+      "id": 69,
+      "title": "Poe Collector",
+      "badge": "158178"
+    },
+    {
+      "id": 70,
+      "title": "Drunkard",
+      "badge": "158179"
+    },
+    {
+      "id": 71,
+      "title": "Jump Over",
+      "badge": "158176"
+    },
+    {
+      "id": 72,
+      "title": "Wind Runner",
+      "badge": "158192"
+    },
+    {
+      "id": 73,
+      "title": "Ghost Chaser",
+      "badge": "158175"
+    },
+    {
+      "id": 74,
+      "title": "Expert Angler",
+      "badge": "158562"
+    },
+    {
+      "id": 75,
+      "title": "Mischievous Hero",
+      "badge": "158202"
+    },
+    {
+      "id": 76,
+      "title": "Accomplished Angler",
+      "badge": "158203"
+    },
+    {
+      "id": 77,
+      "title": "To the Rescue",
+      "badge": "158143"
+    },
+    {
+      "id": 78,
+      "title": "The Rock",
+      "badge": "158193"
+    },
+    {
+      "id": 79,
+      "title": "Cartographer",
+      "badge": "158204"
+    },
+    {
+      "id": 80,
+      "title": "King of Thieves",
+      "badge": "158145"
+    },
+    {
+      "id": 81,
+      "title": "My Last Breath",
+      "badge": "158146"
+    },
+    {
+      "id": 82,
+      "title": "Home Sweet Home",
+      "badge": "158144"
+    },
+    {
+      "id": 83,
+      "title": "The Fabulous Froggish Tenors",
+      "badge": "158184"
+    },
+    {
+      "id": 84,
+      "title": "Lifestyle and Stones",
+      "badge": "158173"
+    },
+    {
+      "id": 85,
+      "title": "Bombchu",
+      "badge": "158197"
+    },
+    {
+      "id": 86,
+      "title": "My Broken Heart",
+      "badge": "158198"
+    },
+    {
+      "id": 87,
+      "title": "Family Reunion",
+      "badge": "158199"
+    },
+    {
+      "id": 88,
+      "title": "Plenty of Hearts",
+      "badge": "158191"
+    },
+    {
+      "id": 89,
+      "title": "Dangerously Delicious",
+      "badge": "158205"
+    },
+    {
+      "id": 90,
+      "title": "Race Against the Clock",
+      "badge": "240846"
+    },
+    {
+      "id": 91,
+      "title": "Dodgeball",
+      "badge": "158207"
+    },
+    {
+      "id": 92,
+      "title": "Whac-A-Mole",
+      "badge": "158739"
+    },
+    {
+      "id": 93,
+      "title": "Tentacles of the Deep",
+      "badge": "158209"
+    },
+    {
+      "id": 94,
+      "title": "Invisible Stalker",
+      "badge": "158210"
+    },
+    {
+      "id": 95,
+      "title": "Double Trouble",
+      "badge": "158211"
+    },
+    {
+      "id": 96,
+      "title": "Dark Lord",
+      "badge": "158212"
+    },
+    {
+      "id": 97,
+      "title": "Blind Explorer",
+      "badge": "158213"
+    }
+  ]
+}

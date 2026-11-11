@@ -44,6 +44,7 @@ import lifted_c
 import rtgen
 import logo_rgba
 import ui_fonts
+import achievement_icons
 import toolchain
 import version
 import win_manifest
@@ -916,6 +917,8 @@ def main():
         # (HOOKSHOT_VK_PREBUILT) and carries neither third_party/fonts nor the back end's sources, and a player's build there
         # stopped at the fonts (FileNotFoundError: LibertinusSans-Regular.ttf, 2026-11-10)
         logo_text = logo_rgba.write(os.path.join(gen_dir, "hookshot_logo.h")).encode()
+        # (hookshot) offline achievement badges, reduced for the menu and embedded in vk_menu.cpp
+        achievement_icon_text = achievement_icons.write(os.path.join(gen_dir, "hookshot_achievement_icons.h")).encode()
         # (the overlays' bundled fonts, third_party/fonts/libertinus, as a C++ file of the build's own: nx2/ui_fonts.py)
         fonts_cpp = os.path.join(gen_dir, "ui_fonts.cpp")
         ui_fonts.write(fonts_cpp)
@@ -989,6 +992,7 @@ def main():
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
+                            (achievement_icon_text if os.path.basename(src) == "vk_menu.cpp" else b"") +
                             (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
                             (imgui_deps if os.path.basename(src) in imgui_users else b"")))
         if NGX_SDK and not LINUX and toolchain.mingw():
