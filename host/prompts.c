@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "../gpu/vk/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
@@ -450,7 +451,21 @@ static int build_layouts(char *out, size_t cap) {
         }
     }
     int ok = 0;
-    if (nruns) {
+    /* (prompts/recomp_button: prompts/Common.blarc has the pause menu's Recomp options button, nx2/pause_layout.py: served with
+       or without runs over it) */
+    snprintf(path, sizeof path, "%sprompts/recomp_button", dir);
+    const int button = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    if (button) {   /* (and the archive as built: a build that changed it makes the served file again) */
+        struct stat st;
+        char blarc[MAX_PATH];
+        snprintf(blarc, sizeof blarc, "%sprompts/Common.blarc", dir);
+        h = fnv(h, "recomp_button", 13);
+        if (!stat(blarc, &st)) {
+            const int64_t size = (int64_t)st.st_size, when = (int64_t)st.st_mtime;
+            h = fnv(fnv(h, &size, 8), &when, 8);
+        }
+    }
+    if (nruns || button) {
         char keypath[MAX_PATH];
         snprintf(out, cap, "%sprompts/Common.blarc.zs", dir);
         snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
