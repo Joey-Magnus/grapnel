@@ -1092,6 +1092,7 @@ class Window(QWidget):
         if s.get("Out"):
             self.out_path.setText(s["Out"])
         self.dlss_tick.setChecked(bool(s.get("Dlss")))
+        self.dlss_license = bool(s.get("DlssLicense"))
         self.prepare_tick.setChecked(not s.get("PrepareLater"))
         self.compile_chosen = s.get("CompileShaders") in COMPILE_LEVELS
         self.compile_box.blockSignals(True)   # (not saved back from here: the rest of the settings are not applied yet)
@@ -1110,6 +1111,7 @@ class Window(QWidget):
     def save_settings(self):
         core.save_settings({"Out": self.out_path.text(), "Nup": None if self.romfs else self.chosen_nup, "Romfs": self.romfs,
                             "Exefs": self.exefs, "Dlss": self.dlss_tick.isChecked(),
+                            "DlssLicense": getattr(self, "dlss_license", False) or bool(core.load_settings().get("DlssLicense")),
                             "PrepareLater": not self.prepare_tick.isChecked(),
                             "CompileShaders": self.chosen_level()})
 
@@ -1397,6 +1399,8 @@ class Window(QWidget):
             b = QMessageBox.question(self, "NVIDIA DLSS", DLSS_LICENSE, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if b != QMessageBox.StandardButton.Yes:
                 self.dlss_tick.setChecked(False)
+            else:
+                self.dlss_license = True   # (kept in the settings, DlssLicense: an update keeps DLSS by it, not the SDK's files)
         self.save_settings()   # (kept at once: ticked and closed, it is still ticked next time)
 
     def make_rows(self, update, shaders=False):
@@ -1798,7 +1802,11 @@ class Window(QWidget):
         if "download" in self.rows:
             self.rows["download"].done()
             self.rows["download"].small_text("Build tools checked")
-        dlss = os.path.isfile(os.path.join(folder, "ngx", "nvngx_dlss.dll")) and os.path.isfile(os.path.join(core.ngx_sdk(), "LICENSE.txt"))
+        # (a folder built with DLSS keeps it: NVIDIA's license accepted, as the settings record it (DlssLicense, the WPF builder's
+        # too), or for one accepted before the record, the SDK's LICENSE.txt. The SDK's files alone were the record, and with them
+        # gone (deleted, a new builder folder) the update built without DLSS and its runtime went)
+        dlss = os.path.isfile(os.path.join(folder, "ngx", "nvngx_dlss.dll")) and (
+            bool(core.load_settings().get("DlssLicense")) or os.path.isfile(os.path.join(core.ngx_sdk(), "LICENSE.txt")))
         self.run(tools, ["--update", folder] + shader_args(not core.load_settings().get("PrepareLater"), self.compile_level),
                  keep_rows=True, dlss=dlss)
 
