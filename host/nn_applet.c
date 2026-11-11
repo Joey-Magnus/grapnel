@@ -3,6 +3,7 @@
    "Player". */
 #include "hos.h"
 #include "hos_paths.h"
+#include "hos_data.h"
 #include "hos_wide_size.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +17,8 @@ static int64_t boot_ns;
 HLE(_ZN2nn2oe10InitializeEv) { if (!boot_ns) boot_ns = hos_now_ns(); }
 HLE(_ZN2nn2oe17FinishStartupLogoEv) { hos_log("oe: startup logo finished"); }
 /* GetDesiredLanguage() -> settings::LanguageCode (char[8]) by value: the language the game shows. HOS_LANGUAGE, or language.txt
-   beside the exe: its first line that is not blank or a comment. The file is written on the first start, with the choices: the 16
+   in the data folder (host/hos_data.c), else the game folder's (the builder writes the build's language there): its first line
+   that is not blank or a comment. With neither, the data folder's is written on the first start, with the choices: the 16
    languages in romfs/Mals. After SkyboundTotk PR 16 by sardigital. */
 static const struct { const char *code, *name; } languages[] = {
     {"en-US", "English (US)"},       {"en-GB", "English (UK)"},       {"fr", "French (France)"},     {"fr-CA", "French (Canada)"},
@@ -33,11 +35,11 @@ static const char *desired_language(void) {
         snprintf(want, sizeof want, "%s", getenv("HOS_LANGUAGE"));
         from = "HOS_LANGUAGE";
     } else {
-        char path[300] = "language.txt";
+        char path[MAX_PATH] = "language.txt", mine[MAX_PATH] = "language.txt";
 #if !defined(__EMSCRIPTEN__)   /* (linux too: host/posix) */
-        DWORD n = hos_game_path_a(path, 260);
-        while (n > 0 && path[n - 1] != 92 && path[n - 1] != 47) n--;
-        snprintf(path + n, sizeof path - n, "language.txt");
+        hos_data_path(mine, sizeof mine, "language.txt");
+        snprintf(path, sizeof path, "%s", mine);
+        if (GetFileAttributesA(mine) == INVALID_FILE_ATTRIBUTES) hos_game_file(path, sizeof path, "language.txt");
 #endif
         FILE *f = fopen(path, "r");
         if (f) {
@@ -64,7 +66,7 @@ static const char *desired_language(void) {
                 break;
             }
             fclose(f);
-        } else if ((f = fopen(path, "w")) != NULL) {
+        } else if ((f = fopen(mine, "w")) != NULL) {
             fputs("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\nen-US\n\n", f);
             for (size_t i = 0; i < sizeof languages / sizeof *languages; i++) fprintf(f, "# %-8s %s\n", languages[i].code, languages[i].name);
             fclose(f);
@@ -88,14 +90,11 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
    (MKW docked composes 3840 x 2160) */
 int hos_ini_option(const char *key, int otherwise);
 #define ini_option hos_ini_option
-/* (hookshot) An option's text in hookshot_options.ini, the game folder's (the Insert menu's choices, gpu/vk/vk_menu.cpp), the last
+/* (hookshot) An option's text in hookshot_options.ini, the data folder's (the Insert menu's choices, gpu/vk/vk_menu.cpp), the last
    line that sets it, its line end cut: whether there was one */
 static int ini_text(const char *key, char *out, size_t size) {
     char path[MAX_PATH];
-    const DWORD n = hos_game_path_a(path, MAX_PATH);
-    char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
-    if (!slash || !size) return 0;
-    snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+    if (!size || !hos_data_path(path, sizeof path, "hookshot_options.ini")) return 0;
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     char line[80];

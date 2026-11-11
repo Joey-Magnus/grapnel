@@ -18,6 +18,7 @@ def main():
     play = next(node for node in ast.parse(path.read_text(encoding="utf-8")).body
                 if isinstance(node, ast.FunctionDef) and node.name == "play")
     processes = []
+    data_home_box = [""]   # ($XDG_DATA_HOME for the game: set once the temporary folder is made)
 
     def launch(command, **options):
         assert options["start_new_session"]
@@ -25,12 +26,15 @@ def main():
 
     namespace = dict(HERE=str(BUILDER), os=os,
                      linux_update=SimpleNamespace(game_exe=lambda folder: str(Path(folder) / "hookshot")),
-                     make_game=SimpleNamespace(game_env=lambda: dict(os.environ)),
+                     make_game=SimpleNamespace(game_env=lambda: dict(os.environ, XDG_DATA_HOME=data_home_box[0])),
                      subprocess=SimpleNamespace(Popen=launch, DEVNULL=subprocess.DEVNULL))
     exec(compile(ast.Module(body=[play], type_ignores=[]), str(path), "exec"), namespace)
 
     with tempfile.TemporaryDirectory(prefix="hookshot-play-") as directory:
-        folder = Path(directory)
+        folder = Path(directory) / "game"
+        folder.mkdir()
+        data_dir = Path(directory) / "xdg" / "hookshot"   # (the game's data folder: the log goes there, as the game's own does)
+        data_home_box[0] = str(data_dir.parent)
         game = folder / "hookshot"
         game.write_text(
             '#!/bin/sh\n'
@@ -44,11 +48,12 @@ def main():
             namespace["play"](str(folder))
         for process in processes:
             assert process.wait(timeout=10) == 0
-        log = folder / "hookshot_startup.log"
+        log = data_dir / "hookshot_startup.log"
+        assert not (folder / "hookshot_startup.log").exists()
         data = log.read_bytes()
         assert data == b"stderr sentinel\n" + bytes(65536 - len(b"stderr sentinel\n")) + b"\nHookshot exited with status 73\n"
         assert (folder / "completed").is_file() and log.stat().st_mode & 0o777 == 0o600
-        assert not list(folder.glob(".hookshot-startup.*"))
+        assert not list(data_dir.glob(".hookshot-startup.*"))
 
         # A non-writable destination must not prevent the game from running.
         log.unlink()
@@ -57,7 +62,7 @@ def main():
         namespace["play"](str(folder))
         processes[-1].wait(timeout=10)
         assert (folder / "completed").is_file() and not list(log.iterdir())
-        assert not list(folder.glob(".hookshot-startup.*"))
+        assert not list(folder.glob(".hookshot-startup.*")) and not list(data_dir.glob(".hookshot-startup.*"))
     print("PASS: detached Play, bounded stderr, exit status, concurrent launches and publication failure")
 
 

@@ -26,7 +26,7 @@ Only the folder they are in differs.
 
 | Program | Linux | Windows | How sure |
 |---|---|---|---|
-| Hookshot | `~/.local/share/hookshot/save/<user id>/` | `<game folder>\user\save\<user id>\` | Hookshot's source; Linux tested |
+| Hookshot | `~/.local/share/hookshot/save/<user id>/` | `%LOCALAPPDATA%\Hookshot\save\<user id>\` (builds before the data folder: `<game folder>\user\save\<user id>\`, moved at the first start of a newer one) | Hookshot's source (`host/hos_data.c`); Linux tested |
 | [Lichii](https://github.com/zortos293/Lichii) | `~/.local/share/eden/` + Eden's save path below | `%APPDATA%\eden\` + Eden's save path | Lichii's source; Linux tested, Windows not |
 | [Frizti (Fritchii)](https://github.com/Frizti/Lichii), a Lichii fork | (Windows only) | `%APPDATA%\eden\` + Eden's save path | its source (`fritchii-v5.5`); not tried |
 | [Orchid](https://github.com/MythosOfs/Orchid) | `~/.local/share/eden/` + Eden's save path | `%APPDATA%\eden\` + Eden's save path | its source; not tried |
@@ -71,7 +71,8 @@ python -I scripts/oot_saves.py export --to ~/Lichii/user           # Hookshot ->
 The names are `lichii`, `frizti` (or `fritchii`), `orchid`, `pokedinner`, `eden`, `eglantine` and `nx2navi`.
 `to-lichii` and `to-hookshot` still work: they are `export lichii` and `import lichii`.
 
-On Windows Hookshot's folder is your game folder, which the script cannot guess, so name it:
+The script finds Hookshot's data folder by itself (`%LOCALAPPDATA%\Hookshot` on Windows). A game folder from a build
+from before the data folder keeps its saves in its `user` folder: name that game folder:
 
 ```powershell
 python -I scripts\oot_saves.py import lichii --hookshot "C:\Games\Hookshot"
@@ -84,7 +85,7 @@ python -I scripts\oot_saves.py export nx2navi --hookshot "C:\Games\Hookshot"
 | `--keep-settings` | Leaves the target's `option.sav` alone, so each program keeps its own settings |
 | `--profile <id>` | The emulator's profile to use. Needed when more than one profile has saves: the script lists them and stops rather than pick one |
 | `--from <folder>`, `--to <folder>` | The emulator's side: the save folder itself, or a folder above it to search (a data folder, a portable `user` folder, NX2navi's game folder). With a name, it replaces where that emulator is looked for; without one, any folder works |
-| `--hookshot <folder>` | Hookshot's data folder (Windows: the game folder), or its `save\<user id>` folder |
+| `--hookshot <folder>` | Hookshot's data folder (or an older build's game folder), or its `save\<user id>` folder |
 | `--backup-dir <folder>` | Where the backup goes, outside the target save folder |
 | `--force` | Copies even if a game seems to be running, or NX2navi has a save waiting |
 

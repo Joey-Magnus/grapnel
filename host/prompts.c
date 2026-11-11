@@ -1,6 +1,7 @@
 /* (hookshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf,
-   every icon in a text: dialogue, the control hints, menus) served from prompts/<face>/External.bfotf in the game folder,
-   which nx2/prompt_assets.py draws per controller face at build time, with each Switch button's icon pointed at the icon of
+   every icon in a text: dialogue, the control hints, menus) made from prompts/<face>/External.bfotf in the game folder,
+   which nx2/prompt_assets.py draws per controller face at build time, and served from the data folder's prompts/ (what this
+   player's controls make belongs to this PC: host/hos_data.c), with each Switch button's icon pointed at the icon of
    the pad input bound to it (host/nn_hid.c's controls, the menu's Layout preset and Controls page). So the icons say which
    button to press on this pad, custom controls too.
 
@@ -14,6 +15,7 @@
    as a zstd frame of raw blocks (the file name says .zs; the game's decoder takes a frame made without its dictionary). */
 #include "hos.h"
 #include "hos_paths.h"
+#include "hos_data.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +40,14 @@ static const char *const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", 
 static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045,
                                                0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063, 0xE061};
 
+/* the data folder's prompts/, made, with its separator: what this player's face and controls make goes there */
+static int made_dir(char *out, size_t cap) {
+    if (!hos_data_path(out, cap, "prompts")) return 0;
+    CreateDirectoryA(out, NULL);
+    const size_t n = strlen(out);
+    return n + 1 < cap && (out[n] = '/', out[n + 1] = 0, 1);
+}
+
 static int game_dir(char *out, size_t cap) {   /* the game folder, with its separator */
     char path[MAX_PATH];
     const DWORD len = hos_game_path_a(path, MAX_PATH);
@@ -58,11 +68,10 @@ static int contains(const char *text, const char *word) {   /* (any case) */
 }
 
 /* HOS_PROMPT_* (faces[]) */
-static int choose_face(const char *dir) {
+static int choose_face(void) {
     char path[MAX_PATH], line[80];
     int choice = 0;
-    snprintf(path, sizeof path, "%shookshot_options.ini", dir);
-    FILE *f = fopen(path, "r");
+    FILE *f = hos_data_path(path, sizeof path, "hookshot_options.ini") ? fopen(path, "r") : NULL;
     if (f) {
         while (fgets(line, sizeof line, f))
             if (!strncmp(line, "button_prompts=", 15)) choice = atoi(line + 15);
@@ -224,7 +233,7 @@ static int setup(char *dir, size_t cap, int *face) {
             snprintf(path, sizeof path, "%sprompts", d);
             ok = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
         }
-        if (ok) f = choose_face(d);
+        if (ok) f = choose_face();
         InterlockedExchange(&setup_state, ok ? 2 : 3);
     }
     while (setup_state == 1) Sleep(1);
@@ -341,10 +350,11 @@ static int build_textures(char *out, size_t cap) {
             at += 8 + len;
         }
     }
-    snprintf(out, cap, "%sprompts/Common.bntx.zs", dir);
+    char keypath[MAX_PATH], made[MAX_PATH];
+    if (!made_dir(made, sizeof made)) made[0] = 0;
+    snprintf(out, cap, "%sCommon.bntx.zs", made);
     snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
-    char keypath[MAX_PATH];
-    snprintf(keypath, sizeof keypath, "%sprompts/Common.key", dir);
+    snprintf(keypath, sizeof keypath, "%sCommon.key", made);
     const int ok = write_patched(path, out, keypath, h, runs, nruns);
     hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
             ok ? "" : ": could not be written");
@@ -451,10 +461,11 @@ static int build_layouts(char *out, size_t cap) {
     }
     int ok = 0;
     if (nruns) {
-        char keypath[MAX_PATH];
-        snprintf(out, cap, "%sprompts/Common.blarc.zs", dir);
+        char keypath[MAX_PATH], made[MAX_PATH];
+        if (!made_dir(made, sizeof made)) made[0] = 0;
+        snprintf(out, cap, "%sCommon.blarc.zs", made);
         snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
-        snprintf(keypath, sizeof keypath, "%sprompts/Common.blarc.key", dir);
+        snprintf(keypath, sizeof keypath, "%sCommon.blarc.key", made);
         ok = write_patched(path, out, keypath, h, runs, nruns);
         hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d, the ocarina hint %s%s", place[0], place[1], place[2],
                 place[3], xs ? "spread" : "as is", ok ? "" : ": could not be written");
@@ -488,7 +499,9 @@ static int build(char *out, size_t cap) {
     for (long i = 8; i < n; i += 4) wr32le(b + i, rd32le(b + i) ^ key);
     const int bound = bind_font(b + 8, (size_t)n - 8);
     for (long i = 8; i < n; i += 4) wr32le(b + i, rd32le(b + i) ^ key);
-    snprintf(out, cap, "%sprompts/External.bfotf.zs", dir);
+    char made[MAX_PATH];
+    if (!made_dir(made, sizeof made)) made[0] = 0;
+    snprintf(out, cap, "%sExternal.bfotf.zs", made);
     const int ok = write_zstd_raw(out, b, (size_t)n);
     free(b);
     hos_log("prompts: %s icons, %d buttons on this pad's controls%s", faces[face], bound, ok ? "" : ": could not be written");

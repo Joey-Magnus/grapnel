@@ -40,6 +40,10 @@ Run everything with `python -I` from this folder.
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
 
+The game keeps what belongs to the PC and the player (saves, settings, the log, and the shader and pipeline caches in
+`shaders/`) in its data folder, chosen once at the start by `host/hos_data.c` (`hos_data_dir`, `hos_data_path`; the renderer
+gets it as `MkwVkHost.data_dir`, `gpu/vk/vk_paths.h` `data_path`/`shader_path`). The game folder keeps what the build made.
+
 The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the README's
 [Running the game from the command line](../readme.md#running-the-game-from-the-command-line).
 
@@ -56,7 +60,9 @@ is not a focus override.
 
 ## Switches for testing and debugging
 
-The running game reads its switches from the environment or from `hookshot_env.txt` beside `image.bin` (one
+The running game reads its switches from the environment or from `hookshot_env.txt` in its data folder (`host/hos_data.c`:
+`--user`'s, `user` in the current folder for a run given its `image.bin`, else `%LOCALAPPDATA%\Hookshot` or
+`~/.local/share/hookshot`), else the one beside the game (one
 `NAME=VALUE` a line, `#` for notes; `HOS_ENV_FILE=<path>` reads that file instead). The build reads its own from the
 environment. The README has the ones players are asked to try (`RX_VK_ASTC_RGBA8`, `RX_VK_LOW_SPEC`,
 `RX_VK_MOVIE_UPSCALE`, `RX_VK_SKIP_CODE`, `HOS_OOT_CHEATS`). There are several hundred more, most of them one-off

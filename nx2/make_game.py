@@ -989,22 +989,15 @@ def drop_stale_objects(work):
 
 def seed_pipelines(out):
     """The pipelines recorded on the development PC (hookshot_pipelines_seed.bin in the tools: program keys and draw states, no game
-    code), as the game folder's list, so its first start builds them before the title, as TotK Recomp's shipped shader list does,
-    instead of compiling each when it is first drawn (the stutter of a first visit). Each release ships the list its own build
-    made: the file's first 8 bytes are that build's stamp, and a list the folder has from the same build is kept (it grows as
-    the player plays)"""
+    code), as the game folder's hookshot_pipelines_shipped.bin, so its first start builds them before the title, as TotK Recomp's
+    shipped shader list does, instead of compiling each when it is first drawn (the stutter of a first visit). Each release ships
+    the list its own build made: the file's first 8 bytes are that build's stamp. The game takes it as the PC's notes (the data
+    folder's shaders/hookshot_pipelines.bin, gpu/vk/vk_draw.cpp notes_adopt_shipped) when those are of another build; notes of the
+    same build are kept (they grow as the player plays)"""
     seed = os.path.join(ROOT, "hookshot_pipelines_seed.bin")
-    dst = os.path.join(out, "hookshot_pipelines.bin")
+    dst = os.path.join(out, "hookshot_pipelines_shipped.bin")
     if not os.path.isfile(seed):
         return
-    with open(seed, "rb") as f:
-        stamp = f.read(8)
-    try:
-        with open(dst, "rb") as f:
-            if f.read(8) == stamp:
-                return
-    except OSError:
-        pass
     shutil.copyfile(seed, dst)
     print("the shipped pipeline list: %d KB, built before the first title" % (os.path.getsize(seed) >> 10), flush=True)
 

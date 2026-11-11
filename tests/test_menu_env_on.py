@@ -1,6 +1,6 @@
 """A Debug row read before the menu loads (gpu/vk/vk_draw.cpp menu_env_on): Descriptor reuse on by default from options_version 4.
 
-The real menu_env_on from gpu/vk/vk_draw.cpp is compiled over a stub game path (the fixture's folder); each case writes a
+The real menu_env_on from gpu/vk/vk_draw.cpp is compiled over a stub data folder (the fixture's folder); each case writes a
 hookshot_options.ini (or none) and checks the answer for descriptor_reuse (on by default since options_version 4: an older
 file wrote its 0 as the off default it then was) and sampler_cache (off by default, no version rule):
 
@@ -36,9 +36,7 @@ FIXTURE = r"""
 #include <cstdlib>
 #include <cstring>
 #include <string>
-using DWORD = unsigned long;
-constexpr int MAX_PATH = 260;
-static DWORD game_module_path(char *path, DWORD size) { return snprintf(path, size, "./hookshot.exe"); }
+static std::string data_path(const char *name) { return std::string("./") + name; }   // (vk_paths.h: the data folder)
 BODY
 int main(int argc, char **argv) {
     if (argc != 3) return 2;

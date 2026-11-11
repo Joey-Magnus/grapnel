@@ -151,15 +151,14 @@ update takes about as long as the first build. Your saves and settings are kept.
 <details>
 <summary>What an update keeps and replaces, and updating from the command line</summary>
 
-To be safe, copy your saves somewhere first: the `user` folder in the game folder on Windows, or
-`~/.local/share/hookshot` on Linux.
+To be safe, copy your saves somewhere first: the `save` folder in the game's data folder, `%LOCALAPPDATA%\Hookshot` on
+Windows or `~/.local/share/hookshot` on Linux (see [Where the files go](#where-the-files-go)).
 
 | Kept | Replaced |
 |---|---|
-| Your saves (`user`, or `~/.local/share/hookshot` on Linux) | The game in `bin` and its files |
-| `hookshot_options.ini`, the in-game menu's choices and your controls | `image.bin` and the shader list |
-| `hookshot_env.txt` | `language.txt`, written again with the game's language |
-| `mods` | |
+| The data folder: your saves, `hookshot_options.ini` (the in-game menu's choices and your controls), `hookshot_env.txt`, the log and the shader caches | The game in `bin` and its files |
+| `mods` | `image.bin` and the shader list |
+| | `language.txt` in the game folder, written again with the game's language |
 
 The game files the first build read are kept in the game folder, so an update does not need your `.nup` again.
 
@@ -190,19 +189,26 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
   of them are needed to play. To keep them, so that an update compiles only what changed, set the environment variable
   `HOOKSHOT_KEEP_BUILD_FILES=1` for the builder; on Windows, **Free up space** on the "Your game is ready" page then
   deletes them when you want. The build files folder can be moved before a build (**Change**, **Default**).
-- Saves: the `user` folder in the game folder on Windows, `~/.local/share/hookshot` on Linux (a `user` folder from an
-  earlier Linux build is moved there once). `--user <folder>` puts them somewhere else ([command line
-  arguments](#running-the-game-from-the-command-line)).
+- The game's data folder holds what belongs to your PC and to you: `%LOCALAPPDATA%\Hookshot` on Windows,
+  `~/.local/share/hookshot` on Linux (`$XDG_DATA_HOME/hookshot` when that is set). In it are your saves (`save`), the
+  settings (`hookshot_options.ini`, `hookshot_env.txt`, and `language.txt` when you change the language there), the log
+  (`hookshot_log.txt`) and, in `shaders`, the shader and pipeline caches (several GB). The game folder keeps only what
+  the build made, so building it again or deleting it loses none of these. The first start of a build from before
+  moves them out of the game folder (its `user` folder too) and leaves `files-moved.txt` there saying where they went.
+  `--user <folder>` puts them all somewhere else ([command line arguments](#running-the-game-from-the-command-line)).
+  The same folder has `ngx`, where DLSS's runtime can be put (see NVIDIA DLSS below), and on Linux the builder's own
+  `builder` folder, with its installed updates. `--user` does not move those.
   To carry on with a save from an emulator (Lichii, Eglantine, Orchid, ...) or NX2navi, or to take yours there, see
   [using a save from an emulator](docs/saves.md).
-- To uninstall, delete the game folder, the builder's folder and the shortcuts.
+- To uninstall, delete the game folder, the builder's folder and the shortcuts, and the data folder too to remove your
+  saves, settings and caches (on Linux that also removes the builder's installed updates, in its `builder` folder).
 
 ### If something goes wrong
 
 | Problem | What to do |
 |---|---|
-| Where is the log? | `hookshot_log.txt` in the game folder holds the last run. The four runs before are `hookshot_log.1.txt` (the last) to `.4.txt`. Started from a terminal, the game prints there instead. Every 600 frames it has a `vk: status:` line: the video memory in use of what the driver allows, and DLSS's details while it draws; `vk: over the driver's video-memory allowance` says when the game passed it |
-| Linux Builder Play closed before the game log appeared | After the game exits, check `hookshot_startup.log` in the game folder for up to 64 KiB of startup stderr and its exit status. |
+| Where is the log? | `hookshot_log.txt` in the data folder (`%LOCALAPPDATA%\Hookshot` on Windows, `~/.local/share/hookshot` on Linux) holds the last run. The four runs before are `hookshot_log.1.txt` (the last) to `.4.txt`. Started from a terminal, the game prints there instead. Every 600 frames it has a `vk: status:` line: the video memory in use of what the driver allows, and DLSS's details while it draws; `vk: over the driver's video-memory allowance` says when the game passed it |
+| Linux Builder Play closed before the game log appeared | After the game exits, check `hookshot_startup.log` in the data folder (`~/.local/share/hookshot`) for up to 64 KiB of startup stderr and its exit status. |
 | "Hookshot supports build e0f3ccfa" or "This version isn't supported" | Check that you chose the right game with its update installed |
 | The game opens and closes, or the log says "device lost" | Update your graphics driver. On AMD cards there are known crashes ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
@@ -212,7 +218,7 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
 | Windows, NVIDIA: stutter every start in places you have seen, after the shaders were prepared | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines into it). In the NVIDIA Control Panel, Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself |
-| The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
+| The game is in the wrong language | Change the code in `language.txt` in the game folder (a `language.txt` in the data folder wins over it). The file lists them all |
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
 you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files.
@@ -238,7 +244,8 @@ has more switches.
 
 For these AMD texture artifacts, try keeping decoded ASTC textures as RGBA8 instead of re-encoding them to BC3
 ([#57](https://github.com/NotRexed/Hookshot/issues/57), [#1006](https://github.com/NotRexed/Hookshot/issues/1006)).
-Close the game, then create or edit `hookshot_env.txt` in the built game folder, beside `image.bin`, and add:
+Close the game, then create or edit `hookshot_env.txt` in the game's data folder (`%LOCALAPPDATA%\Hookshot` on Windows,
+`~/.local/share/hookshot` on Linux), and add:
 
 ```ini
 RX_VK_ASTC_RGBA8=1
@@ -263,7 +270,7 @@ Controls, the Teleport list, the inventory), and B goes back or closes the menu:
 on (with the Nintendo layout, A is the right face button). The mouse is free while the menu is open: click a tab, click a row's name to choose it (its
 value stays), click the left or right half of a value to lower or raise it, drag a slider, turn the wheel to scroll the rows (it never changes a value), and right-click to go back. The
 button prompts at the bottom show the keys or the controller's buttons, whichever you used last. Your choices are saved
-in `hookshot_options.ini` in the game folder.
+in `hookshot_options.ini` in the game's [data folder](#where-the-files-go).
 
 The menu, the FPS counter and the start-up screen are drawn in the style of the game's own menus. They use the game's
 own menu font, read into memory from your game files (the romfs folder the game runs from) the first time one of them is
@@ -607,7 +614,7 @@ use them.
 |---|---|
 | `image.bin` | The game image to run. Without it the game uses the `image.bin`, `romfs` and `user` in its folder |
 | `--romfs <folder>` | The extracted RomFS folder |
-| `--user <folder>` | Where the game keeps per-user data: saves, caches and temp files (and `mouse_sens.txt` when `HOS_MOUSE_SENS` is set; the menu keeps the sensitivity otherwise). Default: `user` in the game folder on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
+| `--user <folder>` | The data folder: where the game keeps what belongs to this PC and player: saves, settings (`hookshot_options.ini`, `hookshot_env.txt`), the log, the shader caches (`shaders`) and temp files (and `mouse_sens.txt` when `HOS_MOUSE_SENS` is set; the menu keeps the sensitivity otherwise). Default: `%LOCALAPPDATA%\Hookshot` on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
 | `--trace` | Log every Horizon OS call (the same as `HOS_TRACE=1`) |
 | `--prepare-shaders` | Prepare the shaders as the first start does, then exit without starting the game (no build step runs it) |
 
@@ -662,9 +669,12 @@ license. Never share a game folder built with them, and do not post builds made 
   sure no other folder has a newer one). Never copy NGX's core, `_nvngx.dll`, beside the game: it comes with NVIDIA's
   driver.
 - **Linux, the Hookshot Builder (the AppImage):** the same tick as on Windows, and nothing else to do: no variable is
-  passed to the AppImage and no file is copied by hand. The build downloads the SDK into
-  `$XDG_DATA_HOME/hookshot/builder/ngx-sdk` (`~/.local/share/hookshot/builder/ngx-sdk`), builds the game with it and
-  puts DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, in the game folder's `ngx` folder.
+  passed to the AppImage and no file is copied by hand. The build downloads the SDK into the builder's cache folder,
+  `$XDG_CACHE_HOME/hookshot-builder/ngx-sdk` (`~/.cache/hookshot-builder/ngx-sdk`), builds the game with it and puts
+  DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, in the game folder's `ngx` folder. The builder's settings
+  (`~/.config/hookshot/builder.ini`) remember that you accepted NVIDIA's license, so an update keeps DLSS even after the
+  cache was emptied: it downloads the SDK again. (Builders before kept the SDK in `~/.local/share/hookshot/builder`; it
+  is moved to the cache the first time a newer one starts.)
 - **Linux, a build from source:** `scripts/linux/ngx-sdk.sh <sdk folder>` (it runs `scripts/ngx_sdk.py --platform
   linux`) asks you to accept NVIDIA's license and fetches `libnvsdk_ngx.a` for the build and
   `libnvidia-ngx-dlss.so.<version>`, DLSS's runtime. Then run the build with `HOOKSHOT_NGX_SDK=<sdk folder>` set:
@@ -740,8 +750,9 @@ never an older FSR in its place), and why not when it did not start. Tested on a
 <details>
 <summary>Switches for testing (hookshot_env.txt)</summary>
 
-Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
-line, on Windows and Linux. The running game reads it, not the builder. A test run can name another file with
+Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game's
+[data folder](#where-the-files-go), one `NAME=VALUE` a line, on Windows and Linux (one beside the game is read when the
+data folder has none). The running game reads it, not the builder. A test run can name another file with
 `HOS_ENV_FILE=<path>`; the game then reads that one instead and leaves `hookshot_env.txt` alone.
 `hookshot_env.txt` sets only the game's own switches (names that start with `RX_`, `HOS_`, `HOOKSHOT_`, `EDEN_`,
 `NVN_`, `TOTK_` or `SDL_`, but not SDL's library names such as `SDL_VULKAN_LIBRARY`), and no value that is a path except
@@ -751,7 +762,7 @@ or folder (`HOS_AUDIO_DUMP`, `RX_VK_SHOTS` and the like) or press buttons on a t
 in a file named by `HOS_ENV_FILE`.
 
 To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or add `HOS_OOT_CHEATS=1` to
-`hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
+`hookshot_env.txt` in the data folder). The tools then show below it on the same tab. The tab's Developer section,
 always shown, has the Descriptor reuse and Sampler cache rows.
 
 `RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own

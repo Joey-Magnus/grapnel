@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 15
+#define MKWVK_API_VERSION 16
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -152,6 +152,9 @@ typedef struct MkwVkHost {
     void (*slept_ns)(int64_t out[2]);
     /* (version 15, hookshot) whether the host times those sleeps: 1 while the Breakdown shows, 0 (the default) costs nothing */
     void (*fps_timing)(int on);
+    /* (version 16, hookshot) the data folder (host/hos_data.c): where the renderer keeps what belongs to this PC and player, the
+       settings (hookshot_options.ini) and, in its shaders/, the shader and pipeline caches. UTF-8, absolute, no separator at the end */
+    const char *(*data_dir)(void);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */

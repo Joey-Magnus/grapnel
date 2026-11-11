@@ -1054,7 +1054,7 @@ void mesh_nocull(Shader::IR::Program& program, uint64_t code_key) {
              made ? "off, every meshlet drawn" : "pattern not found, left as it is");
 }
 
-// ---- (hookshot) The program cache, hookshot_programs.bin beside the executable: what translation made, by the key of the
+// ---- (hookshot) The program cache, hookshot_programs.bin in the data folder's shaders/ (vk_paths.h shader_path): what translation made, by the key of the
 // stages' code and inputs. A program met for the first time stopped the frame for its translation, 9 s of it each run,
 // the long stutters when walking somewhere (replay workers in jobs_wait for up to 150 ms). The pipelines themselves were
 // already kept (mkw_vk_pipelines.bin). Written as made; good for this translator (HOOKSHOT_SHADER_STAMP) and these switches only
@@ -1157,10 +1157,7 @@ void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
         if (getenv("RX_VK_NO_PROGRAM_CACHE")) return;
-        char exe[MAX_PATH];
-        const DWORD n = game_module_path(exe, MAX_PATH);
-        std::string path(exe, n);
-        path = path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_programs.bin";
+        const std::string path = shader_path("hookshot_programs.bin");   // (the data folder's shaders/: vk_paths.h)
         // (one Hookshot at a time on a cache: a second one, started while the first wrote, took the record being written for one
         // cut short and cut the file there, under the first, whose list of records then named bytes written over since. Held
         // until the process ends)

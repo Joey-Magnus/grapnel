@@ -1166,12 +1166,7 @@ bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &
 bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
-std::string ini_path() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_options.ini";
-}
+std::string ini_path() { return data_path("hookshot_options.ini"); }   // (the data folder's: vk_paths.h)
 const char* ini_key(const Row& r) {
     if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start)
     if (r.value == &opts.vsync) return "vsync";

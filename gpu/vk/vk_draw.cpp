@@ -5,7 +5,7 @@
 // and storage images as views of vk_texture.cpp's images, texel buffers), passes kept open while the targets stay,
 // and the draws themselves.
 //
-// Pipelines persist in a VkPipelineCache next to the executable (mkw_vk_pipelines.bin).
+// Pipelines persist in a VkPipelineCache in the data folder's shaders/ (mkw_vk_pipelines.bin).
 #include <algorithm>
 #include <filesystem>
 #include <iterator>
@@ -903,11 +903,8 @@ VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline
 bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init)
 void pcache_init() {
     if (pcache) return;
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    pcache_dir = dir = dir.substr(0, dir.find_last_of("\\/") + 1);
-    pcache_path = dir + "mkw_vk_pipelines.bin";
+    pcache_dir = shader_path("");   // (the data folder's shaders/, with its separator: vk_paths.h)
+    pcache_path = pcache_dir + "mkw_vk_pipelines.bin";
     // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
     // starts empty and is not saved; the driver's own shader cache is all there is)
     static const bool off = getenv("RX_VK_PCACHE_LOAD") && atoi(getenv("RX_VK_PCACHE_LOAD")) == 0;
@@ -1149,11 +1146,44 @@ uint64_t program_wm_sig(const Program& p) {
 std::mutex note_mu;
 FILE* note_file = nullptr;
 std::unordered_set<uint64_t> noted;   // (a pipeline once in the file, however many runs meet it)
+/// (once, at the first use of the notes) The pipelines the build shipped (hookshot_pipelines_shipped.bin in the game folder,
+/// nx2/make_game.py seed_pipelines: the list recorded on the development PC, this build's stamp first) become this PC's notes
+/// when those are missing or of another build. Notes of this build stay: they hold what play here added
+void notes_adopt_shipped(const std::string& path) {
+    const uint64_t stamp = program_cache_stamp();
+    auto head = [](const std::string& p, uint64_t h[2]) {
+        h[0] = h[1] = 0;
+        if (FILE* f = fopen(p.c_str(), "rb")) {
+            if (fread(h, 8, 2, f) != 2) h[0] = h[1] = 0;
+            fclose(f);
+        }
+    };
+    uint64_t have[2], ship[2];
+    head(path, have);
+    if (have[0] == stamp && have[1] == sizeof(PipeNote)) return;
+    const std::string shipped = game_file("hookshot_pipelines_shipped.bin");
+    head(shipped, ship);
+    if (ship[0] != stamp || ship[1] != sizeof(PipeNote)) return;
+    FILE* in = fopen(shipped.c_str(), "rb");
+    FILE* out = in ? fopen((path + ".tmp").c_str(), "wb") : nullptr;
+    bool ok = in && out;
+    std::vector<char> buf(1 << 16);
+    for (size_t n; ok && (n = fread(buf.data(), 1, buf.size(), in)) > 0;) ok = fwrite(buf.data(), 1, n, out) == n;
+    ok = ok && !ferror(in);
+    if (in) fclose(in);
+    if (out) ok = fclose(out) == 0 && ok;
+    if (ok && MoveFileExA((path + ".tmp").c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
+        logf("vk: the shipped pipeline notes (%s) taken as this PC's", shipped.c_str());
+    else
+        DeleteFileA((path + ".tmp").c_str());
+}
 std::string pipe_notes_path() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_pipelines.bin";
+    static const std::string path = [] {
+        std::string p = shader_path("hookshot_pipelines.bin");
+        notes_adopt_shipped(p);
+        return p;
+    }();
+    return path;
 }
 /// The notes of this build (hookshot_pipelines.bin), each pipeline once
 /// (hookshot) Targets a pipeline can be made with: at most 8 colour targets, a sample count Vulkan has, a topology it has.
@@ -1264,7 +1294,7 @@ void pipeline_note(uint64_t key, const Program& p, const NvnState& s, const Targ
     if (note_file && noted.insert(key).second) fwrite(rec.get(), sizeof(PipeNote), 1, note_file), fflush(note_file);
 }
 
-// ---- (hookshot) The compute programs play dispatches, each key once, in hookshot_computes.bin beside the executable. The precompile
+// ---- (hookshot) The compute programs play dispatches, each key once, in hookshot_computes.bin in the data folder's shaders/. The precompile
 // made every kept compute program ready and kept a pipeline for each: 10,328 of them, a few GB of RAM that grew a 16 GB PC out of memory
 // ("memory busted", out-of-memory crashes, Discord and issues 1228/1245, 2026-11-09), where play dispatches a few hundred. With the list
 // only those are kept ready; the rest stay on disk and are made when first dispatched, from the driver's and our pipeline cache (the
@@ -1274,12 +1304,7 @@ constexpr char kComputesMagic[8] = {'H', 'K', 'C', 'O', 'M', 'P', '1', 0};
 std::mutex compute_note_mu;
 FILE* compute_note_file = nullptr;
 std::unordered_set<uint64_t> computes_noted;
-std::string computes_path() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_computes.bin";
-}
+std::string computes_path() { return shader_path("hookshot_computes.bin"); }
 std::unordered_set<uint64_t> computes_read() {
     std::unordered_set<uint64_t> keys;
     if (FILE* f = fopen(computes_path().c_str(), "rb")) {
@@ -1305,7 +1330,7 @@ void compute_note(uint64_t key) {
 
 // ---- (hookshot) The pipeline state list: each pipeline the game asks for, by what it is made of and nothing of the game's code
 // (its stages' code keys, the vertex input and colour output types its program was translated for, the draw state baked into it), in
-// hookshot_pipeline_states.bin beside the executable. Unlike hookshot_pipelines.bin it is good for any build of the back end: when
+// hookshot_pipeline_states.bin in the data folder's shaders/. Unlike hookshot_pipelines.bin it is good for any build of the back end: when
 // the shaders are prepared for a new one (prepare_run), every pipeline in it is noted for the precompile, its program translated
 // first when the seed's are not that one, so that a new release, or a new install with a list from someone else's play
 // (hookshot_pipeline_states_shipped.bin, nx2/make_game.py: merged from assets/pipeline_states/), builds them before the game and not in
@@ -1357,11 +1382,10 @@ struct StateRec2 {
     uint32_t pad[2];
 };
 static_assert(sizeof(StateRec2) == 552 && std::is_trivially_copyable_v<StateRec2>, "the state list's record is a file format");
+/// A state list: the one this PC's play grows in the data folder's shaders/; the shipped one (..._shipped.bin), made by the
+/// build, in the game folder
 std::string state_list_path(const char* name) {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + name;
+    return strstr(name, "_shipped") ? game_file(name) : shader_path(name);
 }
 template <class R>
 uint64_t state_hash(const R& r) {
@@ -2725,16 +2749,13 @@ bool slow_desc_timing() {
 }
 
 // (hookshot) one switch read two ways, like the Robust buffers row of vk_main.cpp: the environment variable says it for test
-// runs (any value, 0 off); else the row's line in hookshot_options.ini beside the game; else off.
+// runs (any value, 0 off); else the row's line in hookshot_options.ini in the data folder; else off.
 /// (the row's value in hookshot_options.ini, read before the menu has loaded it; the environment's switch first. def: no
 /// file, no line, or a file older than options_version since (one whose line was only ever the old default, vk_menu.cpp
 /// load))
 bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = false, int since = 0) {
     if (const char* e = getenv(env_name)) return atoi(e) != 0;
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
-    std::string ini(exe, n);
-    ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
+    const std::string ini = data_path("hookshot_options.ini");   // (the data folder's: vk_paths.h)
     const size_t klen = strlen(ini_key_name);
     int v = -1, version = 0;
     if (FILE* f = fopen(ini.c_str(), "r")) {
@@ -7264,12 +7285,7 @@ std::atomic<bool> prepare_halt{false};
 }
 void prepare_stop() { prepare_halt.store(true); }
 bool prepare_stopped() { return prepare_halt.load(std::memory_order_relaxed); }
-std::string prepared_path() {
-    char exe[MAX_PATH];
-    const DWORD exe_n = game_module_path(exe, MAX_PATH);
-    std::string path(exe, exe_n);
-    return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepared.bin";
-}
+std::string prepared_path() { return shader_path("hookshot_prepared.bin"); }
 // (hookshot) What the last prepare here was made for, in hookshot_prepared.bin: the translator (program_cache_stamp), and since the
 // seed grows apart from it (4221050d: networks, the movie upscaler, the particle sets, 19 compute programs more) the seed it went
 // through (hookshot_shaders.bin), by a hash of its contents. By the translator alone, a folder prepared before such an update never
