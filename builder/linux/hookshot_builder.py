@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
 import linux_update  # noqa: E402  (the release check and the part download)
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
-import steam_shortcut  # noqa: E402  (Add to Steam)
 import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
@@ -922,21 +921,7 @@ class Builder(tk.Tk):
                    command=lambda: self.play_and_close(folder)).pack(side="right", padx=px(4))
         ttk.Button(f, text="Open the game folder", style="Link.TButton", cursor="hand2",
                    command=lambda: subprocess.Popen(["xdg-open", folder])).pack(pady=(px(22), 0))
-        if steam_shortcut.steam_roots():   # (Steam on this PC: the Steam Deck, Bazzite, a desktop with Steam)
-            ttk.Button(f, text="Add to Steam", style="Link.TButton", cursor="hand2",
-                       command=lambda: self.add_to_steam(folder)).pack(pady=(px(6), 0))
         self.lookup_latest()
-
-    def add_to_steam(self, folder):
-        """the game folder as a non-Steam game in every Steam account here (builder/linux/steam_shortcut.py)"""
-        try:
-            done = steam_shortcut.add(folder)
-        except (OSError, ValueError) as e:
-            messagebox.showerror("Add to Steam", str(e), parent=self)
-            return
-        what = "updated in" if all(w == "updated" for _, w in done) else "added to"
-        messagebox.showinfo("Add to Steam", "Hookshot was %s Steam's library (%d account%s). Start Steam: it is under Non-Steam."
-                            % (what, len(done), "" if len(done) == 1 else "s"), parent=self)
 
     def track_id(self):
         return next((k for k, v in TRACK_NAMES.items() if v == self.track.get()), "release")
@@ -1251,9 +1236,6 @@ class Builder(tk.Tk):
                        command=lambda: self.play_and_close(folder)).pack(side="right", padx=self.px(4))
             ttk.Button(self.buttons, text="Open folder", cursor="hand2",
                        command=lambda: subprocess.Popen(["xdg-open", folder])).pack(side="right", padx=self.px(4))
-            if steam_shortcut.steam_roots():
-                ttk.Button(self.buttons, text="Add to Steam", cursor="hand2",
-                           command=lambda: self.add_to_steam(folder)).pack(side="right", padx=self.px(4))
             self.heading.configure(text="Your game is ready")
             self.stage_label.configure(style="Go.Stage.TLabel")
             self.set_step(2)
