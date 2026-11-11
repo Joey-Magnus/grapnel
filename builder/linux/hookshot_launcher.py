@@ -534,6 +534,10 @@ class Launcher(object):
         target = tag or linux_update.update_target(app.latest, app.tools, app.switching())
         ahead = not self.built or not is_release(self.built) or not target or not is_release(target) or newer(target, self.built)
         name = version_name(target) if target and is_release(target) else target or "the newest version"
+        # (no version named, as the game's own update offer starts it, --update <folder>: the track's target may be older than
+        # the folder's, a newer release candidate's or nightly's (#2352). Asked first, as a row of an older release is)
+        if tag is None and not ahead and not self.asked(target):
+            return
         fetch = not fetched and not (app.tools and target == app.tools)
         work = Work(("Updating to " if ahead else "Switching to ") + name, update=True, fetch=fetch, shaders=bool(app.prepare.get()),
                     not_prepared=self.hb.make_game.NOT_PREPARED)
