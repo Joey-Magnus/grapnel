@@ -198,10 +198,10 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
   for this version and this graphics card), and `logs`, `hookshot_log.txt` and the runs before it. `cache` can be
   deleted at any time: the next start prepares the shaders again (minutes on some PCs). Each game folder keeps its own,
   so a release and the nightly side by side do not undo each other's.
-- The first start of a build from before moves its files to these places (the saves from its `user` folder too) and
-  leaves `files-moved.txt` in the game folder saying where they went. If the old `user` folder was copied but could not
-  be deleted whole (a file in use or read-only), what is left is renamed `user.moved`: delete it once the game shows your
-  saves.
+- Saves (a `user` folder), settings, caches and logs found loose in the game folder are moved to these places when the
+  game starts, and `files-moved.txt` in the game folder says where they went. If the `user` folder was copied but could
+  not be deleted whole (a file in use or read-only), what is left is renamed `user.moved`: delete it once the game shows
+  your saves.
   The same folder has `ngx`, where DLSS's runtime can be put (see NVIDIA DLSS below), and on Linux the builder's own
   `builder` folder, with its installed updates. `--user` does not move those.
   To carry on with a save from an emulator (Lichii, Eglantine, Orchid, ...) or NX2navi, or to take yours there, see
@@ -680,8 +680,7 @@ license. Never share a game folder built with them, and do not post builds made 
   `$XDG_CACHE_HOME/hookshot-builder/ngx-sdk` (`~/.cache/hookshot-builder/ngx-sdk`), builds the game with it and puts
   DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, in the game folder's `ngx` folder. The builder's settings
   (`~/.config/hookshot/builder.ini`) remember that you accepted NVIDIA's license, so an update keeps DLSS even after the
-  cache was emptied: it downloads the SDK again. (Builders before kept the SDK in `~/.local/share/hookshot/builder`; it
-  is moved to the cache the first time a newer one starts.)
+  cache was emptied: it downloads the SDK again.
 - **Linux, a build from source:** `scripts/linux/ngx-sdk.sh <sdk folder>` (it runs `scripts/ngx_sdk.py --platform
   linux`) asks you to accept NVIDIA's license and fetches `libnvsdk_ngx.a` for the build and
   `libnvidia-ngx-dlss.so.<version>`, DLSS's runtime. Then run the build with `HOOKSHOT_NGX_SDK=<sdk folder>` set:
