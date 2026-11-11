@@ -71,3 +71,31 @@ change: eight seconds, zero compiler failures, renderer linked. No gameplay test
 was launched. Build evidence: work/build-concurrency-final.log. The recorder
 interaction conclusions above are source/lock-order analysis, not a live race or
 Vulkan validation result; those acceptance checks remain required.
+
+## Integration fixture compatibility
+
+The parent integration suite at 47ec0f2e exposed six presentation fixture failures:
+one extracted submission lacked the new NativePresentSync declaration; two capture
+fixtures required the old literal call/gate; two geometry fixtures lacked the
+queued native-PQ snapshot argument; and the result-routing fixture assumed only
+one display submission. These were extraction contracts, not observed production
+failures. This follow-up changes tests only and does not require a renderer rebuild.
+
+The fixtures now retain the real sync declaration and capture submission statement.
+Capture validation covers direct, interpolated, native-worker and headless routes;
+pending-shot ownership covers both handoff states. Aspect/geometry tests explicitly
+check that queued SDR and PQ snapshots override the changing producer global in
+both directions. Result injection covers all ten WSI sites and six result values
+per site: non-success display and release submissions must stop before a reset
+fence wait or an unreleased slot can be reused. Other WSI result routing remains
+covered by the original assertions.
+
+All six requested tests passed on this revision with the bundled clang23 and
+Vulkan headers, run at nice 19 with at most two concurrent compilers:
+test_fsr_image_retirement (28 backend/case combinations), test_capture_dimensions
+(all dimension/window/headless cases and decoded PNG), test_capture_slot_ownership
+(both handoff states and immediate/delayed completion), test_present_aspect,
+test_present_device_loss (60 injections), and test_present_geometry_trace
+(logging unset, disabled and enabled). git diff --check passed. The existing
+integration failure log is ../renderer-redesign-integration-tests-20261111.log.
+No renderer build or game launch was needed for these fixture changes.
