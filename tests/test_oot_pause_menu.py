@@ -101,6 +101,11 @@ def main():
     check(pause_layout.edit_blarc(unknown) == (unknown, 0), "a layout that is not the one known was changed")
     check(pause_layout.edit_blarc(b"not an archive") == (b"not an archive", 0), "something that is not an archive was changed")
 
+    host = (ROOT / "host" / "oot_pause_menu.c").read_text(encoding="utf-8")
+    buttons = host[host.index("uint64_t hos_pausebtn_buttons("):]
+    check("GP(" not in buttons, "the pad's buttons read the game's memory raw (recomp_load* as the rest of the file)")
+    gone = host[host.index("void hos_pausebtn_gone("):host.index("uint64_t hos_pausebtn_buttons(")]
+    check("our_control = 0" in gone, "the page destroyed does not forget its button's control (read after it is freed)")
     compile_check(edited)
     print("PASS: the pause menu's Recomp options button: its edits all together or none, unknown layouts left alone")
 

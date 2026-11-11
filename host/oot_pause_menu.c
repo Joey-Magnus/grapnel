@@ -8,7 +8,9 @@
      boxes (the text and its shadow) as the game gives a box its message (f_80459520): the page's buttons take theirs from
      LayoutMsg/PlusMenu_00, which has none for a sixth.
    - Pressed: A while the cursor is on it (its state, noted at f_80ad5310) opens the Insert menu (F1, as the key opens it),
-     and the game does not see that press (hos_pausebtn_buttons, from host/nn_hid.c). */
+     and the game does not see that press (hos_pausebtn_buttons, from host/nn_hid.c).
+   - Gone: when the page is destroyed (f_80aa2ad0, the base of its destructor) the button is forgotten, so its control is
+     never read after it is freed. */
 #include "hos.h"
 #include <stdio.h>
 #include <string.h>
@@ -18,7 +20,9 @@ const char *hos_game_language(void);   /* nn_applet.c */
 
 static uint64_t mem;   /* our guest memory: the pane's name and the button's text */
 enum { AT_B05 = 0, AT_TEXT = 32, AT_REF = 96, AT_END = 128 };
-static volatile uint64_t our_part, our_button, our_control;   /* (the sixth pane's part and its button object, while the page lives) */
+static volatile uint64_t our_page, our_part, our_button, our_control;   /* (the page, the sixth pane's part, its button object
+                                                                            and the control whose state the game changes, while
+                                                                            the page lives) */
 
 static int ready(void) {
     if (mem) return 1;
@@ -50,7 +54,7 @@ static uint64_t call(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2,
 void hos_pausebtn_build(Ctx *c, A64Fn game) {
     const uint64_t screen = c->x[0], heap = c->x[1];
     game(c);
-    our_part = our_button = 0, our_control = 0;
+    our_page = our_part = our_button = our_control = 0;
     if (!ready()) return;
     const uint64_t panel = recomp_load64(c, screen + 800);
     const uint64_t page = panel ? recomp_load64(c, panel + 0x20) : 0;
@@ -65,7 +69,7 @@ void hos_pausebtn_build(Ctx *c, A64Fn game) {
     if (!button) return;
     call(c, 0x80f99390ULL, button, part, 0, 0, 0);
     call(c, 0x8045c6c0ULL, button, heap, 0, 0, 0);
-    our_part = part, our_button = button;
+    our_page = screen, our_part = part, our_button = button;
     /* its text (the page's own buttons take theirs from LayoutMsg/PlusMenu_00, which has none for a sixth) */
     const uint64_t ref = mem + AT_REF;
     recomp_store64(c, ref, mem + AT_TEXT);
@@ -86,13 +90,19 @@ void hos_pausebtn_build(Ctx *c, A64Fn game) {
             (unsigned long long)button, n, panes);
 }
 
-/* f_80ad5310(button, state): a button's state about to change (0 off, 1 and 3 on: the cursor is on it, 4 and 5 decided).
-   The sixth button's is only noted here: which object it is, for hos_pausebtn_buttons */
+/* f_80ad5310(control, state): a button's control's state about to change (0 off, 1 and 3 on: the cursor is on it, 4 and 5
+   decided; kept at its +0x38). The sixth button's is only noted here: which object it is, for hos_pausebtn_buttons */
 int hos_pausebtn_state(Ctx *c) {
-    const uint64_t button = c->x[0];
-    if (!our_part || !button || recomp_load64(c, button + 0x20) != our_part) return 0;
-    our_control = button;
+    const uint64_t control = c->x[0];
+    if (!our_part || !control || recomp_load64(c, control + 0x20) != our_part) return 0;
+    our_control = control;
     return 0;
+}
+
+/* f_80aa2ad0(object): the base of the page's destructor (shared with other screens): the page going, its button and control
+   forgotten, so hos_pausebtn_buttons never reads them after */
+void hos_pausebtn_gone(Ctx *c) {
+    if (c->x[0] && c->x[0] == our_page) our_page = our_part = our_button = our_control = 0;
 }
 
 /* the controller's buttons as the game reads them (host/nn_hid.c npad_states; a: the A button's bit): A pressed while the
@@ -105,7 +115,7 @@ uint64_t hos_pausebtn_buttons(uint64_t buttons, uint64_t a) {
     if (!down) ours = 0;
     else if (pressed) {
         const uint64_t control = our_control;
-        const unsigned state = control ? *(const uint8_t *)GP(control + 0x38) : 0;
+        const unsigned state = control ? (unsigned)recomp_load8(NULL, control + 0x38) : 0;   /* (no Ctx here: not used) */
         int rx_option(int id, int otherwise);   /* rx_backend.c: 1 the Insert menu is open */
         if ((state == 1 || state == 3) && !rx_option(1, 0)) {
             ours = 1;

@@ -27,12 +27,15 @@ def at_entry(fn, call):
 EDITS = [
     # the pause menu's Menu page made (f_80f99400: its five buttons Pa_Button_00..04 of PaSystemMenu_00): the sixth after them
     (head("80f99400"), renamed("80f99400", "hos_pausebtn_build(c, f_80f99400_game);")),
-    # a button's state changes (f_80ad5310(button, state)): the sixth button's noted, to know when the cursor is on it
+    # a button's state changes (f_80ad5310(control, state)): the sixth button's control noted, to know when the cursor is on it
     (head("80ad5310"), at_entry("80ad5310", "if (hos_pausebtn_state(c)) return;")),
+    # the page destroyed (f_80aa2ad0, the base of its destructor, shared with other screens): the sixth button forgotten
+    (head("80aa2ad0"), at_entry("80aa2ad0", "hos_pausebtn_gone(c);")),
 ]
 DECL = ("void f_80f99400_game(Ctx *__restrict A64_NOESC c);\n"
         "void hos_pausebtn_build(Ctx *c, A64Fn game);\n"
-        "int hos_pausebtn_state(Ctx *c);\n")
+        "int hos_pausebtn_state(Ctx *c);\n"
+        "void hos_pausebtn_gone(Ctx *c);\n")
 INCLUDE = '#include "a64.h"\n'
 MARK = "(nx2/oot_pause_menu.py)"
 
