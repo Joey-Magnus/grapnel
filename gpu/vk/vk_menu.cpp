@@ -708,29 +708,33 @@ MENU_HINTS(hn_prompts, 0,
            "Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.")
 
 Row rows[] = {
-    // Graphics (Reflex, Anti-Lag 2, the Upscaler and the DLSS model only where they run here; HDR's paper white and peak
-    // brightness only with HDR on: row_shown)
+    // Graphics, in sections: a heading row is a section's title (draw_options draws it, the selection steps over it). The
+    // Quality preset first, as it sets rows in every section. (Reflex, Anti-Lag 2, the Upscaler and the DLSS model only where
+    // they run here; HDR's paper white and peak brightness only with HDR on: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Sets the scaling rows and memory limits for a GPU with that much memory. The Upscaler and Frame generation stay yours.",
      hn_preset},
-    {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
-     "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
-    {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
-     "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
+    // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, its sharpening; then
+    // the frames, and the window it is shown in)
+    {TAB_GRAPHICS, "Resolution and upscaling", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
+     "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
+     hn_output_res, true},
+    {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
+     "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true},
+    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
+     hn_upscaler},
+    {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
+     "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
+    {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
+     "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
+    {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
+     "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.", hn_sharpness},
+    {TAB_GRAPHICS, "Frame generation and latency", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
-    {TAB_GRAPHICS, "V-Sync", &opts.vsync, 0, 2, 1, tx_vsync,
-     "Whether a frame waits for the display's refresh before it is shown. Changes at once.", hn_vsync, false, true},
-    {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
-     "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
-     "the paper white and its highlights up to the peak. Native: the game's own HDR, told the display's peak and paper white.",
-     nullptr, false, true},
-    {TAB_GRAPHICS, "HDR paper white", &opts.hdr_white, 80, 400, 10, tx_nits,
-     "How bright the picture's white is with HDR on. Around 200 for a normal room; higher in a bright one.", nullptr, false, true},
-    {TAB_GRAPHICS, "HDR peak brightness", &opts.hdr_peak, 400, 4000, 100, tx_nits,
-     "The brightest highlights with HDR on: set it to your display's peak brightness.", nullptr, false, true},
     {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, 0, 6, 1, tx_fps_cap,
      "Limits frames rendered by the game. Generated frames are additional. Takes a restart. "
      "Past 60 is experimental: the game keeps real time, but some cutscenes and bosses can misbehave (Gohma, the intro's "
@@ -741,36 +745,41 @@ Row rows[] = {
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
     {TAB_GRAPHICS, "AMD Anti-Lag 2", &opts.antilag, 0, 1, 1, tx_antilag,
      "AMD GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_antilag},
-    // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
-    {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
-     "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
-     hn_output_res, true},
-    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
-     hn_upscaler},
-    {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
-     "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
-    {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
-     "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
+    {TAB_GRAPHICS, "Screen", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
+     "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
+    {TAB_GRAPHICS, "V-Sync", &opts.vsync, 0, 2, 1, tx_vsync,
+     "Whether a frame waits for the display's refresh before it is shown. Changes at once.", hn_vsync, false, true},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
-    {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
-     "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.", hn_sharpness},
-    {TAB_GRAPHICS, "Anisotropic filtering", &opts.anisotropy, 0, 4, 1, tx_anisotropy,
-     "Keeps textures sharp on surfaces seen at a slant, such as the ground ahead: higher is sharper in the distance, for a "
-     "little GPU time. Game's is the console's own (1x or 2x).", nullptr},
-    {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
-     "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
      "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
      "With Ultrawide: the pause, item and map menus, and what shows beside them. Loading screens and pre-rendered movies, "
      "which draw no world either, get the same sides. Changes at once.", hn_wide_menus},
-    {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
-     "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
-     "restart.", hn_robust, true},
+    {TAB_GRAPHICS, "HDR", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
+     "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
+     "the paper white and its highlights up to the peak. Native: the game's own HDR, told the display's peak and paper white.",
+     nullptr, false, true},
+    {TAB_GRAPHICS, "HDR paper white", &opts.hdr_white, 80, 400, 10, tx_nits,
+     "How bright the picture's white is with HDR on. Around 200 for a normal room; higher in a bright one.", nullptr, false, true},
+    {TAB_GRAPHICS, "HDR peak brightness", &opts.hdr_peak, 400, 4000, 100, tx_nits,
+     "The brightest highlights with HDR on: set it to your display's peak brightness.", nullptr, false, true},
+    {TAB_GRAPHICS, "Detail", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_GRAPHICS, "Anisotropic filtering", &opts.anisotropy, 0, 4, 1, tx_anisotropy,
+     "Keeps textures sharp on surfaces seen at a slant, such as the ground ahead: higher is sharper in the distance, for a "
+     "little GPU time. Game's is the console's own (1x or 2x).", nullptr},
+    // (the rows to change when something is wrong, or on a card short of memory: last)
+    {TAB_GRAPHICS, "GPU and memory", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
+     "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
     {TAB_GRAPHICS, "Mesh shaders", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
      "How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which "
      "every GPU has. Applies after a restart.", hn_mesh_mode, true},
+    {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
+     "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
+     "restart.", hn_robust, true},
 
     // Audio
     {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
