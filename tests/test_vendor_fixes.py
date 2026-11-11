@@ -4,9 +4,10 @@ vendor_fixes() is compiled with the Vulkan headers and run on the properties of 
 Windows and Linux (and NVK on the same cards), AMD's Windows driver in its two branches (RDNA 1/2: "AMD proprietary
 shader compiler"; RDNA 3/4: LLPC), RADV, AMDVLK, Intel's Windows driver on an integrated GPU and on an Arc card, ANV,
 llvmpipe. Each fix must be on for the GPUs it is for and off for every other, and NVIDIA's driver must get none: that is
-what keeps the renderer on NVIDIA as it was. The RX_VK_ switches force each one either way.
+what keeps the renderer and the translated shaders on NVIDIA as they were. The RX_VK_ switches force each one either way.
 Then the source: the device's fixes are made from its properties at device creation, dynamic alpha to coverage is
-switched off with static_a2c, every pipeline build that takes a cache holds it for the build, every read of a pipeline
+switched off with static_a2c, the translator is told fetch_bounds, nan_bits and the gather offset (and the program
+cache's stamp tells them apart), every pipeline build that takes a cache holds it for the build, every read of a pipeline
 cache's data after the start (pcache's and the play files') is inside the copy's gate, and that gate never blocks.
 
     python -I -B tests/test_vendor_fixes.py --headers <Vulkan-Headers/include> [--cxx g++]
@@ -22,27 +23,29 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
 
-# name, vendor, driver id, device type, driverInfo -> pcache_apart, static_a2c
+# name, vendor, driver id, device type, driverInfo -> pcache_apart, static_a2c, fetch_bounds, nan_bits, gather_offset
 DEVICES = [
-    ("RTX 3090, NVIDIA's Linux driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "580.105.08", "00"),
-    ("RTX 4070 laptop, NVIDIA's Windows driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "581.57", "00"),
-    ("GTX 1650, NVK", 0x10DE, "MESA_NVK", "DISCRETE_GPU", "Mesa 26.0.1", "00"),
+    ("RTX 3090, NVIDIA's Linux driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "580.105.08", "00000"),
+    ("RTX 4070 laptop, NVIDIA's Windows driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "581.57", "00000"),
+    ("GTX 1650, NVK", 0x10DE, "MESA_NVK", "DISCRETE_GPU", "Mesa 26.0.1", "00000"),
     ("RX 6700 XT, AMD's Windows driver (RDNA 2 branch)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU",
-     "26.10.1 (AMD proprietary shader compiler)", "00"),
+     "26.10.1 (AMD proprietary shader compiler)", "00111"),
     ("RX 5700, AMD's Windows driver (RDNA 1 branch)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU",
-     "25.9.1 (AMD proprietary shader compiler)", "00"),
-    ("RX 9070 XT, AMD's Windows driver (LLPC)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC)", "00"),
-    ("RX 7600, AMD's Windows driver, no driverInfo", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "", "00"),
-    ("RX 580, RADV", 0x1002, "MESA_RADV", "DISCRETE_GPU", "Mesa 26.2.5", "00"),
-    ("Steam Deck, RADV", 0x1002, "MESA_RADV", "INTEGRATED_GPU", "Mesa 25.1.0", "00"),
-    ("RX 6800, AMDVLK", 0x1002, "AMD_OPEN_SOURCE", "DISCRETE_GPU", "2025.Q2.1 (LLPC)", "00"),
-    ("UHD Graphics, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7088", "11"),
-    ("Iris Xe, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7092", "11"),
-    ("Arc B580, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "DISCRETE_GPU", "101.8132", "10"),
-    ("Iris Xe, ANV", 0x8086, "INTEL_OPEN_SOURCE_MESA", "INTEGRATED_GPU", "Mesa 26.0.1", "00"),
-    ("llvmpipe", 0x10005, "MESA_LLVMPIPE", "CPU", "Mesa 26.0.1 (LLVM 20.1.8)", "00"),
+     "25.9.1 (AMD proprietary shader compiler)", "00111"),
+    ("RX 9070 XT, AMD's Windows driver (LLPC)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC)", "00101"),
+    ("RX 7600, AMD's Windows driver, no driverInfo", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "", "00101"),
+    ("AMD's driver naming another shader compiler", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC shader compiler)",
+     "00101"),
+    ("RX 580, RADV", 0x1002, "MESA_RADV", "DISCRETE_GPU", "Mesa 26.2.5", "00101"),
+    ("Steam Deck, RADV", 0x1002, "MESA_RADV", "INTEGRATED_GPU", "Mesa 25.1.0", "00101"),
+    ("RX 6800, AMDVLK", 0x1002, "AMD_OPEN_SOURCE", "DISCRETE_GPU", "2025.Q2.1 (LLPC)", "00101"),
+    ("UHD Graphics, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7088", "11101"),
+    ("Iris Xe, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7092", "11101"),
+    ("Arc B580, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "DISCRETE_GPU", "101.8132", "10101"),
+    ("Iris Xe, ANV", 0x8086, "INTEL_OPEN_SOURCE_MESA", "INTEGRATED_GPU", "Mesa 26.0.1", "00101"),
+    ("llvmpipe", 0x10005, "MESA_LLVMPIPE", "CPU", "Mesa 26.0.1 (LLVM 20.1.8)", "00100"),
 ]
-FIELDS = ['pcache_apart', 'static_a2c']
+FIELDS = ['pcache_apart', 'static_a2c', 'fetch_bounds', 'nan_bits', 'gather_offset']
 
 FIXTURE = r"""
 #include <cstdio>
@@ -57,7 +60,7 @@ static const char* get(const char* name) {
     return it == env.end() ? nullptr : it->second.c_str();
 }
 static void print(const char* what, const VendorFixes& x) {
-    std::printf("%s %d%d\n", what, x.pcache_apart, x.static_a2c);
+    std::printf("%s %d%d%d%d%d\n", what, x.pcache_apart, x.static_a2c, x.fetch_bounds, x.nan_bits, x.gather_offset);
 }
 int main() {
     struct D { const char* name; uint32_t vendor; VkDriverId driver; VkPhysicalDeviceType type; const char* info; };
@@ -71,7 +74,7 @@ int main() {
         print(d.name, x);
         vendor_fixes_env(x, get);   // (no switch set: as it was)
         print(d.name, x);
-        const char* names[] = {"RX_VK_PCACHE_APART", "RX_VK_DYN_A2C"};
+        const char* names[] = {"RX_VK_PCACHE_APART", "RX_VK_DYN_A2C", "RX_VK_FETCH_BOUNDS", "RX_VK_NAN_BITS", "RX_VK_GATHER_OFFSET"};
         for (const char* n : names)
             for (const char* v : {"0", "1", ""}) {
                 env.clear();
@@ -111,6 +114,20 @@ def check_source():
                   "driver_info = drv.driverInfo"):
         if "facts." + field not in main:
             raise SystemExit("FAIL: vk_main.cpp does not fill facts.%s" % field)
+    coop = (VK / "vk_coopmat.cpp").read_text(encoding="utf-8")
+    for text in ("Shader::Backend::SPIRV::fetch_bounds = dev.fixes.fetch_bounds;", "Shader::Backend::SPIRV::nan_bits = dev.fixes.nan_bits;",
+                 "Shader::Backend::SPIRV::fetch_bounds_buffers = dev.fixes.fetch_bounds && !dev.features.robustBufferAccess;"):
+        if text not in cut(coop, "void coopmat_init() {"):
+            raise SystemExit("FAIL: coopmat_init does not set %s" % text)
+    shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
+    if "p.need_gather_subpixel_offset = dev.fixes.gather_offset;" not in cut(shader, "Shader::Profile make_profile() {"):
+        raise SystemExit("FAIL: make_profile does not set the gather offset")
+    stamp = cut(shader, "uint64_t translator_stamp() {")
+    for text in ("fetch_bounds ? 16u : 0u", "nan_bits ? 32u : 0u", "profile().need_gather_subpixel_offset ? 64u : 0u",
+                 "fetch_bounds_buffers ? 128u : 0u"):
+        if text not in stamp:
+            raise SystemExit("FAIL: the program cache's stamp lacks %s" % text)
+
     draw = (VK / "vk_draw.cpp").read_text(encoding="utf-8")
     # (a build into a cache holds it: guarded_graphics / guarded_compute are called only from apart_graphics / apart_compute)
     calls = [m.start() for m in re.finditer(r"[^_\w](guarded_graphics|guarded_compute)\(", draw)]
@@ -192,7 +209,7 @@ def main():
             if line.split()[-1] != want:
                 failures.append("%s: %s, expected %s" % (name, line.split()[-1], want))
         for i, line in enumerate(lines[2:]):
-            switch, value = ["RX_VK_PCACHE_APART", "RX_VK_DYN_A2C"][i // 3], ["0", "1", ""][i % 3]
+            switch, value = ["RX_VK_PCACHE_APART", "RX_VK_DYN_A2C", "RX_VK_FETCH_BOUNDS", "RX_VK_NAN_BITS", "RX_VK_GATHER_OFFSET"][i // 3], ["0", "1", ""][i % 3]
             got = list(line.split()[-1])
             expect = list(want)
             if value:
