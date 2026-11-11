@@ -3,6 +3,17 @@
 An optional Astro Starlight site using the original `assets/hookshot.png` logo. The game build does not depend on Node
 or this site. Adopting the website, its dependencies, and hosting remains the upstream maintainer's decision.
 
+## Typography
+
+The site uses the main UI's bundled fallback set: Libertinus Sans Regular (400) for body text, Sans Bold (700) for
+emphasis, and Serif Semibold (600) for headings. The unchanged version 7.051 TTF files are copied from
+`third_party/fonts/libertinus/` into `src/assets/fonts/libertinus/`; CSS-relative imports let Astro process the font
+URLs for the configured site base. No external font service is needed. Code retains Starlight's monospace font.
+
+The game UI's preferred fonts come from the player's game files and are not included in this website. Keep the
+Libertinus copyright and SIL Open Font License with the font assets; `public/fonts/libertinus/OFL.txt` publishes that
+notice with the site. When updating these copies, use the repository's bundled font version and retain its notice.
+
 ## Build and check
 
 Use Node 22.23.4 or newer. From `website/`:
@@ -71,6 +82,18 @@ Common-issue entries are historical examples with direct links to responses and 
 current open/fixed status. Review the source before changing an example. Antivirus signing information is explicitly
 dated. The release badge fetches GitHub's latest stable version on page load and retains a permanent release link
 if the API is unavailable or rate-limited. No game files or calculator answers are uploaded.
+
+## Progress overview
+
+The **Progress & updates** page searches upstream reports, feature requests, proposed changes and releases.
+Its **Current version watch** groups open reports that explicitly name the latest stable version. It does not
+infer affected versions, confirmed bugs, severity or released fixes from activity counts or merge dates.
+See [PROGRESS.md](PROGRESS.md) for the implementation plan, editorial review rules, coverage and hosting options.
+
+Run `npm run progress:sync` before a build to include a current static snapshot. Normal builds remain offline.
+`npm run progress:serve` provides an optional shared feed with a five-minute cache. GitHub Pages can serve the
+snapshot but cannot run this server; automatic public updates require hosting or scheduled deployment configured
+separately. No public service, deploy workflow, schedule, commit or PR update is enabled by these scripts.
 
 ## Maintenance and deployment
 

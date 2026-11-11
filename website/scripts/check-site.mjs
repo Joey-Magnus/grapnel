@@ -21,7 +21,7 @@ async function walk(dir) {
   }
 }
 await walk(dist);
-const publishedRoutes = new Set([...contentSources.values(), '', 'about', 'antivirus', 'compatibility', '404.html']);
+const publishedRoutes = new Set([...contentSources.values(), '', 'about', 'antivirus', 'compatibility', 'progress', '404.html']);
 for (const file of files) {
   const route = path.relative(dist, file).replaceAll(path.sep, '/').replace(/\/?index\.html$/, '');
   assert(publishedRoutes.has(route), `Unexpected published page: ${route}`);

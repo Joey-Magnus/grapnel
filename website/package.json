@@ -8,6 +8,8 @@
     "build": "node scripts/prepare-content.mjs && astro build",
     "build:preview": "node scripts/build-preview.mjs",
     "preview": "astro preview --host 127.0.0.1",
+    "progress:sync": "node scripts/sync-progress.mjs",
+    "progress:serve": "node scripts/serve-progress.mjs",
     "check": "node scripts/check-site.mjs && node --test tests/*.test.mjs"
   },
   "dependencies": {

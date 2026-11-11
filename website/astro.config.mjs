@@ -20,6 +20,7 @@ export default defineConfig({
     tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 2 },
     sidebar: [
       { label: 'Overview', slug: '' },
+      { label: 'Progress & updates', slug: 'progress' },
       { label: 'Is Hookshot a virus?', slug: 'antivirus' },
       { label: 'Setup and settings', items: [
         { label: 'Check compatibility', slug: 'compatibility' },
