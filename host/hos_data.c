@@ -1,20 +1,27 @@
-/* The game's data folder (hos_data.h): chosen once at the start, and the files a build from before kept in the game folder
-   moved into it.
+/* The game's data folder (hos_data.h): chosen once at the start, and the files a build from before kept loose in the game folder
+   put where they go now.
 
    Which folder: --user <folder> when given; else, for a game started with nothing (as a player starts it: image.bin in the
    game folder), %LOCALAPPDATA%\Hookshot on Windows and $XDG_DATA_HOME/hookshot (~/.local/share/hookshot) on Linux; else (a
    development run given its image.bin) "user" in the current folder, as before. A builder's folder whose platform folder cannot
    be made keeps <game>/user.
 
-   The move, for the platform folder only (a --user folder or a development run is the caller's to fill), each entry once and
-   never over one already there:
-   - <game>/user/* (the saves; on Linux since an earlier build already, on Windows now): a rename, else a copy and delete (another
+   What goes where:
+   - the data folder: the saves and the settings (hookshot_options.ini, hookshot_env.txt), what belongs to the player;
+   - <game>/cache: the shader and pipeline caches, made for this build and this GPU, several GB, beside the game the player put
+     on the drive with room for it. Its name says it can be deleted: the next start prepares the shaders again. One cache per
+     game folder, so a release and a nightly side by side do not throw each other's away;
+   - <game>/logs: hookshot_log.txt and the runs before it, and the other logs and traces a run writes.
+
+   The move, each entry once and never over one already there:
+   - for the platform folder only (a --user folder or a development run is the caller's to fill): <game>/user/* (the saves;
+     on Linux since an earlier build already, on Windows now) into the data folder, a rename, else a copy and delete (another
      drive). When one of its entries is in the data folder already, none moves: the saves stay in <game>/user, as they were
-     (hos_user_dir names it), and nothing is lost or mixed.
-   - the settings and the logs from the game folder into the data folder, the caches into its shaders/ (each file a rename, else
-     a copy and delete). One that cannot move stays where it was: a setting is then the default, a cache is made again.
-   - the button prompts made from the player's controls (prompts/Common.*, External.bfotf.zs: host/prompts.c) are deleted: they are made again,
-     in the data folder.
+     (hos_user_dir names it), and nothing is lost or mixed. The settings likewise; one that cannot move stays, and is then the
+     default. The button prompts made from the player's controls (prompts/Common.*, External.bfotf.zs: host/prompts.c) are
+     deleted: they are made again, in the data folder;
+   - whenever the game folder is known: its loose caches into cache/ and its logs into logs/ (renames on the same drive), the
+     Vulkan pipeline cache renamed from mkw_vk_pipelines*.bin to hookshot_vk_pipelines*.bin on the way.
    language.txt is not moved: the builder writes the build's language beside the game (nx2/make_game.py), and host/nn_applet.c
    reads the data folder's first, then that one. */
 #include "hos_paths.h"   /* (first: windows.h, host/posix's on Linux) */
@@ -38,23 +45,27 @@ static char data_dir[MAX_PATH] = "user";
 static int data_ready;
 
 /* (what the move did, for the log once it is open) */
-static int moved_files, kept_files, saves_moved, saves_kept;
+static int moved_files, tidied_files, kept_files, saves_moved, saves_kept;
 static char kept_first[MAX_PATH];
 static char saves_from[MAX_PATH];
 
-/* The settings and logs a game folder had, moved into the data folder, and the caches, moved into its shaders/ */
-static const char *const to_data[] = {
-    "hookshot_options.ini", "hookshot_env.txt", "hookshot_log.txt", "hookshot_log.1.txt", "hookshot_log.2.txt",
-    "hookshot_log.3.txt", "hookshot_log.4.txt",
+/* The settings a game folder had, moved into the data folder; its logs into logs/, its caches into cache/ */
+static const char *const to_data[] = {"hookshot_options.ini", "hookshot_env.txt"};
+static const char *const to_logs[] = {
+    "hookshot_log.txt", "hookshot_log.1.txt", "hookshot_log.2.txt", "hookshot_log.3.txt", "hookshot_log.4.txt",
+    "hookshot_startup.log", "hookshot_frames.csv",
 };
-static const char *const to_shaders[] = {
-    "mkw_vk_pipelines.bin", "hookshot_programs.bin", "hookshot_programs.idx", "hookshot_pipelines.bin", "hookshot_computes.bin",
+static const char *const to_cache[] = {
+    "hookshot_programs.bin", "hookshot_programs.idx", "hookshot_pipelines.bin", "hookshot_computes.bin",
     "hookshot_pipeline_states.bin", "hookshot_pipeline_states_v1.bin", "hookshot_prepared.bin", "hookshot_prepare_skipped",
 };
-static const char play_prefix[] = "mkw_vk_pipelines_play_";   /* (mkw_vk_pipelines_play_<n>.bin: gpu/vk/vk_draw.cpp) */
+/* The Vulkan pipeline cache, mkw_vk_pipelines.bin and its play files mkw_vk_pipelines_play_<n>.bin (mkw-recomp's names), renamed
+   hookshot_vk_pipelines*.bin as they move into cache/ (gpu/vk/vk_draw.cpp). Those an earlier build of the change put in cache/
+   with the old name are renamed there too */
+static const char old_pcache[] = "mkw_vk_pipelines", new_pcache[] = "hookshot_vk_pipelines";
 /* Made from the player's choices and made again when missing: deleted from the game folder */
 static const char *const made_again[] = {
-    "hookshot_programs.bin.lock", "prompts" SEP_S "Common.bntx.zs", "prompts" SEP_S "Common.blarc.zs", "prompts" SEP_S "Common.key",
+    "prompts" SEP_S "Common.bntx.zs", "prompts" SEP_S "Common.blarc.zs", "prompts" SEP_S "Common.key",
     "prompts" SEP_S "Common.blarc.key", "prompts" SEP_S "External.bfotf.zs",
 };
 
@@ -157,18 +168,50 @@ static const char *move_saves(const char *beside) {
     return data_dir;
 }
 
-static void move_file(const char *game, const char *name, const char *sub) {
+/* game's file name into the folder dir (with its separator): 1 when it moved */
+static int move_as(const char *game, const char *name, const char *dir, const char *as) {
     char from[MAX_PATH], to[MAX_PATH];
-    if (snprintf(from, sizeof from, "%s%s", game, name) >= (int)sizeof from || !exists(from) || is_dir(from)) return;
-    if (snprintf(to, sizeof to, "%s" SEP_S "%s%s", data_dir, sub, name) >= (int)sizeof to) return;
-    if (!exists(to) && move_entry(from, to)) {
-        moved_files++;
-        return;
-    }
+    if (snprintf(from, sizeof from, "%s%s", game, name) >= (int)sizeof from || !exists(from) || is_dir(from)) return 0;
+    if (snprintf(to, sizeof to, "%s%s", dir, as) >= (int)sizeof to) return 0;
+    if (!exists(to) && move_entry(from, to)) return 1;
     if (!kept_files++) snprintf(kept_first, sizeof kept_first, "%s", from);
+    return 0;
+}
+static int move_file(const char *game, const char *name, const char *dir) { return move_as(game, name, dir, name); }
+
+/* folder's mkw_vk_pipelines*.bin into cache as hookshot_vk_pipelines*.bin (folder and cache: with their separators) */
+static int move_pcache(const char *folder, const char *cache) {
+    int moved = 0;
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof pattern, "%s%s*.bin", folder, old_pcache);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        char as[MAX_PATH];
+        if (strncmp(fd.cFileName, old_pcache, sizeof old_pcache - 1)) continue;
+        snprintf(as, sizeof as, "%s%s", new_pcache, fd.cFileName + sizeof old_pcache - 1);
+        moved += move_as(folder, fd.cFileName, cache, as);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return moved;
 }
 
-/* the game folder's files of a build from before (game: the folder, with its separator) */
+/* the game folder's loose caches and logs of a build from before into its cache/ and logs/ (game: the folder, with its
+   separator) */
+static void tidy_game(const char *game) {
+    char cache[MAX_PATH], logs[MAX_PATH];
+    snprintf(cache, sizeof cache, "%scache" SEP_S, game);
+    snprintf(logs, sizeof logs, "%slogs" SEP_S, game);
+    for (size_t i = 0; i < sizeof to_logs / sizeof *to_logs; i++) tidied_files += move_file(game, to_logs[i], logs);
+    for (size_t i = 0; i < sizeof to_cache / sizeof *to_cache; i++) tidied_files += move_file(game, to_cache[i], cache);
+    tidied_files += move_pcache(game, cache) + move_pcache(cache, cache);
+    char lock[MAX_PATH];   /* (the program cache's lock, made again beside it in cache/) */
+    snprintf(lock, sizeof lock, "%shookshot_programs.bin.lock", game);
+    if (exists(lock)) DeleteFileA(lock);
+}
+
+/* the game folder's saves and settings of a build from before, into the data folder (game: the folder, with its separator) */
 static void migrate(const char *game) {
     char path[MAX_PATH];
     snprintf(path, sizeof path, "%suser", game);
@@ -178,18 +221,9 @@ static void migrate(const char *game) {
         snprintf(kept, sizeof kept, "%s", saves);
         hos_user_dir = kept;
     }
-    for (size_t i = 0; i < sizeof to_data / sizeof *to_data; i++) move_file(game, to_data[i], "");
-    for (size_t i = 0; i < sizeof to_shaders / sizeof *to_shaders; i++) move_file(game, to_shaders[i], "shaders" SEP_S);
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s%s*.bin", game, play_prefix);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!strncmp(fd.cFileName, play_prefix, sizeof play_prefix - 1)) move_file(game, fd.cFileName, "shaders" SEP_S);
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    }
+    char data[MAX_PATH];
+    snprintf(data, sizeof data, "%s" SEP_S, data_dir);
+    for (size_t i = 0; i < sizeof to_data / sizeof *to_data; i++) moved_files += move_file(game, to_data[i], data);
     for (size_t i = 0; i < sizeof made_again / sizeof *made_again; i++) {
         snprintf(path, sizeof path, "%s%s", game, made_again[i]);
         if (exists(path)) DeleteFileA(path);
@@ -198,8 +232,9 @@ static void migrate(const char *game) {
         snprintf(path, sizeof path, "%sfiles-moved.txt", game);
         FILE *f = fopen(path, "w");
         if (f) {
-            fprintf(f, "Hookshot's saves, settings, log and shader caches are now in\n%s\n\nThey moved there from this folder.\n",
-                    data_dir);
+            fprintf(f, "Hookshot's saves and settings are now in\n%s\n\nThey moved there from this folder. The shader caches are in "
+                       "this folder's cache folder (it can be deleted: the next start prepares the shaders again), the logs in its "
+                       "logs folder.\n", data_dir);
             fclose(f);
         }
     }
@@ -246,14 +281,19 @@ static void make_absolute(void) {
 int hos_game_file(char *out, size_t cap, const char *name) {
     char path[MAX_PATH];
     const DWORD n = hos_game_path_a(path, MAX_PATH);
-    if (!n || n >= MAX_PATH) return 0;
+    if (!n || n >= MAX_PATH || !cap) return 0;
     char *slash = strrchr(path, SEP);
 #ifdef _WIN32
     if (!slash) slash = strrchr(path, '/');
 #endif
     if (!slash) return 0;
     slash[1] = 0;
-    return snprintf(out, cap, "%s%s", path, name) < (int)cap;
+    const int len = snprintf(out, cap, "%s%s", path, name);
+#ifdef _WIN32
+    for (char *p = out + strlen(path); *p; p++)
+        if (*p == '/') *p = SEP;
+#endif
+    return len >= 0 && len < (int)cap;
 }
 
 void hos_data_init(int argc, char **argv) {
@@ -276,12 +316,13 @@ void hos_data_init(int argc, char **argv) {
     else snprintf(data_dir, sizeof data_dir, "user");
     CreateDirectoryA(data_dir, NULL);
     make_absolute();
-    char shaders[MAX_PATH];
-    if (hos_data_path(shaders, sizeof shaders, "shaders")) CreateDirectoryA(shaders, NULL);
     hos_user_dir = data_dir;
-    if (move) {
-        char game[MAX_PATH];
-        if (hos_game_file(game, sizeof game, "")) migrate(game);
+    char game[MAX_PATH], sub[MAX_PATH];
+    if (hos_game_file(game, sizeof game, "")) {
+        if (hos_game_file(sub, sizeof sub, "cache")) CreateDirectoryA(sub, NULL);
+        if (hos_game_file(sub, sizeof sub, "logs")) CreateDirectoryA(sub, NULL);
+        tidy_game(game);
+        if (move) migrate(game);
     }
 }
 
@@ -311,6 +352,7 @@ void hos_data_log_migration(void) {
         if (saves_kept) hos_log("data: %d of %s's entries could not move: the saves stay in %s", saves_kept, saves_from, saves_from);
         else hos_log("data: the saves moved from %s", saves_from);
     }
-    if (moved_files) hos_log("data: %d files (settings, logs, shader caches) moved from the game folder", moved_files);
+    if (moved_files) hos_log("data: %d settings files moved from the game folder", moved_files);
+    if (tidied_files) hos_log("data: %d logs and shader caches moved into the game folder's logs and cache folders", tidied_files);
     if (kept_files) hos_log("data: %d files stayed in the game folder (one there already, or no room): %s, ...", kept_files, kept_first);
 }

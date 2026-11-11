@@ -152,8 +152,8 @@ typedef struct MkwVkHost {
     void (*slept_ns)(int64_t out[2]);
     /* (version 15, hookshot) whether the host times those sleeps: 1 while the Breakdown shows, 0 (the default) costs nothing */
     void (*fps_timing)(int on);
-    /* (version 16, hookshot) the data folder (host/hos_data.c): where the renderer keeps what belongs to this PC and player, the
-       settings (hookshot_options.ini) and, in its shaders/, the shader and pipeline caches. UTF-8, absolute, no separator at the end */
+    /* (version 16, hookshot) the data folder (host/hos_data.c): where the renderer keeps what belongs to the player, the settings
+       (hookshot_options.ini). The caches stay in the game folder's cache/ (gpu/vk/vk_paths.h). UTF-8, absolute, no separator at the end */
     const char *(*data_dir)(void);
 } MkwVkHost;
 

@@ -1,8 +1,9 @@
 // The folders this DLL keeps its files in. The game folder (host/hos_paths.h's rule) holds what the build made (the shader list,
 // the shipped pipeline lists): the game is bin\hookshot.exe beside its launcher since the launcher came; its files stay in the
 // folder above bin. game_module_path answers as GetModuleFileNameA(nullptr, ...) does, with the folder's path when the exe is in a
-// "bin" folder beside image.bin. The data folder (host/hos_data.c, MkwVkHost.data_dir) holds what belongs to this PC and player:
-// the settings (data_path) and the shader and pipeline caches (shader_path).
+// "bin" folder beside image.bin. The game folder's cache/ holds the shader and pipeline caches (cache_path: made for this build
+// and this GPU, and it can be deleted), and its logs/ the logs and traces (log_path). The data folder (host/hos_data.c,
+// MkwVkHost.data_dir) holds what belongs to the player: the settings (data_path).
 #pragma once
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -52,6 +53,8 @@ inline std::string data_path(const char* name) {
     const char* dir = host && host->data_dir ? host->data_dir() : nullptr;
     return (dir && *dir ? std::string(dir) + "/" : game_folder()) + name;
 }
-/// <data folder>/shaders/<name>: the shader and pipeline caches (the host makes the folder)
-inline std::string shader_path(const char* name) { return data_path((std::string("shaders/") + name).c_str()); }
+/// <game folder>/cache/<name>: the shader and pipeline caches (host/hos_data.c makes the folder)
+inline std::string cache_path(const char* name) { return game_folder() + "cache/" + name; }
+/// <game folder>/logs/<name>: the logs and traces a run writes (host/hos_data.c makes the folder)
+inline std::string log_path(const char* name) { return game_folder() + "logs/" + name; }
 }  // namespace mkwvk

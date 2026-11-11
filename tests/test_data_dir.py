@@ -1,15 +1,15 @@
-"""The data folder (host/hos_data.c): which folder a run keeps its saves, settings, log and caches in, and the one-time move of
-what a build from before kept in the game folder.
+"""The data folder (host/hos_data.c): which folder a run keeps its saves and settings in, the game folder's cache/ and logs/,
+and the one-time move of what a build from before kept loose in the game folder.
 
 host/hos_data.c is built with the Linux stand-ins (host/posix/win32_posix.c) into a small program that prints the folder it
 chose and the saves' folder. The program is copied into game folders built in a temporary folder, as the builder makes them
 (image.bin beside it, or the game in bin/ beside image.bin), and run there:
 
-- --user <folder> wins, and nothing is moved; a run given its image.bin uses "user" in the current folder;
-- a builder's folder uses $XDG_DATA_HOME/hookshot; the settings and logs go there, the caches to its shaders/ (the play
-  files by their prefix too), the saves from <game>/user, and a note is left; language.txt (the builder's) stays, and the
-  prompts made from the player's controls are deleted;
-- a file already in the data folder is not written over: the game folder's copy stays where it is;
+- every run: the game folder's loose caches go into its cache/ (the play files by their prefix too) and its logs into its logs/;
+- --user <folder> wins, and no setting or save moves; a run given its image.bin uses "user" in the current folder;
+- a builder's folder uses $XDG_DATA_HOME/hookshot; the settings go there, the saves from <game>/user, and a note is left;
+  language.txt (the builder's) stays, and the prompts made from the player's controls are deleted;
+- a file already where it goes is not written over: the game folder's copy stays where it is;
 - when a save entry cannot move (one of that name is there already), the saves stay in <game>/user together;
 - the game in bin/: the files come from the folder above it, the one with image.bin.
 
@@ -68,7 +68,7 @@ def game_folder(root, built, in_bin=False):
     shutil.copy2(built, exe)
     files = {
         "hookshot_options.ini": "vsync=1\n", "hookshot_env.txt": "RX_VK_X=1\n", "hookshot_log.txt": "log\n",
-        "hookshot_log.1.txt": "log 1\n", "language.txt": "fr\n", "mkw_vk_pipelines.bin": "driver",
+        "hookshot_log.1.txt": "log 1\n", "hookshot_startup.log": "stderr\n", "language.txt": "fr\n", "mkw_vk_pipelines.bin": "driver",
         "mkw_vk_pipelines_play_3.bin": "play", "hookshot_programs.bin": "programs", "hookshot_programs.idx": "index",
         "hookshot_programs.bin.lock": "", "hookshot_pipelines.bin": "notes", "hookshot_prepared.bin": "prepared",
         "hookshot_shaders.bin": "seed", "hookshot_pipeline_states_shipped.bin": "shipped",
@@ -97,52 +97,77 @@ def main():
                         str(ROOT / "host" / "hos_data.c"), str(ROOT / "host" / "posix" / "win32_posix.c"), str(main_c),
                         "-o", str(built), "-lpthread", "-ldl"], check=True)
 
-        # --user wins, made absolute; nothing moves out of the game folder
+        CACHES = ("hookshot_vk_pipelines.bin", "hookshot_vk_pipelines_play_3.bin", "hookshot_programs.bin", "hookshot_programs.idx",
+                  "hookshot_pipelines.bin", "hookshot_prepared.bin")   # (the Vulkan pipeline cache renamed from mkw_vk_pipelines*)
+        LOGS = ("hookshot_log.txt", "hookshot_log.1.txt", "hookshot_startup.log")
+        SETTINGS = ("hookshot_options.ini", "hookshot_env.txt")
+
+        def tidied(game):
+            """the game folder's caches in its cache/, its logs in its logs/, none left loose"""
+            for name in CACHES:
+                assert (game / "cache" / name).exists() and not (game / name).exists(), name
+            assert not list(game.glob("mkw_vk_pipelines*")) and not list((game / "cache").glob("mkw_vk_pipelines*"))
+            for name in LOGS:
+                assert (game / "logs" / name).exists() and not (game / name).exists(), name
+            assert not (game / "hookshot_programs.bin.lock").exists()
+            for name in ("hookshot_shaders.bin", "hookshot_pipeline_states_shipped.bin", "image.bin", "language.txt"):
+                assert (game / name).exists(), name   # (the build's own stay where the build put them)
+
+        # --user wins, made absolute; the caches and logs go into the game folder's cache/ and logs/, settings and saves stay
         game = tmp / "a" / "game"
         exe = game_folder(game, built)
-        data, user, _ = run(exe, ["--user", "mine"], tmp / "a", tmp / "a" / "xdg")
+        data, user, out = run(exe, ["--user", "mine"], tmp / "a", tmp / "a" / "xdg")
         assert data == tmp / "a" / "mine" and user == data, (data, user)
-        assert (data / "shaders").is_dir() and (game / "hookshot_options.ini").exists() and not (tmp / "a" / "xdg").exists()
+        tidied(game)
+        assert "into the game folder's logs and cache folders" in out, out
+        for name in SETTINGS:
+            assert (game / name).exists() and not (data / name).exists(), name
+        assert (game / "user" / "save").is_dir() and not (tmp / "a" / "xdg").exists()
 
         # a development run, given its image.bin: "user" in the current folder
-        data, user, _ = run(exe, [str(game / "image.bin")], tmp / "a", tmp / "a" / "xdg")
+        data, user, out = run(exe, [str(game / "image.bin")], tmp / "a", tmp / "a" / "xdg")
         assert data == tmp / "a" / "user" and user == data, (data, user)
-        assert (game / "hookshot_programs.bin").exists()
+        tidied(game)
+        assert "moved" not in out, out
 
-        # a builder's folder: everything per-PC moves to $XDG_DATA_HOME/hookshot
+        # a builder's folder: settings and saves to $XDG_DATA_HOME/hookshot, caches and logs into the game folder's own
         game = tmp / "b" / "game"
         exe = game_folder(game, built)
         xdg = tmp / "b" / "xdg"
         data, user, out = run(exe, [], tmp / "b", xdg)
         assert data == xdg / "hookshot" and user == data, (data, user, out)
-        for name in ("hookshot_options.ini", "hookshot_env.txt", "hookshot_log.txt", "hookshot_log.1.txt"):
+        tidied(game)
+        for name in SETTINGS:
             assert (data / name).exists() and not (game / name).exists(), name
-        for name in ("mkw_vk_pipelines.bin", "mkw_vk_pipelines_play_3.bin", "hookshot_programs.bin", "hookshot_programs.idx",
-                     "hookshot_pipelines.bin", "hookshot_prepared.bin"):
-            assert (data / "shaders" / name).exists() and not (game / name).exists(), name
+        for name in CACHES + LOGS:
+            assert not (data / name).exists() and not (data / "shaders").exists(), name
         assert (data / "save" / "0100" / "file").read_text() == "my save" and (data / "mouse_sens.txt").exists()
         assert not (game / "user").exists()
-        for name in ("language.txt", "hookshot_shaders.bin", "hookshot_pipeline_states_shipped.bin", "image.bin"):
-            assert (game / name).exists() and not (data / name).exists(), name   # (the build's own)
-        assert not (game / "hookshot_programs.bin.lock").exists() and not (game / "prompts" / "Common.key").exists()
-        assert (game / "prompts" / "Common.bntx").exists()
-        assert "Hookshot's saves" in (game / "files-moved.txt").read_text()
-        assert "moved from the game folder" in out and "the saves moved" in out, out
+        assert not (data / "language.txt").exists()
+        assert not (game / "prompts" / "Common.key").exists() and (game / "prompts" / "Common.bntx").exists()
+        note = (game / "files-moved.txt").read_text()
+        assert "Hookshot's saves" in note and "cache folder" in note and "logs folder" in note, note
+        assert "settings files moved" in out and "the saves moved" in out and "cache folders" in out, out
         # a second start: nothing left to move, the same folder
         data2, _, out = run(exe, [], tmp / "b", xdg)
         assert data2 == data and "moved" not in out, out
 
-        # what the data folder has already is not written over; saves that cannot all move stay together
+        # what is there already is not written over; saves that cannot all move stay together
         game = tmp / "c" / "game"
         exe = game_folder(game, built)
         xdg = tmp / "c" / "xdg"
         (xdg / "hookshot" / "save").mkdir(parents=True)
         (xdg / "hookshot" / "hookshot_options.ini").write_text("mine\n")
+        (game / "cache").mkdir(parents=True)
+        (game / "cache" / "hookshot_programs.bin").write_text("newer")
+        (game / "cache" / "mkw_vk_pipelines_play_8.bin").write_text("old name in cache/")   # (an earlier build of the change)
         data, user, out = run(exe, [], tmp / "c", xdg)
         assert data == xdg / "hookshot" and user == game / "user", (data, user)
         assert (data / "hookshot_options.ini").read_text() == "mine\n" and (game / "hookshot_options.ini").exists()
         assert (game / "user" / "save" / "0100" / "file").exists() and (game / "user" / "mouse_sens.txt").exists()
-        assert (data / "shaders" / "hookshot_programs.bin").exists()
+        assert (game / "cache" / "hookshot_programs.bin").read_text() == "newer" and (game / "hookshot_programs.bin").exists()
+        assert (game / "cache" / "hookshot_vk_pipelines.bin").exists()
+        assert (game / "cache" / "hookshot_vk_pipelines_play_8.bin").read_text() == "old name in cache/"
         assert "the saves stay in" in out and "stayed in the game folder" in out, out
 
         # the game in bin/ beside image.bin (the launcher's layout): the folder above bin/ is the game folder
@@ -150,10 +175,13 @@ def main():
         exe = game_folder(game, built, in_bin=True)
         xdg = tmp / "d" / "xdg"
         data, user, _ = run(exe, [], tmp / "d", xdg)
+        tidied(game)
+        assert not (game / "bin" / "cache").exists() and not (game / "bin" / "logs").exists()
         assert data == xdg / "hookshot" and (data / "hookshot_options.ini").exists() and not (game / "hookshot_options.ini").exists()
         assert (data / "save" / "0100" / "file").exists()
-    print("PASS: --user and a development run keep their folder; a builder's folder moves its settings, logs, caches and saves "
-          "to the data folder once, writes nothing over, keeps the saves together, and finds the folder above bin/")
+    print("PASS: the caches and logs go into the game folder's cache/ and logs/ on every run; --user and a development run keep "
+          "their folder; a builder's folder moves its settings and saves to the data folder once, writes nothing over, keeps the "
+          "saves together, and finds the folder above bin/")
 
 
 if __name__ == "__main__":

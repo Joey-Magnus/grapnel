@@ -40,9 +40,11 @@ Run everything with `python -I` from this folder.
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
 
-The game keeps what belongs to the PC and the player (saves, settings, the log, and the shader and pipeline caches in
-`shaders/`) in its data folder, chosen once at the start by `host/hos_data.c` (`hos_data_dir`, `hos_data_path`; the renderer
-gets it as `MkwVkHost.data_dir`, `gpu/vk/vk_paths.h` `data_path`/`shader_path`). The game folder keeps what the build made.
+The game keeps what belongs to the player (saves, settings) in its data folder, chosen once at the start by
+`host/hos_data.c` (`hos_data_dir`, `hos_data_path`; the renderer gets it as `MkwVkHost.data_dir`, `gpu/vk/vk_paths.h`
+`data_path`). The shader and pipeline caches go in the game folder's `cache/` (`cache_path`; it can be deleted) and the logs
+and traces in its `logs/` (`log_path`; `hos_game_file(..., "logs/...")` on the host side). A development run's game folder is
+the executable's (`work/sa/build`).
 
 The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the README's
 [Running the game from the command line](../readme.md#running-the-game-from-the-command-line).

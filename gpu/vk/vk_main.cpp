@@ -713,10 +713,10 @@ namespace {
 
 HWND main_window = nullptr;
 // (hookshot) hookshot --prepare-shaders (a builder, after a build): the same work with no game, its progress as
-// "@@progress" lines on stdout. A skip there leaves hookshot_prepare_skipped in the data folder's shaders/: the game's starts then
+// "@@progress" lines on stdout. A skip there leaves hookshot_prepare_skipped in the game folder's cache/: the game's starts then
 // leave the work out too (what was not prepared is built when first drawn), until a --prepare-shaders run ends it
 bool prepare_only() { return getenv("HOOKSHOT_PREPARE_ONLY") != nullptr; }
-std::string skipped_path() { return shader_path("hookshot_prepare_skipped"); }
+std::string skipped_path() { return cache_path("hookshot_prepare_skipped"); }
 // (hookshot) The first start after an update prepares every shader (prepare_run) and the pipelines the last sessions noted
 // (precompile_run): a minute and more, before the game's first frame. They run on a thread of their own while this one, the
 // renderer's start, shows the window at once with what they are doing on it, and keeps it shown and sized; on Windows it is also

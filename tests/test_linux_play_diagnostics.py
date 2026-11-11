@@ -18,7 +18,6 @@ def main():
     play = next(node for node in ast.parse(path.read_text(encoding="utf-8")).body
                 if isinstance(node, ast.FunctionDef) and node.name == "play")
     processes = []
-    data_home_box = [""]   # ($XDG_DATA_HOME for the game: set once the temporary folder is made)
 
     def launch(command, **options):
         assert options["start_new_session"]
@@ -26,15 +25,14 @@ def main():
 
     namespace = dict(HERE=str(BUILDER), os=os,
                      linux_update=SimpleNamespace(game_exe=lambda folder: str(Path(folder) / "hookshot")),
-                     make_game=SimpleNamespace(game_env=lambda: dict(os.environ, XDG_DATA_HOME=data_home_box[0])),
+                     make_game=SimpleNamespace(game_env=lambda: dict(os.environ)),
                      subprocess=SimpleNamespace(Popen=launch, DEVNULL=subprocess.DEVNULL))
     exec(compile(ast.Module(body=[play], type_ignores=[]), str(path), "exec"), namespace)
 
     with tempfile.TemporaryDirectory(prefix="hookshot-play-") as directory:
         folder = Path(directory) / "game"
         folder.mkdir()
-        data_dir = Path(directory) / "xdg" / "hookshot"   # (the game's data folder: the log goes there, as the game's own does)
-        data_home_box[0] = str(data_dir.parent)
+        data_dir = folder / "logs"   # (the game folder's logs folder: the log goes there, beside the game's own)
         game = folder / "hookshot"
         game.write_text(
             '#!/bin/sh\n'

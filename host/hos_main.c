@@ -1293,7 +1293,7 @@ static int game_main(int argc, char **argv) {
         if (set && !getenv("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
     }
 #endif
-    {   // (started from its icon the game has nowhere to log to: hookshot_log.txt in the data folder (host/hos_data.c), for players to send in)
+    {   // (started from its icon the game has nowhere to log to: hookshot_log.txt in the game folder's logs/ (host/hos_data.c), for players to send in)
 #ifdef _WIN32
         {   /* (started again by the Insert menu's Restart now (host/hos_relaunch.c): the run before still has its log open until
                it exits, so wait for it (up to 10 s) before the log moves to .1, or the move fails and its log is overwritten) */
@@ -1309,7 +1309,7 @@ static int game_main(int argc, char **argv) {
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
         if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
             char path[MAX_PATH + 32];
-            snprintf(path, MAX_PATH, "%s" SEP_S, hos_data_dir());
+            if (!hos_game_file(path, MAX_PATH, "logs" SEP_S)) snprintf(path, MAX_PATH, "%s" SEP_S, hos_data_dir());
             const size_t n = strlen(path);
             /* (the four runs before stay as hookshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
                crash sent in the new run's log, and the crash was gone) */
@@ -1527,7 +1527,7 @@ static DWORD WINAPI game_thread(void *p) {
     ExitProcess((UINT)game_main(game_argc, game_argv));
 }
 /* (hookshot, linux) Room in the drivers' own shader caches for what the preparation builds. The pipelines the notes predict (~43,000
-   in OoT, vk_draw.cpp predict_run) are built into the driver's disk cache alone, not into mkw_vk_pipelines.bin, which is read in whole
+   in OoT, vk_draw.cpp predict_run) are built into the driver's disk cache alone, not into hookshot_vk_pipelines.bin, which is read in whole
    at every start. NVIDIA's cache holds 1 GiB by default and cleans itself down to that as it is written: a full preparation filled
    it to the limit (1026 MB) and the pipelines it dropped were compiled again in play. Mesa's (RADV, ANV) has the same 1 GiB default.
    Raised for this process only, before anything loads Vulkan; a value the player set (or hookshot_env.txt) is kept. Windows: the

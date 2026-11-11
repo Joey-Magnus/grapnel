@@ -156,8 +156,9 @@ Windows or `~/.local/share/hookshot` on Linux (see [Where the files go](#where-t
 
 | Kept | Replaced |
 |---|---|
-| The data folder: your saves, `hookshot_options.ini` (the in-game menu's choices and your controls), `hookshot_env.txt`, the log and the shader caches | The game in `bin` and its files |
-| `mods` | `image.bin` and the shader list |
+| The data folder: your saves, `hookshot_options.ini` (the in-game menu's choices and your controls), `hookshot_env.txt` | The game in `bin` and its files |
+| The game folder's `cache` (the shader caches, made again only when the new version translates shaders differently) and `logs` | `image.bin` and the shader list |
+| `mods` | |
 | | `language.txt` in the game folder, written again with the game's language |
 
 The game files the first build read are kept in the game folder, so an update does not need your `.nup` again.
@@ -189,26 +190,31 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
   of them are needed to play. To keep them, so that an update compiles only what changed, set the environment variable
   `HOOKSHOT_KEEP_BUILD_FILES=1` for the builder; on Windows, **Free up space** on the "Your game is ready" page then
   deletes them when you want. The build files folder can be moved before a build (**Change**, **Default**).
-- The game's data folder holds what belongs to your PC and to you: `%LOCALAPPDATA%\Hookshot` on Windows,
-  `~/.local/share/hookshot` on Linux (`$XDG_DATA_HOME/hookshot` when that is set). In it are your saves (`save`), the
-  settings (`hookshot_options.ini`, `hookshot_env.txt`, and `language.txt` when you change the language there), the log
-  (`hookshot_log.txt`) and, in `shaders`, the shader and pipeline caches (several GB). The game folder keeps only what
-  the build made, so building it again or deleting it loses none of these. The first start of a build from before
-  moves them out of the game folder (its `user` folder too) and leaves `files-moved.txt` there saying where they went.
-  `--user <folder>` puts them all somewhere else ([command line arguments](#running-the-game-from-the-command-line)).
+- The game's data folder holds what is yours: `%LOCALAPPDATA%\Hookshot` on Windows, `~/.local/share/hookshot` on Linux
+  (`$XDG_DATA_HOME/hookshot` when that is set). In it are your saves (`save`) and the settings (`hookshot_options.ini`,
+  `hookshot_env.txt`, and `language.txt` when you change the language there), so deleting or rebuilding the game folder
+  loses none of them. `--user <folder>` puts them somewhere else ([command line
+  arguments](#running-the-game-from-the-command-line)).
+- The game folder has two folders of its own the game writes: `cache`, the shader and pipeline caches (several GB, made
+  for this version and this graphics card), and `logs`, `hookshot_log.txt` and the runs before it. `cache` can be
+  deleted at any time: the next start prepares the shaders again (minutes on some PCs). Each game folder keeps its own,
+  so a release and the nightly side by side do not undo each other's.
+- The first start of a build from before moves its files to these places (the saves from its `user` folder too) and
+  leaves `files-moved.txt` in the game folder saying where they went.
   The same folder has `ngx`, where DLSS's runtime can be put (see NVIDIA DLSS below), and on Linux the builder's own
   `builder` folder, with its installed updates. `--user` does not move those.
   To carry on with a save from an emulator (Lichii, Eglantine, Orchid, ...) or NX2navi, or to take yours there, see
   [using a save from an emulator](docs/saves.md).
-- To uninstall, delete the game folder, the builder's folder and the shortcuts, and the data folder too to remove your
-  saves, settings and caches (on Linux that also removes the builder's installed updates, in its `builder` folder).
+- To uninstall, delete the game folder (its caches and logs go with it), the builder's folder and the shortcuts, and the
+  data folder too to remove your saves and settings (on Linux that also removes the builder's installed updates, in its
+  `builder` folder).
 
 ### If something goes wrong
 
 | Problem | What to do |
 |---|---|
-| Where is the log? | `hookshot_log.txt` in the data folder (`%LOCALAPPDATA%\Hookshot` on Windows, `~/.local/share/hookshot` on Linux) holds the last run. The four runs before are `hookshot_log.1.txt` (the last) to `.4.txt`. Started from a terminal, the game prints there instead. Every 600 frames it has a `vk: status:` line: the video memory in use of what the driver allows, and DLSS's details while it draws; `vk: over the driver's video-memory allowance` says when the game passed it |
-| Linux Builder Play closed before the game log appeared | After the game exits, check `hookshot_startup.log` in the data folder (`~/.local/share/hookshot`) for up to 64 KiB of startup stderr and its exit status. |
+| Where is the log? | `hookshot_log.txt` in the game folder's `logs` folder holds the last run. The four runs before are `hookshot_log.1.txt` (the last) to `.4.txt`. Started from a terminal, the game prints there instead. Every 600 frames it has a `vk: status:` line: the video memory in use of what the driver allows, and DLSS's details while it draws; `vk: over the driver's video-memory allowance` says when the game passed it |
+| Linux Builder Play closed before the game log appeared | After the game exits, check `hookshot_startup.log` in the game folder's `logs` folder for up to 64 KiB of startup stderr and its exit status. |
 | "Hookshot supports build e0f3ccfa" or "This version isn't supported" | Check that you chose the right game with its update installed |
 | The game opens and closes, or the log says "device lost" | Update your graphics driver. On AMD cards there are known crashes ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
@@ -614,7 +620,7 @@ use them.
 |---|---|
 | `image.bin` | The game image to run. Without it the game uses the `image.bin`, `romfs` and `user` in its folder |
 | `--romfs <folder>` | The extracted RomFS folder |
-| `--user <folder>` | The data folder: where the game keeps what belongs to this PC and player: saves, settings (`hookshot_options.ini`, `hookshot_env.txt`), the log, the shader caches (`shaders`) and temp files (and `mouse_sens.txt` when `HOS_MOUSE_SENS` is set; the menu keeps the sensitivity otherwise). Default: `%LOCALAPPDATA%\Hookshot` on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
+| `--user <folder>` | The data folder: where the game keeps what belongs to the player: saves, settings (`hookshot_options.ini`, `hookshot_env.txt`) and temp files (the shader caches and the logs stay in the game folder's `cache` and `logs`) (and `mouse_sens.txt` when `HOS_MOUSE_SENS` is set; the menu keeps the sensitivity otherwise). Default: `%LOCALAPPDATA%\Hookshot` on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
 | `--trace` | Log every Horizon OS call (the same as `HOS_TRACE=1`) |
 | `--prepare-shaders` | Prepare the shaders as the first start does, then exit without starting the game (no build step runs it) |
 
