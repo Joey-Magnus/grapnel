@@ -120,12 +120,12 @@ int main(int argc, char **argv) {
         call_host(&c, hos_hostcall(name, submit, NULL));
     }
     if (submits != 10 + MANY) { puts("FAIL: a host call did not run"); return 1; }
-    hle_stats_report();
+    hos_hle_report();
     puts("---");
     imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE(&c);
     calls[0].calls = calls[0].before = 0x7FFFFFFE;   /* (nvnQueueSubmit's count passes the 32-bit maximum) */
     for (int i = 0; i < 3; i++) call_host(&c, addr);
-    hle_stats_report();
+    hos_hle_report();
     return 0;
 }
 """
@@ -136,7 +136,7 @@ def load_parser():
     spec = importlib.util.spec_from_file_location("cpu_report", ROOT / "scripts" / "cpu_report.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.hle_calls
+    return module
 
 
 def parse(hle_calls, folder, block):
@@ -204,7 +204,19 @@ def main():
     compiler = shutil.which(args.cxx)
     if not compiler:
         raise SystemExit("C++ compiler not found: " + args.cxx)
-    hle_calls = load_parser()
+    report = load_parser()
+    hle_calls = report.hle_calls
+    # (an HLE body the compiler did not inline is the symbol hle_<sym> in the linker map: the report names it as its
+    # imp_<sym> entry, so its samples meet its call counts)
+    with tempfile.TemporaryDirectory(prefix="hle-map-") as temporary:
+        path = Path(temporary) / "hookshot.map"
+        path.write_text("Preferred load address is 0000000140000000\n"
+                        " 0001:00001000       hle__ZN2nn2os9LockMutexEPNS0_9MutexTypeE 0000000140002000 f   nn_os_sync.o\n"
+                        " 0001:00001100       imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE 0000000140002100 f   nn_os_sync.o\n",
+                        encoding="utf-8")
+        names = [n for n, _ in report.load_map(str(path))[1]]
+    if names != ["imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE"] * 2:
+        raise SystemExit("FAIL: cpu_report.py names an HLE body not inlined %r, not as its imp_ entry" % names)
     header = (ROOT / "host" / "hos.h").read_text(encoding="utf-8")
     hostcall = cut((ROOT / "host" / "hos_hostcall.c").read_text(encoding="utf-8"), "#define HOS_HOSTCALL_BASE",
                    "/* Call guest code from inside a host function", "host/hos_hostcall.c")

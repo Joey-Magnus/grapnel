@@ -41,7 +41,9 @@ def load_map(path):
             m = MAP_LINE.match(line)
             if m:
                 obj = re.sub(r"^.*[\\/]", "", m.group(3))
-                rows.append((int(m.group(2), 16), m.group(1), obj))
+                # (host/hos.h's HLE: a body not inlined into its imp_<sym> entry is hle_<sym>; it is the same function)
+                sym = "imp_" + m.group(1)[4:] if m.group(1).startswith("hle_") else m.group(1)
+                rows.append((int(m.group(2), 16), sym, obj))
     if base is None:
         base = BASES.get(os.path.splitext(path)[1].replace(".map", ""), 0x140000000)
     rows.sort()
