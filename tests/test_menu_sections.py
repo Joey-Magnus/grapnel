@@ -1,9 +1,10 @@
 """The Insert menu's sections: heading rows group a tab's rows, and none can be left empty (gpu/vk/vk_menu.cpp).
 
 A heading row (Row::heading) is a section's title: draw_options draws it (a gold title and a rule, nothing to click) and
-menu_tick's keys step over it. The Graphics tab is how the picture is made: the Quality preset (it sets rows in all of
-them), then Resolution and upscaling, Frame generation and latency, Detail, and GPU and memory. The Display tab, second in
-the strip, is how the finished picture gets to the screen and what is drawn over it: Screen, HDR and Overlays. Each section
+menu_tick's keys step over it. The strip reads Game (where the menu opens: Restart and Quit), Graphics, Display. The
+Graphics tab is how the picture is made: the Quality preset (it sets rows in all of them), then Resolution and upscaling,
+Frame generation and latency, Detail, and GPU and memory. The Display tab, after it, is how the finished picture gets to
+the screen and what is drawn over it: Screen, HDR and Overlays. Each section
 must keep a row on every PC: a row row_shown can hide (Reflex, Anti-Lag 2, the Upscaler, the DLSS model, HDR's levels)
 cannot be a section's only row, or a GPU without it would show a title over nothing. The rows table is read from the
 source; nothing runs.
@@ -106,12 +107,14 @@ def main():
     check_tab("Graphics", graphics, GRAPHICS)
     check_tab("Display", tabs.get("TAB_DISPLAY", []), DISPLAY)
 
-    # Display is the strip's second tab, after Graphics
-    if not re.search(r"TAB_GRAPHICS = 0,\s*\n\s*TAB_DISPLAY = 1,", menu):
-        raise SystemExit("FAIL: TAB_DISPLAY is not the tab after Graphics (enum MenuTab)")
+    # the strip: Game first (TAB_GAMEPLAY, titled Game), where the menu opens; then Graphics, then Display
+    if not re.search(r"TAB_GAMEPLAY = 0,[^\n]*\n(?:\s*//[^\n]*\n)*\s*TAB_GRAPHICS = 1,\s*\n\s*TAB_DISPLAY = 2,", menu):
+        raise SystemExit("FAIL: enum MenuTab does not read Game, Graphics, Display first")
     titles = re.search(r"tab_titles\[TAB_COUNT\] = \{([^}]*)\}", menu)
-    if not titles or re.findall(r'"([^"]+)"', titles.group(1))[:2] != ["Graphics", "Display"]:
-        raise SystemExit("FAIL: the tab strip does not read Graphics, Display first")
+    if not titles or re.findall(r'"([^"]+)"', titles.group(1))[:3] != ["Game", "Graphics", "Display"]:
+        raise SystemExit("FAIL: the tab strip does not read Game, Graphics, Display first")
+    if not re.search(r"^int cur_tab = TAB_GAMEPLAY;", menu, re.M):
+        raise SystemExit("FAIL: the menu does not open on the strip's first tab, Game")
 
     # the heading rows are drawn as titles and stepped over by the keys (no code of their own per tab)
     draw = function(menu, "void draw_options(ui::Ctx& c) {")

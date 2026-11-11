@@ -36,8 +36,9 @@ FIXTURE = r"""
 #include <cmath>
 #include <cstdio>
 /* FIT */
-// (the six titles' widths in points at 23, as the heading font draws Graphics, Display, Audio, Gameplay, Controls, Debug)
-static const float kTitlePt[6] = {92, 80, 62, 104, 98, 70};
+// (the six titles' widths in points at 23, as the heading font draws Game, Graphics, Display, Audio, Controls, Debug; Game
+// as Gameplay's 104, the widest the first tab has been)
+static const float kTitlePt[6] = {104, 92, 80, 62, 98, 70};
 // (vk_ui.h unit: pixels per point h / 720 times 0.85, 1 or 1.3; the safe margin 2.5% of h, 5% at Large)
 static int check(const char* what, float w, float h, int size, int tabs, bool want_same) {
     const float k = size == 1 ? 0.85f : size == 3 ? 1.3f : 1.0f, s = h / 720.0f * k, safe = h * (size == 3 ? 0.05f : 0.025f);

@@ -57,10 +57,11 @@ Options opts;
 
 namespace {
 enum MenuTab {
-    TAB_GRAPHICS = 0,
-    TAB_DISPLAY = 1,   // (the screen, HDR and the overlays: how the finished picture gets to the display)
-    TAB_AUDIO = 2,
-    TAB_GAMEPLAY = 3,
+    TAB_GAMEPLAY = 0,   // (titled Game: the game itself, and Restart and Quit; first, where the menu opens, as a PC game's
+                        // pause menu)
+    TAB_GRAPHICS = 1,
+    TAB_DISPLAY = 2,   // (the screen, HDR and the overlays: how the finished picture gets to the display)
+    TAB_AUDIO = 3,
     TAB_CONTROLS = 4,
     TAB_DEBUG = 5,   // (the OoT debug tools of #785, a tab of their own)
     TAB_COUNT = 6,
@@ -709,6 +710,20 @@ MENU_HINTS(hn_prompts, 0,
            "Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.")
 
 Row rows[] = {
+    // Game (TAB_GAMEPLAY), the strip's first tab; its Restart and Quit are the table's last two rows
+    {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed, "How the game keeps time when it runs below 60 fps.",
+     hn_speed},
+    {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
+     "How fast the letters of dialogue and other messages appear.", hn_text_speed},
+    {TAB_GAMEPLAY, "Text size", &opts.text_size, 0, 4, 1, tx_text_size,
+     "How large the text of dialogue, Navi and signs is drawn.", hn_text_size},
+    {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
+     "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
+     true},
+    {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
+     "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
+     true},
+
     // Graphics, in sections: a heading row is a section's title (draw_options draws it, the selection steps over it). The
     // Quality preset first, as it sets rows in every section. (Reflex, Anti-Lag 2, the Upscaler and the DLSS model only where
     // they run here: row_shown)
@@ -798,20 +813,6 @@ Row rows[] = {
      false, true},
     {TAB_AUDIO, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
      "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
-
-    // Gameplay
-    {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed, "How the game keeps time when it runs below 60 fps.",
-     hn_speed},
-    {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
-     "How fast the letters of dialogue and other messages appear.", hn_text_speed},
-    {TAB_GAMEPLAY, "Text size", &opts.text_size, 0, 4, 1, tx_text_size,
-     "How large the text of dialogue, Navi and signs is drawn.", hn_text_size},
-    {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
-     "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
-     true},
-    {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
-     "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
-     true},
 
     // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -1076,7 +1077,7 @@ const char* cheat_confirm(int i) {
 }
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
-int cur_tab = TAB_GRAPHICS;
+int cur_tab = TAB_GAMEPLAY;   // (the menu opens on the strip's first tab, Game)
 int tab_selected[TAB_COUNT + 1] = {};   // (and the Motion page's)
 bool is_motion_row(const Row& r) { return r.tab == TAB_CONTROLS && !r.value && !strcmp(r.name, "Motion"); }
 
@@ -1876,7 +1877,7 @@ void draw_options(ui::Ctx& c) {
     ui::banner(c, hh);
     // the tabs in the banner: dark ink on the tan, the shown one light on a dark inset; the tab keys at their ends (a click there
     // is the previous or the next tab)
-    const char* const tab_titles[TAB_COUNT] = {"Graphics", "Display", "Audio", "Gameplay", "Controls", "Debug"};
+    const char* const tab_titles[TAB_COUNT] = {"Game", "Graphics", "Display", "Audio", "Controls", "Debug"};
     // (the strip inside the safe margins, the tab keys at its ends (22 + 26 points a side) too: six tabs at Large on a 16:10
     // screen, the Steam Deck's 1280x800, are wider than it. tab_strip_fit: narrower gaps, then smaller titles; unchanged
     // where they fit)

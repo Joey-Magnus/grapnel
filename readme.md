@@ -254,7 +254,7 @@ use and cause stalls when the card runs out of headroom. To undo it, remove that
 By default, press <kbd>Insert</kbd> or <kbd>F1</kbd> in game. On a controller, press Home or Select and Start together; on
 a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>.
 The same keys close it, and so does <kbd>Esc</kbd>. <kbd>F1</kbd> always works; **Controls → Menu shortcut** can leave
-<kbd>Insert</kbd> free for another overlay. The menu has six tabs, Graphics, Display, Audio, Gameplay, Controls and Debug:
+<kbd>Insert</kbd> free for another overlay. The menu has six tabs, Game (where Restart and Quit are, and where it opens), Graphics, Display, Audio, Controls and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
@@ -286,6 +286,10 @@ order.
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
+| Game | Game speed | Per frame, Real time | Real time |
+| | Text speed | Normal, 2x, 4x, Instant | Normal |
+| | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
+| | Microphone | Off, Default, or each microphone by name | Default |
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
 | | Profile | Docked, Handheld (after a restart) | Docked |
@@ -313,10 +317,6 @@ order.
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
-| Gameplay | Game speed | Per frame, Real time | Real time |
-| | Text speed | Normal, 2x, 4x, Instant | Normal |
-| | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
-| | Microphone | Off, Default, or each microphone by name | Default |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
 | | Disable camera centering | Off, On | Off |
