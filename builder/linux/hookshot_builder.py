@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 from tkinter import filedialog, messagebox, ttk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -818,8 +819,13 @@ class Builder(tk.Tk):
         make = os.environ.get("HOOKSHOT_MAKE_GAME") or os.path.join(ROOT, "nx2", "make_game.py")
 
         def run():
-            r = subprocess.run([sys.executable, "-I", make, "--check"] + args,
-                               capture_output=True, text=True, cwd=ROOT)
+            # (make_game.py writes UTF-8 whatever the locale; a check that cannot run says so, not "Checking..." for good)
+            try:
+                r = subprocess.run([sys.executable, "-I", make, "--check"] + args,
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=ROOT)
+            except OSError as e:
+                self.lines.put(("check", "The version could not be checked: %s" % e))
+                return
             said = []
             for l in r.stdout.splitlines():
                 t = make_game.reported(l)
@@ -1153,38 +1159,47 @@ class Builder(tk.Tk):
             self.after(1000, self.tick)
 
     def pump(self):
+        # (each message on its own: one that raises is printed, and the ones after it, and the next pump, still come. Before,
+        # an exception here ended the loop for good and the window stopped hearing anything)
         try:
             while True:
                 kind, v = self.lines.get_nowait()
-                if kind == "check":
-                    self.check_text.set(v)
-                elif kind == "latest":
-                    self.latest = v or None
-                    self.apply_mode()
-                elif kind == "launcher":   # (GitHub's releases, for the launcher's screen)
-                    if self.launcher is not None:
-                        self.launcher.message(v)
-                elif kind == "note":
-                    if hasattr(self, "stage_text"):
-                        self.stage_text.set(v)
-                elif kind == "do-build":
-                    self.start_make_update(v)
-                elif kind == "update-error":
-                    if hasattr(self, "stage_text"):
-                        self.stage_text.set(v + " Your game folder is unchanged.")
-                    if hasattr(self, "buttons"):
-                        for widget in self.buttons.winfo_children():
-                            widget.destroy()
-                        ttk.Button(self.buttons, text="Back", command=self.show_form, cursor="hand2").pack(side="right", padx=self.px(4))
-                    if hasattr(self, "stage_label"):
-                        self.stage_label.configure(style="Bad.Stage.TLabel")
-                elif kind == "line":
-                    self.on_line(v)
-                elif kind == "exit":
-                    self.on_exit(v)
+                try:
+                    self.message_in(kind, v)
+                except Exception:
+                    traceback.print_exc()
         except queue.Empty:
             pass
-        self.after(100, self.pump)
+        finally:
+            self.after(100, self.pump)
+
+    def message_in(self, kind, v):
+        if kind == "check":
+            self.check_text.set(v)
+        elif kind == "latest":
+            self.latest = v or None
+            self.apply_mode()
+        elif kind == "launcher":   # (GitHub's releases, for the launcher's screen)
+            if self.launcher is not None:
+                self.launcher.message(v)
+        elif kind == "note":
+            if hasattr(self, "stage_text"):
+                self.stage_text.set(v)
+        elif kind == "do-build":
+            self.start_make_update(v)
+        elif kind == "update-error":
+            if hasattr(self, "stage_text"):
+                self.stage_text.set(v + " Your game folder is unchanged.")
+            if hasattr(self, "buttons"):
+                for widget in self.buttons.winfo_children():
+                    widget.destroy()
+                ttk.Button(self.buttons, text="Back", command=self.show_form, cursor="hand2").pack(side="right", padx=self.px(4))
+            if hasattr(self, "stage_label"):
+                self.stage_label.configure(style="Bad.Stage.TLabel")
+        elif kind == "line":
+            self.on_line(v)
+        elif kind == "exit":
+            self.on_exit(v)
 
     def on_line(self, line):
         if line.startswith("@@stage "):

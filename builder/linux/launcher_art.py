@@ -369,17 +369,24 @@ def read_png(path):
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("%s is not a PNG" % path)
     at, packed, w, h, n = 8, [], 0, 0, 0
-    while at < len(data):
-        (length,), kind = struct.unpack(">I", data[at:at + 4]), data[at + 4:at + 8]
-        body = data[at + 8:at + 8 + length]
-        at += 12 + length
-        if kind == b"IHDR":
-            w, h, depth, color, _c, _f, lace = struct.unpack(">IIBBBBB", body)
-            if depth != 8 or color not in (2, 6) or lace:
-                raise ValueError("%s: only 8-bit RGB or RGBA, not interlaced" % path)
-            n = 3 if color == 2 else 4
-        elif kind == b"IDAT":
-            packed.append(body)
+    try:
+        while at < len(data):
+            (length,), kind = struct.unpack(">I", data[at:at + 4]), data[at + 4:at + 8]
+            body = data[at + 8:at + 8 + length]
+            at += 12 + length
+            if kind == b"IHDR":
+                w, h, depth, color, _c, _f, lace = struct.unpack(">IIBBBBB", body)
+                if depth != 8 or color not in (2, 6) or lace:
+                    raise ValueError("%s: only 8-bit RGB or RGBA, not interlaced" % path)
+                n = 3 if color == 2 else 4
+            elif kind == b"IDAT":
+                packed.append(body)
+            elif kind == b"IEND":
+                break
+    except struct.error:   # (a file cut short: what is left of a chunk is not one)
+        raise ValueError("%s is cut short" % path)
+    if not (w and h and n and packed):
+        raise ValueError("%s has no picture in it" % path)
     rows = np.frombuffer(zlib.decompress(b"".join(packed)), dtype=np.uint8).reshape(h, 1 + w * n)
     kinds, flat = rows[:, 0], rows[:, 1:].copy()
     if (kinds > 2).any():
@@ -425,7 +432,7 @@ def picture():
     if _picture is None:
         try:
             _picture = read_png(os.path.join(ASSETS, "picture.png"))
-        except (OSError, ValueError, zlib.error):
+        except (OSError, ValueError, zlib.error, MemoryError):   # (missing or damaged: the page's colour instead)
             _picture = False
     return None if _picture is False else _picture
 

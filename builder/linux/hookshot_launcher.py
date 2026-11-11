@@ -17,12 +17,14 @@ import base64
 import ctypes
 import ctypes.util
 import json
+import math
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
+import traceback
 
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -88,10 +90,28 @@ def typical_build(make_game):
     of the last five), or None when none was kept"""
     work = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-builder")
     try:
-        took = sorted(b["total_seconds"] for b in make_game.load_times(work)["builds"][-5:] if b["total_seconds"] > 0)
+        took = sorted(float(b["total_seconds"]) for b in make_game.load_times(work)["builds"][-5:]
+                      if 0 < float(b["total_seconds"]) < math.inf)
     except Exception:   # (a record from other tools, or none: no time is guessed)
         return None
     return took[len(took) // 2] if took else None
+
+
+def folder_version(folder):
+    """linux_update.game_version, and (None, False) when the folder's hookshot_version.txt cannot be read as text"""
+    try:
+        return linux_update.game_version(folder)
+    except (OSError, ValueError):
+        return None, False
+
+
+def existing_dir(path):
+    """the path, or the nearest folder above it that is there (a file dialog's first folder), else the home folder"""
+    path = os.path.abspath(os.path.expanduser(path)) if path else ""
+    while path and not os.path.isdir(path):
+        parent = os.path.dirname(path)
+        path = "" if parent == path else parent
+    return path or os.path.expanduser("~")
 
 
 def installed_builders():
@@ -179,7 +199,8 @@ class Launcher(object):
         self.older_open = "older" in preview
         self.releases, self.latest, self.checked, self.checking, self.check_says = [], None, False, False, None
         self.photos, self.regions, self.hot, self.down, self.size, self.scroll = {}, [], None, None, (0, 0), 0
-        self.redraw_job = self.tip_job = self.tip_window = self.tick_job = None
+        self.redraw_job = self.tip_job = self.tip_window = self.tick_job = self.said_job = None
+        self.exited_at = None   # (when the build's program was seen gone while its output had not ended: tick)
         self.work, self.proc, self.state, self.details, self.log_box, self.log_shown = None, None, "idle", False, None, 0
         self.ready_note, self.copied, self.bringing, self.rows_fit = None, None, None, 0
         self.typical, self.foot_note = None, None   # (how long a build took here lately: typical_build; the note drawn under an update's bar)
@@ -243,9 +264,14 @@ class Launcher(object):
         """text, cut short with … when it is wider than width"""
         if self.measure(font, text) <= width:
             return text
-        while len(text) > 1 and self.measure(font, text + "…") > width:
-            text = text[:-1]
-        return text.rstrip() + "…"
+        low, high = 1, len(text) - 1   # (the most of it that fits with the …, found by halves: a long path is many measures)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if self.measure(font, text[:mid] + "…") <= width:
+                low = mid
+            else:
+                high = mid - 1
+        return text[:low].rstrip() + "…"
 
     def photo(self, key, make):
         """An image painted once and kept (Tk drops an image nothing holds)."""
@@ -264,7 +290,7 @@ class Launcher(object):
     def enter(self, folder, note=None):
         """The screen becomes the launcher of that folder: at the start, and when a build here has made the game"""
         self.folder, self.state, self.ready_note = folder or "", "idle", note
-        self.built, self.rebuilds = linux_update.game_version(self.folder)
+        self.built, self.rebuilds = folder_version(self.folder)
         self.show_details(False)
         self.fill()
 
@@ -291,11 +317,30 @@ class Launcher(object):
             self.draw()
 
         def run():
-            self.app.lines.put(("launcher", ("releases", release_list(), say)))
+            found = [], None
+            try:
+                found = release_list()
+            finally:   # (an answer always comes back: else Check for updates would say Checking… for good)
+                self.app.lines.put(("launcher", ("releases", found, say)))
         threading.Thread(target=run, daemon=True).start()
 
     def message(self, what):
-        """(from the builder's queue, on the Tk thread)"""
+        """(from the builder's queue, on the Tk thread. Its loop stops at an exception, and every later message with it: so
+        none leaves here, and work that cannot go on is stopped with the reason)"""
+        try:
+            self.take(what)
+        except Exception as error:
+            traceback.print_exc()
+            work = self.work
+            if what[0] in ("exit", "failed") and work is not None and what[1] is work and self.state == "working":
+                self.state = "stopped"
+                work.error = work.error or "The launcher stopped: %s" % (str(error) or type(error).__name__)
+                try:
+                    self.draw()
+                except Exception:
+                    traceback.print_exc()
+
+    def take(self, what):
         kind = what[0]
         if kind == "releases":
             (found, latest), say = what[1], what[2]
@@ -304,10 +349,14 @@ class Launcher(object):
             self.checked, self.checking = True, False
             if say and not self.newer_out():
                 self.check_says = "Could not check" if not found else "Up to date"
-                self.app.after(2400, self.check_said)
+                if self.said_job is not None:
+                    self.app.after_cancel(self.said_job)
+                self.said_job = self.app.after(2400, self.check_said)
             self.fill()
         elif what[1] is not self.work:
             return   # (from a build that was cancelled, or the one before)
+        elif self.work.cancelled and kind != "exit":
+            return   # (cancelled: what its download still says or brings is not used, its program's end is waited for)
         elif kind == "line":
             self.work_line(what[2])
         elif kind == "exit":
@@ -323,7 +372,7 @@ class Launcher(object):
             self.work_ended(1)
 
     def check_said(self):
-        self.check_says = None
+        self.check_says, self.said_job = None, None
         if self.canvas.winfo_exists():
             self.draw()
 
@@ -355,12 +404,20 @@ class Launcher(object):
         menu = tk.Menu(self.canvas, tearoff=0, font="LsLabel", borderwidth=0, activeborderwidth=0)
         menu.add_command(label="Browse for a .nup file…", command=self.choose_nup)
         menu.add_command(label="Use romfs and exefs folders…", command=self.choose_folders)
+        self.popup(menu)
+
+    def popup(self, menu):
+        """a list under the pointer (its grab let go after, as Tk's own menus do)"""
         self.hide_tip()
-        menu.tk_popup(self.canvas.winfo_pointerx(), self.canvas.winfo_pointery())
+        try:
+            menu.tk_popup(self.canvas.winfo_pointerx(), self.canvas.winfo_pointery())
+        finally:
+            menu.grab_release()
 
     def choose_nup(self):
         app = self.app
-        path = filedialog.askopenfilename(parent=app, title="Your game's .nup", filetypes=[("Switch 2 game package", "*.nup"), ("All files", "*")])
+        path = filedialog.askopenfilename(parent=app, title="Your game's .nup", initialdir=existing_dir(os.path.dirname(app.nup.get())),
+                                          filetypes=[("Switch 2 game package", "*.nup"), ("All files", "*")])
         if path:
             app.kind.set("nup")
             app.nup.set(path)
@@ -368,7 +425,7 @@ class Launcher(object):
 
     def choose_folders(self):
         app = self.app
-        romfs = filedialog.askdirectory(parent=app, title="Choose the romfs folder", initialdir=app.romfs.get() or os.path.expanduser("~"))
+        romfs = filedialog.askdirectory(parent=app, title="Choose the romfs folder", initialdir=existing_dir(app.romfs.get()))
         if not romfs:
             return
         beside = os.path.join(os.path.dirname(romfs), "exefs")
@@ -387,7 +444,7 @@ class Launcher(object):
 
     def choose_out(self):
         app = self.app
-        folder = filedialog.askdirectory(parent=app, title="Choose where the game goes", initialdir=os.path.expanduser(app.out.get()) or os.path.expanduser("~"))
+        folder = filedialog.askdirectory(parent=app, title="Choose where the game goes", initialdir=existing_dir(app.out.get().strip()))
         if folder:
             app.out.set(folder)
             self.back_to_idle()
@@ -420,22 +477,26 @@ class Launcher(object):
     def start_build(self):
         """Build Game pressed: make_game.py from the game files chosen, into the folder chosen (hookshot_builder's build, here)"""
         app, hb = self.app, self.hb
-        out = os.path.expanduser(app.out.get().strip())
+        out = app.out.get().strip()
         if not self.source_ready() or not out or self.state == "working":
             return
+        out = os.path.abspath(os.path.expanduser(out))   # (make_game.py runs in the tools' folder: a relative one would land there)
         src = ["--nup", app.nup.get()] if app.kind.get() == "nup" else ["--romfs", app.romfs.get(), "--exefs", app.exefs.get()]
         try:
             jobs = self.build_jobs()
         except ValueError as error:
             return messagebox.showerror("Hookshot", str(error), parent=app)
-        slow = hb.slow_disk_warning(out)   # (a warning, not a stop: a hard drive still builds, only much slower)
+        try:
+            slow = hb.slow_disk_warning(out)   # (a warning, not a stop: a hard drive still builds, only much slower)
+        except Exception:   # (the drive's kind could not be told)
+            slow = None
         if slow is not None and not messagebox.askokcancel("Hookshot", slow, parent=app):
             return
         code = next((c for c, n in hb.make_game.LANGUAGES if n == app.language.get()), "en-US")
         dlss = bool(app.dlss.get())
         app.cfg.update(kind=app.kind.get(), nup=app.nup.get(), romfs=app.romfs.get(), exefs=app.exefs.get(), out=out, language=code,
                        prepare="1" if app.prepare.get() else "0", dlss="1" if dlss else "0")
-        hb.save_config(app.cfg)
+        self.save()
         args = src + ["--out", out, "--language", code] + ([] if jobs is None else ["--jobs", str(jobs)]) + \
             ([] if app.prepare.get() else ["--no-prepare-shaders"]) + (hb.dlss_args(True) if dlss else [])
         self.tab = "build"
@@ -479,14 +540,18 @@ class Launcher(object):
         self.begin_work(work)
         if not fetch:
             return self.run_update()
+        # (read here: only the Tk thread may touch the builder's Tk variables)
+        named = target if target and (tag or app.switching() or linux_update.track_of(target) != "release") else None
+        folder = self.folder
 
         def run():
             try:
                 root = linux_update.running_root()
                 if root is None:
                     raise RuntimeError("These tools are a source checkout, so they cannot download a release. Start the AppImage to update")
-                named = target if target and (tag or app.switching() or linux_update.track_of(target) != "release") else None
                 manifest = linux_update.startup_manifest(root, tag=named)
+                if work.cancelled:
+                    return
                 if manifest.tag == linux_update.tools_tag(root):
                     return app.lines.put(("launcher", ("fetched", work)))
                 # (as Windows does: GitHub's latest list lags right after a publish, and installing it would put the
@@ -494,15 +559,21 @@ class Launcher(object):
                 if tag and manifest.tag != tag:
                     raise RuntimeError("GitHub offered %s, not %s: its download links can lag right after a release. "
                                        "Try again in a few minutes" % (manifest.tag, tag))
-                apprun = linux_update.install(manifest, root, linux_update.read_manifest(root),
-                                              note=lambda message: app.lines.put(("launcher", ("note", work, message))))
+                parts, done = len(manifest.parts), [0]
+
+                def note(message):
+                    # (said once a part: Cancel stops the download there, and install leaves nothing of it behind)
+                    if work.cancelled:
+                        raise RuntimeError("Cancelled")
+                    done[0] += 1
+                    app.lines.put(("launcher", ("note", work, "%s, part %d of %d" % (message, done[0], parts) if parts else message)))
+                apprun = linux_update.install(manifest, root, linux_update.read_manifest(root), note=note)
                 if work.cancelled:
                     return
-                for name_ in ("APPDIR", "APPIMAGE", "ARGV0", "OWD", "LD_LIBRARY_PATH"):
-                    os.environ.pop(name_, None)
-                os.execv(apprun, [apprun, "--update", self.folder, "--tag", manifest.tag, "--fetched"])
+                env = {k: v for k, v in os.environ.items() if k not in ("APPDIR", "APPIMAGE", "ARGV0", "OWD", "LD_LIBRARY_PATH")}
+                os.execve(apprun, [apprun, "--update", folder, "--tag", manifest.tag, "--fetched"], env)
             except Exception as error:
-                app.lines.put(("launcher", ("failed", work, str(error))))
+                app.lines.put(("launcher", ("failed", work, str(error) or type(error).__name__)))
         threading.Thread(target=run, daemon=True).start()
 
     def run_update(self):
@@ -517,10 +588,12 @@ class Launcher(object):
 
     # ---- the work itself: make_game.py as a hidden program, and what it says ----
     def begin_work(self, work):
-        self.work, self.state, self.ready_note, self.copied = work, "working", None, None
+        self.work, self.state, self.ready_note, self.copied, self.exited_at = work, "working", None, None, None
         self.show_details(False)
         self.menu_open = True   # (the panel holds the bar that fills: the build's in Build, an update's at its foot)
         self.draw()
+        if self.tick_job is not None:   # (one tick at a time: a build started again within the second of the last one's)
+            self.app.after_cancel(self.tick_job)
         self.tick()
 
     def run(self, args, env):
@@ -537,9 +610,11 @@ class Launcher(object):
         self.proc = self.app.proc = proc   # (the builder's own close asks before it stops a build)
 
         def read():
-            for line in proc.stdout:
-                self.app.lines.put(("launcher", ("line", work, line.rstrip("\n"))))
-            self.app.lines.put(("launcher", ("exit", work, proc.wait())))
+            try:
+                for line in proc.stdout:
+                    self.app.lines.put(("launcher", ("line", work, line.rstrip("\n"))))
+            finally:   # (its end always said: else the screen would wait on it for good)
+                self.app.lines.put(("launcher", ("exit", work, proc.wait())))
         threading.Thread(target=read, daemon=True).start()
 
     def work_line(self, line):
@@ -561,8 +636,15 @@ class Launcher(object):
         if self.state != "working" or not self.canvas.winfo_exists():
             return
         self.canvas.itemconfigure("step", text=self.fit("LsLabel", self.work.step_line(), self.u(235)))
-        if self.work.update and self.work.under_bar(self.typical) != self.foot_note:   # (the time left under an update's bar)
+        # (the time left under an update's bar, while the panel shows it)
+        if self.work.update and self.menu_open and self.work.under_bar(self.typical) != self.foot_note:
             self.draw()
+        # (make_game.py gone, and its output not ended 10 seconds on: a program it started holds it open. It is over all the same)
+        proc = self.proc
+        if proc is not None and proc.poll() is not None:
+            self.exited_at = self.exited_at or time.time()
+            if time.time() - self.exited_at > 10:
+                return self.work_ended(proc.returncode)
         self.tick_job = self.app.after(1000, self.tick)
 
     def cancel(self):
@@ -570,16 +652,28 @@ class Launcher(object):
         if self.state != "working" or work is None:
             return
         work.cancelled = True
-        if self.proc is not None and self.proc.poll() is None:
+        proc = self.proc
+        if proc is not None and proc.poll() is None:
             try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
+                os.killpg(proc.pid, signal.SIGTERM)
             except OSError:
                 pass
-        else:   # (that version's builder still being downloaded: what it brings is not used)
+            self.app.after(8000, lambda: self.kill(proc))   # (one that has not stopped 8 seconds on is made to)
+        else:   # (that version's builder still being downloaded: it stops at its next part, and what it brings is not used)
             self.work_ended(1)
+
+    @staticmethod
+    def kill(proc):
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
 
     def work_ended(self, code):
         work, hb = self.work, self.hb
+        if work is None or self.state != "working":
+            return   # (said twice: the end of its program seen by tick, then its output's end)
         self.proc = self.app.proc = None
         folder = work.done or (self.folder if work.update else None)
         ok = code == 0 and bool(folder) and hb.game_ready(folder) and not work.cancelled
@@ -663,6 +757,7 @@ class Launcher(object):
         box, log = self.log_box, self.work.log if self.work else []
         if box is None:
             return
+        box.configure(state="normal")   # (read-only to the player: only this writes in it)
         if self.log_shown > len(log):
             box.delete("1.0", "end")
             self.log_shown = 0
@@ -670,6 +765,7 @@ class Launcher(object):
             box.insert("end", "".join(line + "\n" for line in log[self.log_shown:]))
             self.log_shown = len(log)
             box.see("end")
+        box.configure(state="disabled")
 
     def draw_log(self):
         """(right of the panel, between the wordmark's line and Play)"""
@@ -678,7 +774,7 @@ class Launcher(object):
         if self.log_box is None:
             self.log_box = tk.Text(c, font="LsLog", background="#0A0A0A", foreground=QUIET, insertbackground=QUIET, wrap="none",
                                    borderwidth=0, highlightthickness=1, highlightbackground="#303030", highlightcolor="#303030",
-                                   padx=u(10), pady=u(10), cursor="xterm")
+                                   padx=u(10), pady=u(10), cursor="xterm", state="disabled")
             self.log_shown = 0
         x = u(PANEL) + u(16)
         c.create_window(x, u(170), window=self.log_box, anchor="nw", width=max(u(120), w - x - u(16)),
@@ -706,10 +802,14 @@ class Launcher(object):
         if w < 2 or h < 2:
             return
         self.photos.pop("ground", None)
-        ground = self.photo("ground", lambda: art.background(w, h, self.scale))
         self.canvas.delete("ground")
-        self.canvas.create_image(0, 0, image=ground, anchor="nw", tags="ground")
-        self.canvas.tag_lower("ground")
+        try:
+            ground = self.photo("ground", lambda: art.background(w, h, self.scale))
+        except (MemoryError, ValueError, tk.TclError):   # (no picture: the canvas's own dark ground, the rest drawn all the same)
+            traceback.print_exc()
+        else:
+            self.canvas.create_image(0, 0, image=ground, anchor="nw", tags="ground")
+            self.canvas.tag_lower("ground")
         self.draw()
 
     def region(self, x0, y0, x1, y1, press=None, over=None, tip=None):
@@ -757,10 +857,30 @@ class Launcher(object):
             self.link(x, y, text, press, anchor="w")
             x += width + self.u(8)
 
-    def wrapped(self, x, y, text, font, ink, width, anchor="nw", justify="left"):
-        """text in lines no wider than width. Returns its bottom (anchor n...) or top (anchor s...)"""
-        item = self.canvas.create_text(x, y, text=text, font=font, fill=ink, anchor=anchor, width=width, justify=justify, tags="ui")
-        box = self.canvas.bbox(item)
+    def wrapped(self, x, y, text, font, ink, width, anchor="nw", justify="left", lines=None):
+        """text in lines no wider than width, and no more than lines of them (cut short with …: a long error stays clear of
+        what is under it; Copy error log has all of it). Returns its bottom (anchor n...) or top (anchor s...)"""
+        c = self.canvas
+        item = c.create_text(x, y, text=text, font=font, fill=ink, anchor=anchor, width=width, justify=justify, tags="ui")
+        if lines is not None:
+            line = int(self.app.tk.call("font", "metrics", font, "-linespace"))
+            room = line * max(1, lines) + line // 2   # (half a line over: the box Tk gives may be a pixel taller)
+
+            def fits(n):
+                c.itemconfigure(item, text=text[:n].rstrip() + "…")
+                y0, y1 = c.bbox(item)[1::2]
+                return y1 - y0 <= room
+            y0, y1 = c.bbox(item)[1::2]
+            if y1 - y0 > room:
+                low, high = 0, len(text) - 1
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if fits(mid):
+                        low = mid
+                    else:
+                        high = mid - 1
+                fits(low)
+        box = c.bbox(item)
         return box[1] if anchor.startswith("s") else box[3]
 
     def soft_word(self, cx, cy, text, press, tip=None):
@@ -830,7 +950,8 @@ class Launcher(object):
             under = picked.label if picked.kind != "dev" else picked.build
         else:
             under = version_name(self.built) if self.built and is_release(self.built) else self.built or "Your game"
-        self.soft_word(w // 2, h - u(42), under, (lambda: self.open_page(self.folder)) if game else None, "Open the game folder")
+        self.soft_word(w // 2, h - u(42), self.fit("LsLine", under, u(400)), (lambda: self.open_page(self.folder)) if game else None,
+                       "Open the game folder")
 
     def menu_button(self, x, y, dot=False):
         """Menu (Paper: black, square, 8 by 20 around its lines and word; a dot after it: a newer release is out)"""
@@ -850,7 +971,12 @@ class Launcher(object):
     def draw_panel(self):
         c, u = self.canvas, self.u
         h = self.size[1]
-        c.create_image(0, 0, image=self.photo(("bar", h), lambda: art.bar(PANEL, h, self.scale)), anchor="nw", tags="ui")
+        # (one panel as tall as the screen, cut by the window: one made for every height a window is dragged through would all be kept)
+        tall = max(h, self.app.winfo_screenheight())
+        if ("bar", tall) not in self.photos:
+            for key in [k for k in self.photos if k[0] == "bar"]:
+                del self.photos[key]
+        c.create_image(0, 0, image=self.photo(("bar", tall), lambda: art.bar(PANEL, tall, self.scale)), anchor="nw", tags="ui")
         self.region(0, 0, u(PANEL), h, press=lambda: None)   # (a press in the panel itself, between its rows: it stays)
         # Close menu: a row the panel's width, 40 high from 42
         y = u(42)
@@ -893,15 +1019,16 @@ class Launcher(object):
             self.link(cx, bottom - u(9), "Cancel", self.cancel, font="LsUnder", ink=BUSY)
             # (under the bar: that it is a rebuild, then the step and the time left; tick draws it again when it changes)
             self.foot_note = work.under_bar(self.typical)
-            y = self.wrapped(cx, bottom - u(18) - u(8), self.foot_note, "LsLabel", LABEL, u(235), anchor="s", justify="center")
+            y = self.wrapped(cx, bottom - u(18) - u(8), self.foot_note, "LsLabel", LABEL, u(235), anchor="s", justify="center",
+                             lines=3)
             top = y - u(8) - u(38)
             self.bar_fill(x0, top, x1, top + u(38), work.fraction, work.bar())
         elif update and self.state == "stopped":
-            self.links(cx, bottom - u(8), [("Show details", lambda: self.show_details(not self.details)),
+            self.links(cx, bottom - u(8), [("Show details" if not self.details else "Hide details", lambda: self.show_details(not self.details)),
                                            (self.copied or "Copy error log", self.copy_details)])
             y = bottom - u(16) - u(8) - u(38)
             self.button(x0, y, x1, y + u(38), "Update stopped", STOP, press=self.retry, tip="Try again")
-            top = self.wrapped(x0, y - u(8), work.error.rstrip(".") + ". " + KEPT, "LsWhy", WHY, u(235), anchor="sw")
+            top = self.wrapped(x0, y - u(8), work.error.rstrip(".") + ". " + KEPT, "LsWhy", WHY, u(235), anchor="sw", lines=5)
         elif self.newer_out() and self.state != "working":
             # (that installing it rebuilds the game, and how long that takes here: not in Paper, said before it is pressed)
             y = self.wrapped(cx, bottom, "Rebuilds your game from your game files · %s" % about(self.typical), "LsLabel", LABEL,
@@ -944,7 +1071,7 @@ class Launcher(object):
         y = self.field(y, "Game File", words, WHY if there and good is False else FIELD_INK, None if busy else self.choose_source,
                        app.nup.get() if there and app.kind.get() == "nup" else None)
         if there and good is False:   # (why the file chosen cannot be built from)
-            y = self.wrapped(x0, y + u(4), said, "LsLabel", WHY, u(235))
+            y = self.wrapped(x0, y + u(4), said, "LsLabel", WHY, u(235), lines=3)
         out = app.out.get().strip()
         y = self.field(y + u(8), "Install to", out or "Choose a folder", FIELD_INK if out else LABEL,
                        None if busy else self.choose_out, os.path.expanduser(out) if out else None)
@@ -958,7 +1085,10 @@ class Launcher(object):
             return
         if building:   # (it stopped: Paper's "Build Menu - Building Error")
             self.button(x0, top, x1, top + u(38), "Build stopped", STOP, press=self.retry, tip="Try again")
-            self.wrapped(x0, top + u(38) + u(8), work.error.rstrip(".") + ". " + KEPT, "LsWhy", WHY, u(235))
+            line = int(self.app.tk.call("font", "metrics", "LsWhy", "-linespace"))
+            room = bottom - u(17) - u(16) - (top + u(38) + u(8))   # (down to the links under it)
+            self.wrapped(x0, top + u(38) + u(8), work.error.rstrip(".") + ". " + KEPT, "LsWhy", WHY, u(235),
+                         lines=max(1, room // max(1, line)))
             self.links(cx, bottom - u(17), [("Show details" if not self.details else "Hide details", lambda: self.show_details(not self.details)),
                                             (self.copied or "Copy error log", self.copy_details)])
             return
@@ -968,7 +1098,7 @@ class Launcher(object):
         y = top + u(38)
         line, ink = self.build_line(there, out, said, good)
         if line:
-            y = self.wrapped(cx, y + u(8), line, "LsLabel", ink, u(235), anchor="n", justify="center")
+            y = self.wrapped(cx, y + u(8), line, "LsLabel", ink, u(235), anchor="n", justify="center", lines=3)
         self.box(0, y + u(16), u(PANEL - 1), y + u(16) + max(1, u(1)), RULE)
         self.draw_options(bottom)
 
@@ -1020,11 +1150,19 @@ class Launcher(object):
     def set_language(self, name):
         self.app.language.set(name)
         self.app.cfg["language"] = next((c for c, n in self.hb.make_game.LANGUAGES if n == name), "en-US")
-        self.hb.save_config(self.app.cfg)
+        self.save()
 
     def set_option(self, key, value):
         self.app.cfg[key] = "" if value == "Auto" else value
-        self.hb.save_config(self.app.cfg)
+        self.save()
+
+    def save(self):
+        """builder.ini written. One that cannot be (a full disk, a folder not the player's): the choices hold until the
+        launcher closes, and nothing stops for it"""
+        try:
+            self.hb.save_config(self.app.cfg)
+        except OSError as error:
+            print("Hookshot: the settings could not be saved: %s" % error, file=sys.stderr)
 
     def pick_from(self, names, then):
         """a list under the pointer, to pick one of (the language, the workers, the memory)"""
@@ -1036,8 +1174,7 @@ class Launcher(object):
                 self.draw()
         for name in names:
             menu.add_command(label=name, command=lambda name=name: picked(name))
-        self.hide_tip()
-        menu.tk_popup(self.canvas.winfo_pointerx(), self.canvas.winfo_pointery())
+        self.popup(menu)
 
     # ---- the Releases tab ----
     def draw_releases(self, y, bottom):
@@ -1045,11 +1182,16 @@ class Launcher(object):
         a press brings with the download mark, the one being brought with the refresh mark, and the fold row"""
         u = self.u
         rows = tab_rows(self.lists, self.pre_on())
+        # (as Windows says it when GitHub did not answer: the list holds what is on this PC alone)
+        note = "GitHub did not answer: only the versions on this PC are listed." if self.checked and not self.releases else None
         if not rows:
-            self.row(y, "Looking for releases…" if self.checking or not self.checked else "GitHub did not answer", FOLD)
+            if note and not self.checking:
+                self.wrapped(u(16), y + u(10), note, "LsLabel", FOLD, u(235), lines=3)
+            else:
+                self.row(y, "Looking for releases…", FOLD)
             return
         fold = self.lists["older"] > 0
-        self.rows_fit = max(1, (bottom - y + u(4)) // u(44) - (1 if fold else 0))
+        self.rows_fit = max(1, (bottom - y + u(4)) // u(44) - (1 if fold else 0) - (1 if note else 0))
         self.scroll = min(self.scroll, max(0, len(rows) - self.rows_fit))
         busy = self.state == "working"
         for choice in rows[self.scroll:self.scroll + self.rows_fit]:
@@ -1068,8 +1210,10 @@ class Launcher(object):
             y = self.row(y, choice.label, ink, press, mark, tip) + u(4)
         if fold:
             folded = self.lists["folded"]
-            self.row(y, "%d older releases" % self.lists["older"] if folded else "Fewer releases", FOLD, self.fold,
-                     "down" if folded else "up")
+            y = self.row(y, "%d older releases" % self.lists["older"] if folded else "Fewer releases", FOLD, self.fold,
+                         "down" if folded else "up") + u(4)
+        if note:
+            self.wrapped(u(16), y + u(4), note, "LsLabel", FOLD, u(235), lines=2)
 
     def row(self, y, text, ink, press=None, mark=None, tip=None):
         """a row of the Releases tab, 40 high across the panel: its words from 16, a mark of 24 at its right"""
@@ -1142,7 +1286,7 @@ class Launcher(object):
     def save_options(self):
         app = self.app
         app.cfg.update(prepare="1" if app.prepare.get() else "0", dlss="1" if app.dlss.get() else "0")
-        self.hb.save_config(app.cfg)
+        self.save()
 
     def prepare_pressed(self):
         self.app.prepare.set(not self.app.prepare.get())
@@ -1161,7 +1305,10 @@ class Launcher(object):
         """Enable pre-releases: the update track, Release or Release candidate (a nightly one kept is turned off to Release)"""
         app = self.app
         app.track.set(self.hb.TRACK_NAMES["release" if self.pre_on() else "rc"])
-        app.on_track_changed()
+        try:
+            app.on_track_changed()   # (saved, and the builder's own check of the newest asked again)
+        except OSError as error:
+            print("Hookshot: the settings could not be saved: %s" % error, file=sys.stderr)
         self.fill()
 
     # ---- the pointer ----
@@ -1192,7 +1339,8 @@ class Launcher(object):
 
     def on_press(self, event):
         self.hide_tip()
-        self.down = self.at(event.x, event.y)
+        hit = self.at(event.x, event.y)
+        self.down = (hit, self.regions[hit]["box"]) if hit is not None else None
 
     def on_release(self, event):
         down, self.down = self.down, None
@@ -1201,7 +1349,8 @@ class Launcher(object):
             if down is None:
                 self.show_menu(False)   # (a press in the window that no button took: the menu closes)
             return
-        if hit == down and self.regions[hit]["press"]:
+        # (the same place pressed and let go: a build's line can draw the screen again in between, so it is told by where it is)
+        if down == (hit, self.regions[hit]["box"]) and self.regions[hit]["press"]:
             self.regions[hit]["press"]()
 
     def on_wheel(self, event, way):
@@ -1226,18 +1375,27 @@ class Launcher(object):
         top.wm_geometry("+%d+%d" % (c.winfo_pointerx() + self.u(12), c.winfo_pointery() + self.u(18)))
 
     def hide_tip(self):
-        if self.tip_job is not None:
-            self.app.after_cancel(self.tip_job)
-            self.tip_job = None
-        if self.tip_window is not None:
-            self.tip_window.destroy()
-            self.tip_window = None
+        job, top, self.tip_job, self.tip_window = self.tip_job, self.tip_window, None, None
+        try:   # (also as the window closes, when Tk may have taken them already)
+            if job is not None:
+                self.app.after_cancel(job)
+            if top is not None:
+                top.destroy()
+        except tk.TclError:
+            pass
 
     def on_destroy(self, event):
         """(the window closes, or the builder's own pages take it)"""
         if event.widget is not self.canvas:
             return
         self.hide_tip()
+        for job in (self.redraw_job, self.tick_job, self.said_job):   # (none of them may draw on a canvas that is gone)
+            if job is not None:
+                try:
+                    self.app.after_cancel(job)
+                except tk.TclError:
+                    pass
+        self.redraw_job = self.tick_job = self.said_job = None
         for key, bound in self.keys:
             try:
                 self.app.unbind(key, bound)
@@ -1284,4 +1442,7 @@ class Launcher(object):
     def play(self):
         """Play: the game the folder holds (nothing while there is none, or while it is being built or brought)"""
         if self.state != "working" and self.hb.game_ready(self.folder):
-            self.app.play_and_close(self.folder)
+            try:
+                self.app.play_and_close(self.folder)
+            except OSError as error:   # (the game could not be started: the launcher stays, and says why)
+                messagebox.showerror("Hookshot", "The game could not be started: %s" % error, parent=self.app)

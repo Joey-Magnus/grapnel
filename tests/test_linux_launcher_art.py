@@ -94,6 +94,24 @@ for channels in (3, 4):
         finally:
             os.remove(path)
 
+# ---- a PNG cut short, or not a picture at all: a ValueError, which picture() takes as no picture (the window's page colour),
+# not an exception that leaves the window unpainted ----
+whole = art.png(rng.integers(0, 256, size=(9, 13, 3), dtype=np.uint8))
+for name, data in (("cut inside a chunk's length", whole[:35]), ("cut inside its pixels", whole[:-20]), ("no chunks", whole[:8]),
+                   ("not a PNG", b"GIF89a")):
+    path = os.path.join(os.environ.get("TMPDIR") or os.environ.get("TEMP") or "/tmp", "hookshot_launcher_art_cut.png")
+    with open(path, "wb") as f:
+        f.write(data)
+    try:
+        art.read_png(path)
+        check("a PNG %s is refused" % name, False)
+    except ValueError:
+        pass
+    except Exception as error:   # (zlib.error is what a cut stream of pixels raises: picture() takes that too)
+        check("a PNG %s: a ValueError or zlib.error" % name, isinstance(error, art.zlib.error), repr(error))
+    finally:
+        os.remove(path)
+
 # ---- the picture it ships, and the window made of it ----
 picture = art.picture()
 check("launcher/picture.png is there", picture is not None)

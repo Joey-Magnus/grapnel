@@ -33,6 +33,19 @@ for tag, want in (("v1.0.0", True), ("1.0.0", True), ("v2.2.0-rc.1", True), ("v1
 check("a release is ahead of its own pre-release", ll.newer("v1.2.0", "v1.2.0-rc.1"), True)
 check("a pre-release is not ahead of its release", ll.newer("v1.2.0-rc.1", "v1.2.0"), False)
 check("a later release is ahead", ll.newer("v1.10.0", "v1.9.9"), True)
+# (release candidates of one release, as Hookshot tags them: by their number, rc.10 after rc.9; the next one is an update)
+check("rc.2 after rc.1", (ll.newer("v2.2.0-rc.2", "v2.2.0-rc.1"), ll.newer("v2.2.0-rc.1", "v2.2.0-rc.2")), (True, False))
+check("rc.10 after rc.9", ll.newer("v2.2.0-rc.10", "v2.2.0-rc.9"), True)
+check("rc after beta, and more parts after fewer", (ll.newer("v2.2.0-rc.1", "v2.2.0-beta.3"), ll.newer("v2.2.0-rc.1.1", "v2.2.0-rc.1")), (True, True))
+check("one release whatever its capitals", (ll.newer("v2.2.0-RC.1", "2.2.0-rc.1"), ll.newer("2.2.0-rc.1", "v2.2.0-RC.1")), (False, False))
+_rc = ll.make_lists([("v2.2.0-rc.1", True, True), ("v2.2.0-rc.10", True, True), ("v2.2.0-rc.2", True, True), ("v2.1.0", False, True)],
+                    "v2.1.0", "v2.1.0", [], True, None, False)
+check("the newest candidate first, whatever order GitHub gave", [c.label for c in _rc["pre"]], ["v2.2.0-rc.10", "v2.2.0-rc.2", "v2.2.0-rc.1"])
+check("candidates among the releases, in order", [c.label for c in ll.tab_rows(_rc, True)],
+      ["v2.2.0-rc.10", "v2.2.0-rc.2", "v2.2.0-rc.1", "v2.1.0 - Latest"])
+_old = ll.make_lists([("v1.2.0", False, True), ("v1.1.0", False, True)], "v1.2.0", "v1.1.0", [], False, None, False)
+check("a folder without its game files says why nothing can be brought", _old["releases"][0].tip,
+      "This game folder was built before it kept its game files: build it again from the Build tab")
 check("the same tag with and without v", ll.same_tag("V1.0.0", "1.0.0"), True)
 check("no tag is no tag", ll.same_tag(None, "1.0.0"), False)
 

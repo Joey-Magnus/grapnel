@@ -3,6 +3,7 @@ LaunchWork.cs and the build's steps in MainWindow.xaml.cs, the same rules. The l
 of that version's builder, then make_game.py's @@stage, @@progress, @@plan, @@file, @@eta, @@done, @@error) are read into
 one number (the bar that fills, Paper's "Hookshot v2") and the line under it, the step under way. Nothing here touches the
 window, the disk or a process (tests/test_linux_launcher_work.py)."""
+import math
 import re
 import time
 
@@ -135,9 +136,11 @@ class Work(object):
                 self.count()
         elif line.startswith("@@eta "):
             try:
-                self.eta = float(line[6:])
+                eta = float(line[6:])
             except ValueError:
-                pass
+                return
+            if math.isfinite(eta):   # (inf or nan would make the time left raise: not a time, so it is not taken)
+                self.eta = max(eta, 0.0)
         elif line.startswith("@@times "):
             p = line.split(" ")
             if len(p) == 4:

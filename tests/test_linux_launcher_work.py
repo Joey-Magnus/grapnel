@@ -113,6 +113,198 @@ for seconds, want in ((20, "less than a minute left"), (60, "1 min left"), (1080
 for seconds, want in ((20, "less than a minute"), (70, "a minute"), (2460, "41 minutes"), (3900, "1 h 5 min")):
     check("span(%d)" % seconds, lw.span(seconds), want)
 
+# ---- a time that is no time: the line under the bar is still written (inf made it raise, once a second) ----
+w = lw.Work("Building your game")
+w.line("@@stage compile x")
+for line in ("@@eta inf", "@@eta nan", "@@eta -inf", "@@eta soon"):
+    w.line(line)
+check("no time taken from them", (w.eta, w.step_line()), (-1.0, "Compile · estimating..."))
+w.line("@@eta -5")
+check("a time already past: less than a minute", w.step_line(), "Compile · less than a minute left")
+w.line("@@eta inf")
+try:
+    check("@@eta inf after a time: that time stays", w.step_line(), "Compile · less than a minute left")
+except OverflowError as error:
+    check("@@eta inf: the line under the bar", repr(error), "written")
+w.line("@@progress inf")
+check("a share past the whole stops at the stage's end", round(w.fraction, 3), 0.9)
+
+# ---- the download of a version's builder, as the launcher says it: once a part ----
+w = lw.Work("Updating to v2.1.0", update=True, fetch=True)
+w.note("Keeping usr (unchanged), part 1 of 4")
+w.note("Downloading python (310 MB), part 3 of 4")
+check("part 3 of 4", (round(w.fraction, 3), w.step_line()),
+      (0.06, "Getting its builder: downloading python (310 MB), part 3 of 4..."))
+
+
+# ---- the launcher's screen, its work run without a window (builder/linux/hookshot_launcher.py) ----
+def launcher_module():
+    """hookshot_launcher, or None when this Python has no Tk. Its drawing (numpy) is not used here: a stand-in when numpy
+    is missing"""
+    import types
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        return None
+    try:
+        import launcher_art  # noqa: F401
+    except ImportError:
+        sys.modules["launcher_art"] = types.ModuleType("launcher_art")
+    import hookshot_launcher
+    return hookshot_launcher
+
+
+hl = launcher_module()
+if hl is None:
+    print("(no Tk in this Python: the launcher's screen is not checked)")
+else:
+    import contextlib
+    import io
+    import json
+    import shutil
+    import tempfile
+
+    class Lines(object):
+        def __init__(self):
+            self.said = []
+
+        def put(self, what):
+            self.said.append(what)
+
+    class App(object):
+        def __init__(self):
+            self.lines, self.proc, self.jobs = Lines(), None, []
+
+        def after(self, ms, then):
+            self.jobs.append((ms, then))
+            return "after#%d" % len(self.jobs)
+
+        def after_cancel(self, job):
+            pass
+
+    class Tools(object):
+        """(hookshot_builder, as the launcher uses it)"""
+        ready = False
+        made = []
+
+        def game_ready(self, folder):
+            if isinstance(self.ready, Exception):
+                raise self.ready
+            return self.ready
+
+        def add_to_menu(self, folder):
+            self.made.append(folder)
+
+    def screen():
+        """a Launcher whose drawing and folder reading are left out: what it does is noted instead"""
+        s = hl.Launcher.__new__(hl.Launcher)
+        s.app, s.hb, s.did = App(), Tools(), []
+        s.work, s.proc, s.state, s.folder, s.built, s.bringing, s.tick_job = None, None, "idle", "/games/Hookshot", "v2.1.0", None, None
+        s.details, s.log_box, s.typical, s.menu_open, s.exited_at = False, None, None, True, None
+        s.canvas = type("Canvas", (), {"winfo_exists": lambda self: True, "itemconfigure": lambda self, *a, **k: None})()
+        s.fit = lambda font, text, width: text
+        s.u = lambda n: n
+        s.draw = lambda: s.did.append("draw")
+        s.fill = lambda: s.did.append("fill")
+        s.show_details = lambda on: None
+        s.run_update = lambda: s.did.append("run_update")
+        s.enter = lambda folder, note=None: (setattr(s, "state", "idle"), s.did.append(("enter", folder, note)))
+        return s
+
+    # Cancel while that version's builder is downloaded: what the download brings or says after is not used
+    s = screen()
+    work = s.work = hl.Work("Updating to v2.2.0", update=True, fetch=True)
+    s.state = "working"
+    s.cancel()
+    check("cancelled while downloading: as it was", (s.state, work.cancelled), ("idle", True))
+    for late in (("note", work, "Downloading usr (1 MB), part 2 of 4"), ("fetched", work), ("failed", work, "GitHub answered 500")):
+        s.message(late)
+    check("and nothing after it is acted on (a build was started once the download ended)", ("run_update" in s.did, s.state, work.error),
+          (False, "idle", None))
+
+    # a build that stopped: its end said a second time changes nothing
+    s = screen()
+    work = s.work = hl.Work("Building your game")
+    s.state = "working"
+    s.message(("line", work, "@@error The compiler stopped on code_006.c"))
+    s.message(("exit", work, 1))
+    check("stopped, with why", (s.state, work.error), ("stopped", "The compiler stopped on code_006.c"))
+    work.done, s.hb.ready = "/games/Hookshot", True   # (so that, taken again, this end would read as a build that ended well)
+    s.message(("exit", work, 0))
+    check("its end said again: still stopped", s.state, "stopped")
+    s.message(("exit", hl.Work("Building your game"), 0))
+    check("another build's end: not this one's", s.state, "stopped")
+
+    # what goes wrong while its end is read: the screen says so instead of waiting for good (and the builder's loop goes on)
+    s = screen()
+    work = s.work = hl.Work("Building your game")
+    s.state = "working"
+    s.message(("line", work, "@@done /games/Hookshot"))
+    s.hb.ready = RuntimeError("the disk went away")
+    with contextlib.redirect_stderr(io.StringIO()):
+        s.message(("exit", work, 0))
+    check("an exception in its end: stopped, with it", (s.state, work.error), ("stopped", "The launcher stopped: the disk went away"))
+
+    # a build that ended well
+    s = screen()
+    work = s.work = hl.Work("Building your game")
+    s.state, s.hb.ready = "working", True
+    s.message(("line", work, "@@done /games/Hookshot"))
+    s.message(("exit", work, 0))
+    check("built: the launcher of the folder", [d for d in s.did if isinstance(d, tuple)][0][:2], ("enter", "/games/Hookshot"))
+
+    # make_game.py gone and its output never ended (a program it started holds it): over all the same, 10 seconds on
+    class Gone(object):
+        returncode = 0
+        pid = 0
+
+        def poll(self):
+            return 0
+    s = screen()
+    work = s.work = hl.Work("Building your game")
+    s.state, s.proc = "working", Gone()
+    s.tick()
+    check("gone a moment: still waited on", s.state, "working")
+    s.exited_at -= 11
+    s.tick()
+    check("gone 11 seconds: over", (s.state, work.error), ("stopped", "The build tools stopped without saying why"))
+
+    # GitHub's releases: an answer that is not a list (rate limited) is no answer, not an exception
+    os.environ.pop("HOOKSHOT_LATEST_TAG", None)
+    limited = json.dumps({"message": "API rate limit exceeded"}).encode()
+    check("rate limited", hl.release_list(lambda url: limited), ([], None))
+    check("no network", hl.release_list(lambda url: (_ for _ in ()).throw(OSError("unreachable"))), ([], None))
+    listed = json.dumps([{"tag_name": "v1.2.0-rc.1", "prerelease": True, "assets": [{"name": hl.linux_update.LIST_NAME}]},
+                         {"tag_name": "v1.1.0", "assets": None}, {"tag_name": "v1.0.0", "draft": True},
+                         {"tag_name": "nightly"}]).encode()
+    check("GitHub's answer", hl.release_list(lambda url: listed), ([("v1.2.0-rc.1", True, True), ("v1.1.0", False, False)], "v1.1.0"))
+    os.environ["HOOKSHOT_LATEST_TAG"] = "v1.2.0-rc.1, v1.1.0,v1.0.0?"
+    check("(development) made-up releases", hl.release_list(lambda url: limited),
+          ([("v1.2.0-rc.1", True, True), ("v1.1.0", False, True), ("v1.0.0", False, False)], "v1.1.0"))
+    del os.environ["HOOKSHOT_LATEST_TAG"]
+
+    # how long a build took here: a record that is no time is left out
+    class Times(object):
+        def __init__(self, builds):
+            self.builds = builds
+
+        def load_times(self, work):
+            return {"builds": self.builds}
+    check("the middle of the last five", hl.typical_build(Times([{"total_seconds": s} for s in (9, 100, 300, 200, 0, 400)])), 300.0)
+    check("inf and nan left out", hl.typical_build(Times([{"total_seconds": s} for s in (float("inf"), float("nan"), 600)])), 600.0)
+    check("none kept", hl.typical_build(Times([])), None)
+
+    # the folder: one whose version file is not text, and a file dialog's first folder
+    here = tempfile.mkdtemp(prefix="hookshot launcher ü ")
+    try:
+        with open(os.path.join(here, "hookshot_version.txt"), "wb") as f:
+            f.write(b"version=\xff\xfe\n")
+        check("a version file that is not text: no version, no exception", hl.folder_version(here), (None, False))
+        check("the first folder: the nearest one that is there", hl.existing_dir(os.path.join(here, "gone", "deeper")), here)
+        check("none chosen: home", hl.existing_dir(""), os.path.expanduser("~"))
+    finally:
+        shutil.rmtree(here, ignore_errors=True)
+
 if failed:
     print("\n".join(failed))
     sys.exit(1)
