@@ -65,11 +65,11 @@ def tree(p):
     p = Path(p)
     if not p.is_dir():
         return out
-    for d, dirs, files in os.walk(p):
+    for d, dirs, files in os.walk(p):   # (keys with /, as save_a() writes them: Windows' relpath has backslashes)
         for n in dirs:
-            out[os.path.relpath(os.path.join(d, n), p)] = None
+            out[Path(os.path.relpath(os.path.join(d, n), p)).as_posix()] = None
         for n in files:
-            out[os.path.relpath(os.path.join(d, n), p)] = Path(d, n).read_bytes()
+            out[Path(os.path.relpath(os.path.join(d, n), p)).as_posix()] = Path(d, n).read_bytes()
     return out
 
 
@@ -151,7 +151,7 @@ def main():
         tmp = Path(tmp)
         (tmp / "driver.c").write_text("#include <stdarg.h>\n" + DRIVER, encoding="utf-8")
         exe = tmp / ("driver.exe" if not posix else "driver")
-        subprocess.run([cc, "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE", "-I", str(ROOT / "host"),
+        subprocess.run([cc, "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE", "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT / "host"),
                         str(tmp / "driver.c"), "-o", str(exe)], check=True)
         c = Check(exe, tmp / "runs")
         A, B = save_a(), save_b()
