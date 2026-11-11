@@ -125,6 +125,16 @@ class DLSS5Session:
         self.info = json.loads(self.path.read_text())
         self.run = self.path.parent
 
+    def refresh_helper(self):
+        """Pick up a session-local replacement without redirecting the IPC or prefix."""
+        current = json.loads(self.path.read_text())
+        for key in ('base', 'prefix', 'shm', 'shmctl'):
+            if current.get(key) != self.info.get(key):
+                raise ValueError(f'DLSS session identity changed: {key}')
+        for key in ('helper_launcher_pid', 'helper_launcher_start_ticks'):
+            self.info[key] = current[key]
+        return self.info['helper_launcher_pid'], self.info['helper_launcher_start_ticks']
+
     def control(self, *args):
         if not Path(self.info['shm']).is_file():
             raise RuntimeError('This DLSS session has ended; its shared memory was released')
@@ -133,13 +143,14 @@ class DLSS5Session:
         return parse_status(result.stdout)
 
     def status(self):
-        pid = self.info['helper_launcher_pid']
-        stamp = self.info['helper_launcher_start_ticks']
+        pid, stamp = self.refresh_helper()
         alive = stamp is not None and process_stamp(pid) == stamp
-        if not alive:
+        # A dead helper can leave a live game passing through original frames.
+        # Its IPC remains observable until the adapter actually releases it.
+        if not Path(self.info['shm']).is_file():
             result = self.run / 'result.json'
             data = json.loads(result.read_text()).get('status', {}) if result.is_file() else {}
-            data.update(session=str(self.path), launcher_alive=False, archived=True, observed_at=time.time(),
+            data.update(session=str(self.path), launcher_alive=alive, archived=True, observed_at=time.time(),
                         proof='saved session status, not a live model evaluation')
             return data
         data = self.control('status')
@@ -282,6 +293,10 @@ def run(base, command, preferences_path=None):
                 try:
                     if session is not None:
                         session.control('quit')
+                        if not wait_replacement_helper(session, info['helper_launcher_pid'],
+                                                       info['helper_launcher_start_ticks']):
+                            print('DLSS replacement helper did not exit after quit; stopping its private wineserver',
+                                  file=sys.stderr, flush=True)
                     if helper is not None:
                         try:
                             helper.wait(timeout=10)
@@ -299,6 +314,26 @@ def run(base, command, preferences_path=None):
                     server = Path(cfg['proton']).parent / 'files/bin/wineserver'
                     if server.is_file():
                         stop_private_server(server, env)
+
+
+def wait_replacement_helper(session, original_pid, original_stamp, timeout=10):
+    """Allow a replacement's resource teardown before killing the private server.
+
+    The original child still uses Popen.wait below. A replacement is not our
+    child: observe only its exact start stamp, never signal a PID from metadata.
+    A single deadline also bounds repeated replacements during shutdown.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        pid, stamp = session.refresh_helper()
+        if (pid, stamp) == (original_pid, original_stamp):
+            return True
+        if stamp is None or process_stamp(pid) != stamp:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(.02, remaining))
 
 
 def stop_private_server(server, env):

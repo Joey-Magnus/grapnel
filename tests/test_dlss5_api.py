@@ -10,6 +10,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -26,6 +27,86 @@ spec.loader.exec_module(api)
 
 
 class AdapterTests(unittest.TestCase):
+    def test_live_transport_survives_helper_death_and_metadata_refresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            cfg = self.fixture(base)
+            shm = base / 'shm.bin'
+            shm.touch(); shm.with_suffix('.ready').touch()
+            path = base / 'session.json'
+            info = dict(base=str(base), prefix=str(base / 'prefix'), shm=str(shm),
+                        shmctl=cfg['artifacts']['shmctl']['path'],
+                        helper_launcher_pid=os.getpid(), helper_launcher_start_ticks='stale')
+            path.write_text(json.dumps(info))
+            session = api.DLSS5Session(path)
+            status = session.status()
+            self.assertFalse(status['launcher_alive'])
+            self.assertNotIn('archived', status)
+            self.assertEqual(status['helper_state'], 4)
+            info['helper_launcher_start_ticks'] = api.process_stamp(os.getpid())
+            path.write_text(json.dumps(info))
+            self.assertTrue(session.status()['launcher_alive'])
+            info['shm'] = str(base / 'different-session')
+            path.write_text(json.dumps(info))
+            with self.assertRaisesRegex(ValueError, 'identity changed'):
+                session.status()
+
+    def test_replacement_wait_is_bounded_and_never_waits_on_reused_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.json'
+            info = dict(helper_launcher_pid=os.getpid(), helper_launcher_start_ticks=api.process_stamp(os.getpid()))
+            path.write_text(json.dumps(info))
+            session = api.DLSS5Session(path)
+            start = time.monotonic()
+            self.assertFalse(api.wait_replacement_helper(session, -1, 'original', timeout=.04))
+            self.assertLess(time.monotonic() - start, 1)
+            info['helper_launcher_start_ticks'] = 'stale'
+            path.write_text(json.dumps(info))
+            with patch.object(api.time, 'sleep') as sleep:
+                self.assertTrue(api.wait_replacement_helper(session, -1, 'original'))
+                sleep.assert_not_called()
+            self.assertTrue(api.wait_replacement_helper(session, os.getpid(), 'stale'))
+
+    def test_replacement_finishes_before_server_and_transport_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix='hookshot dlss replacement ') as directory:
+            base = Path(directory)
+            self.fixture(base)
+            target = base / 'replace-helper.py'
+            target.write_text('''import importlib.util,json,os,signal,subprocess,sys,time
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('adapter',sys.argv[1]);api=importlib.util.module_from_spec(spec);spec.loader.exec_module(api)
+base=Path(sys.argv[2]);path=Path(os.environ['HOS_DLSS5_SESSION']);info=json.loads(path.read_text())
+os.kill(info['helper_launcher_pid'],signal.SIGTERM)
+deadline=time.monotonic()+5
+while api.process_stamp(info['helper_launcher_pid'])==info['helper_launcher_start_ticks']:
+ if time.monotonic()>deadline:raise RuntimeError('fixture original helper did not exit')
+ time.sleep(.01)
+code="""import sys,time
+from pathlib import Path
+shm=Path(sys.argv[1]);base=Path(sys.argv[2]);(base/'replacement-ready').touch()
+while not shm.with_suffix('.quit').exists():time.sleep(.01)
+time.sleep(.2) # Model and exported descriptor teardown after quit.
+if not shm.is_file() or (base/'prefix/pfx/server-stopped').exists():
+ (base/'replacement-premature-cleanup').touch()
+(base/'replacement-finished').touch()
+"""
+helper=subprocess.Popen([sys.executable,'-I','-c',code,info['shm'],str(base)],start_new_session=True)
+while not (base/'replacement-ready').exists():
+ if helper.poll() is not None or time.monotonic()>deadline:raise RuntimeError('fixture replacement did not start')
+ time.sleep(.01)
+info.update(helper_launcher_pid=helper.pid,helper_launcher_start_ticks=api.process_stamp(helper.pid))
+tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(info));tmp.replace(path)
+''')
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(api.run(base, [sys.executable, '-I', str(target),
+                                               str(ROOT / 'scripts/dlss5_api.py'), str(base)]), 0)
+            self.assertTrue((base / 'replacement-finished').is_file())
+            self.assertFalse((base / 'replacement-premature-cleanup').exists())
+            self.assertTrue((base / 'prefix/pfx/server-stopped').is_file())
+            session = api.DLSS5Session(next((base / 'runs').glob('*/session.json')))
+            self.assertFalse(Path(session.info['shm']).exists())
+            self.assertTrue(session.status()['archived'])
+
     def test_server_cleanup_accepts_absence_only_after_wait(self):
         for code in (0, 1):
             with self.subTest(code=code), patch.object(api.subprocess, 'run') as run:
