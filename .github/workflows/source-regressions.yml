@@ -1,4 +1,4 @@
-# Every game-free check, on PRs to main or the macOS stack and pushes to main/the MetalFX branch: tests/run_all.py runs
+# Every game-free check, on PRs to main or the macOS branch and pushes to main/the macOS branch: tests/run_all.py runs
 # tests/test_*.py and nx2/test_*.py (all of them, even after a failure), the C++ unit tests under gpu/vk/tests and a
 # byte-compile of every tracked Python file, and writes a table of them to the run's summary. A check that needs a GPU,
 # the game or MSVC says so, and why, in its own file (RUN_ALL_SKIP). No game data is involved.
@@ -6,7 +6,7 @@ name: Game-free source regressions
 
 on:
   push:
-    branches: [main, codex/macos-metalfx-explore]
+    branches: [main, codex/macos-rebased-release]
   pull_request:
     branches: [main, codex/macos-rebased-release]
   workflow_dispatch:
@@ -126,7 +126,7 @@ jobs:
           CXX: ${{ runner.os == 'Linux' && 'g++' || runner.os == 'macOS' && 'clang++' || '' }}
           HOOKSHOT_SPIRV_HEADERS: ${{ github.workspace }}/_deps/spirv-headers/include
           HOOKSHOT_VULKAN_HEADERS: ${{ github.workspace }}/_deps/vulkan-headers/include
-        run: python -I -B tests/run_all.py --strict
+        run: python -I -B tests/run_all.py --strict --jobs 4 --timeout 120
 
   spirv-global16:
     name: SPIR-V global narrow load/store lowering

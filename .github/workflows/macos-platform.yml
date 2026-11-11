@@ -2,7 +2,7 @@ name: macOS platform
 
 on:
   push:
-    branches: [codex/macos-metalfx-explore]
+    branches: [codex/macos-rebased-release]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
