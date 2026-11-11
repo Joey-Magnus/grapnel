@@ -4,41 +4,38 @@ description: A community documentation preview for Hookshot, built with Astro St
 editUrl: https://github.com/bibigurl-yum/Hookshot/edit/docs/starlight-preview/website/src/content/docs/about.md
 ---
 
-This is **bibigurl-yum's preview** of a new documentation interface for Hookshot. It is published from a separate
-branch of the fork. It has not been submitted as an upstream pull request or adopted as the official documentation.
+This documentation preview is maintained on **bibigurl-yum's fork** of Hookshot. It is not the official
+Hookshot documentation, and no upstream pull request has been opened.
 
-The header and landing page use the **original Hookshot logo from the project's README**, unchanged. The surrounding
-forest-green, parchment and gold design is a theme for this guide.
+The site uses the original Hookshot logo from the project's README.
 
 ## No game files here
 
-**We do not host, store, or distribute any game files.** This documentation site and repository contain no ROMs,
-game dumps, or decryption keys. You must supply your own supported copy of the game. All game building happens
-locally on your computer.
+**We do not host, store, or distribute any game files.** This site and repository contain no ROMs,
+game dumps, or decryption keys. You must supply your own supported copy of the game and build it locally.
 
-## What you can try
+## Using the docs
 
-- Browse the installation, settings and save guides through the sidebar.
-- Search all the imported documentation using the search button or **Ctrl/Cmd + K**.
-- Switch between light and dark themes.
-- Read the 11 sourced common-issue answers and follow the original responses.
-- Use **Report a bug** to open the issue-form chooser in the original Hookshot repository.
+Browse the guides in the sidebar, or search with **Ctrl/Cmd + K**. The common-issues page links to the original
+GitHub responses and identifies known workarounds and unresolved problems. **Report a bug** opens the issue forms
+in NotRexed's repository.
 
-## Content and versions
+## Versions
 
-The docs describe the source version they were written against. Stable releases can lag behind it. Common-issue
-answers show their review date and distinguish a workaround from an unresolved investigation. Follow the original
-thread for newer findings; closure of a duplicate is not proof of a fix.
+These docs follow the source branch, so some settings may not be in the latest stable release. Check your build
+and the release notes. Issue answers show when they were last checked; follow the linked threads for updates.
+A report closed as a duplicate does not mean the bug is fixed.
 
-The player guides and technical references are read from the repository at build time. They remain normal Markdown
-files; the site rewrites their local links for the published navigation.
+The site builds from the Markdown files in the repository. See the
+[website instructions](https://github.com/bibigurl-yum/Hookshot/blob/docs/starlight-preview/website/README.md)
+for editing and publishing.
 
 ## Project links
 
-- [Original Hookshot repository](https://github.com/NotRexed/Hookshot)
-- [Preview source branch](https://github.com/bibigurl-yum/Hookshot/tree/docs/starlight-preview)
+- [Hookshot by NotRexed](https://github.com/NotRexed/Hookshot)
+- [Preview source](https://github.com/bibigurl-yum/Hookshot/tree/docs/starlight-preview)
 - [Stable releases](https://github.com/NotRexed/Hookshot/releases/latest)
 - [Report a bug](https://github.com/NotRexed/Hookshot/issues/new/choose)
 
-Hookshot is an independent community project and is not affiliated with or endorsed by Nintendo. The game, characters
-and names belong to their respective owners. No game files are distributed by this documentation site.
+Hookshot is an independent project, not affiliated with or endorsed by Nintendo. The game, characters and names
+belong to their respective owners.

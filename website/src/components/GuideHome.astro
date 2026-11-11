@@ -1,9 +1,9 @@
 ---
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') + '/';
 const guides = [
-  { n: '01', icon: 'compass', title: 'Start your journey', text: 'From your own game files to your first steps in Kokiri Forest.', href: 'getting-started', footer: 'Installation guide' },
-  { n: '02', icon: 'sliders', title: 'Make it your own', text: 'Find the right balance of clarity, performance, and controls.', href: 'graphics-and-controls', footer: 'Graphics & controls' },
-  { n: '03', icon: 'book', title: 'Keep your progress', text: 'Update your build, back up your saves, and pick up where you left off.', href: 'updates-and-saves', footer: 'Updates & saves' },
+  { n: '01', icon: 'compass', title: 'Installation', text: 'Build and run Hookshot on Windows or Linux using your own copy of the game.', href: 'getting-started', footer: 'Installation guide' },
+  { n: '02', icon: 'sliders', title: 'Graphics and controls', text: 'Set the resolution, upscaler, frame rate, and input bindings.', href: 'graphics-and-controls', footer: 'Graphics & controls' },
+  { n: '03', icon: 'book', title: 'Updates and saves', text: 'Install updates, back up saves, or transfer them from another compatible port.', href: 'updates-and-saves', footer: 'Updates & saves' },
 ];
 const paths = {
   compass: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM16 8l-2 6-6 2 2-6 6-2Z',
@@ -13,7 +13,7 @@ const paths = {
 ---
 <div class="home-content not-content">
   <aside class="own-copy-note" aria-label="Game files notice"><span aria-hidden="true">◇</span><p><strong>We do not host, store, or distribute any game files.</strong> This site and repository contain no ROMs, game dumps, or decryption keys. You must supply your own supported copy of the game; Hookshot builds it locally on your computer.</p></aside>
-  <div class="section-heading"><p class="eyebrow">THE ESSENTIALS</p><h2>Choose your next step</h2><p>A little less setup. A little more adventure.</p></div>
+  <div class="section-heading"><p class="eyebrow">GETTING STARTED</p><h2>Setup and settings</h2></div>
   <div class="quest-grid">
     {guides.map((g) => <a class="quest-card" href={`${base}guides/${g.href}/`}>
       <div class="quest-card-top"><span class="quest-icon"><svg viewBox="0 0 24 24" width="25" height="25" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d={paths[g.icon as keyof typeof paths]} /></svg></span><span class="quest-number">{g.n}</span></div>
@@ -21,12 +21,12 @@ const paths = {
     </a>)}
   </div>
   <section class="help-board" aria-labelledby="help-title">
-    <div class="help-board-intro"><p class="eyebrow">A HAND ALONG THE WAY</p><h2 id="help-title">Lost in the woods?</h2><p>Answers from real reports, with the context that matters. Know what is a workaround and what is still being investigated.</p><a href={`${base}guides/common-issues/`}>Explore all 11 answers <span aria-hidden="true">→</span></a></div>
+    <div class="help-board-intro"><p class="eyebrow">TROUBLESHOOTING</p><h2 id="help-title">Common issues</h2><p>Answers from GitHub issue responses, with links to the original reports. Each entry identifies known workarounds and unresolved problems.</p><a href={`${base}guides/common-issues/`}>View all 11 answers <span aria-hidden="true">→</span></a></div>
     <div class="help-questions">
-      <a href={`${base}guides/common-issues/#gohma-walks-into-a-wall-or-stops-attacking`}><span><span class="status-badge workaround">WORKAROUND</span><strong>Gohma won’t attack?</strong></span><span aria-hidden="true">↗</span></a>
-      <a href={`${base}guides/common-issues/#the-hud-ghosts-or-shimmers-with-frame-generation`}><span><span class="status-badge workaround">WORKAROUND</span><strong>Ghosting with frame generation?</strong></span><span aria-hidden="true">↗</span></a>
-      <a href={`${base}guides/common-issues/#the-game-closes-immediately-after-play`}><span><span class="status-badge investigating">INVESTIGATING</span><strong>Game closes after pressing Play?</strong></span><span aria-hidden="true">↗</span></a>
+      <a href={`${base}guides/common-issues/#gohma-walks-into-a-wall-or-stops-attacking`}><span><span class="status-badge workaround">WORKAROUND</span><strong>Gohma stops attacking</strong></span><span aria-hidden="true">↗</span></a>
+      <a href={`${base}guides/common-issues/#the-hud-ghosts-or-shimmers-with-frame-generation`}><span><span class="status-badge workaround">WORKAROUND</span><strong>Frame-generation ghosting</strong></span><span aria-hidden="true">↗</span></a>
+      <a href={`${base}guides/common-issues/#the-game-closes-immediately-after-play`}><span><span class="status-badge investigating">INVESTIGATING</span><strong>Game closes after Play</strong></span><span aria-hidden="true">↗</span></a>
     </div>
   </section>
-  <section class="community-strip"><div><p class="eyebrow">BUILT BY THE COMMUNITY</p><h2>Every discovery helps.</h2><p>Share a useful report, contribute a pipeline list, or improve the guide.</p></div><a class="button-secondary" href={`${base}guides/reporting-and-contributing/`}>Join the effort <span aria-hidden="true">→</span></a></section>
+  <section class="community-strip"><div><p class="eyebrow">CONTRIBUTING</p><h2>Help improve Hookshot</h2><p>Report a bug, share a pipeline list, or correct the documentation.</p></div><a class="button-secondary" href={`${base}guides/reporting-and-contributing/`}>How to contribute <span aria-hidden="true">→</span></a></section>
 </div>

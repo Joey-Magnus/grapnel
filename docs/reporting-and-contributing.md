@@ -1,10 +1,10 @@
 # Reporting and contributing
 
-## Make a useful report
+## Report a bug
 
-First check [Common issues](common-issues.md) and search the
-[issue tracker](https://github.com/NotRexed/Hookshot/issues). If your symptom has an active tracker, add evidence
-there rather than opening another duplicate.
+Check [Common issues](common-issues.md) and search the
+[issue tracker](https://github.com/NotRexed/Hookshot/issues). If the problem is already reported, add your details
+to that issue.
 
 Include:
 
@@ -21,9 +21,7 @@ The [contribution rules](../CONTRIBUTING.md) explain which files must stay local
 ## Contribute a pipeline list
 
 The maintainers collect pipeline-state records in
-[issue #2034](https://github.com/NotRexed/Hookshot/issues/2034) to prepare more pipelines before play. That issue
-explicitly requests one file, `hookshot_pipeline_states.bin`, and explains why this list is different from the
-game-derived shader caches. Check the current instructions there before submitting.
+[issue #2034](https://github.com/NotRexed/Hookshot/issues/2034) to prepare more pipelines before play. The requested file is `hookshot_pipeline_states.bin`. The issue explains how it differs from game-derived shader caches. Check the current instructions there before submitting.
 
 1. Play using a recent build of `main`, as requested in the issue.
 2. Close the game and locate `hookshot_pipeline_states.bin` beside the game executable.
@@ -38,5 +36,5 @@ Do not include shaders, other caches, executables, saves or the rest of the game
 ## Improve the documentation or code
 
 Branch from current `main`, keep changes focused, and follow [CONTRIBUTING.md](../CONTRIBUTING.md). The
-[development guide](development.md) covers local builds and checks. To maintain the GitBook edition, see
-[Publishing this guide](gitbook-publishing.md).
+[development guide](development.md) covers local builds and checks. See the
+[website instructions](https://github.com/bibigurl-yum/Hookshot/blob/docs/starlight-preview/website/README.md) to build this documentation preview.

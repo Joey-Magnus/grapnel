@@ -53,7 +53,7 @@ for (const file of files) {
 }
 const original = await readFile(path.join(site, '../assets/hookshot.png'));
 assert(original.equals(await readFile(path.join(dist, 'assets/hookshot.png'))), 'Original README logo changed');
-assert((await readFile(path.join(dist, 'index.html'), 'utf8')).includes('A familiar world.'), 'Custom landing page missing');
+assert((await readFile(path.join(dist, 'index.html'), 'utf8')).includes('class="adventure-hero"'), 'Custom landing page missing');
 assert((await readdir(path.join(dist, 'pagefind'))).some((f) => f === 'pagefind.js'), 'Search index missing');
 if (errors.length) {
   console.error([...new Set(errors)].join('\n'));

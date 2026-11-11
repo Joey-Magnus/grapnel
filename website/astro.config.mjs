@@ -7,7 +7,7 @@ export default defineConfig({
   trailingSlash: 'always',
   integrations: [starlight({
     title: 'Hookshot',
-    description: 'The community field guide to Hookshot. Install, explore settings, find answers, and contribute.',
+    description: 'Hookshot installation instructions, settings, troubleshooting, and contributor documentation.',
     favicon: '/assets/hookshot.png',
     customCss: ['./src/styles/forest.css'],
     components: {
@@ -18,19 +18,19 @@ export default defineConfig({
     editLink: { baseUrl: 'https://github.com/bibigurl-yum/Hookshot/edit/docs/starlight-preview/' },
     tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 2 },
     sidebar: [
-      { label: 'The field guide', slug: '' },
-      { label: 'Begin your adventure', items: [
+      { label: 'Overview', slug: '' },
+      { label: 'Setup and settings', items: [
         { label: 'Getting started', slug: 'guides/getting-started' },
         { label: 'Graphics & controls', slug: 'guides/graphics-and-controls' },
         { label: 'Updates & saves', slug: 'guides/updates-and-saves' },
         { label: 'Transfer a save', slug: 'guides/saves' },
       ] },
-      { label: 'Find your way', items: [
+      { label: 'Help and support', items: [
         { label: 'Common issues', slug: 'guides/common-issues', badge: { text: '11 answers', variant: 'note' } },
         { label: 'Report & contribute', slug: 'guides/reporting-and-contributing' },
         { label: 'Report a bug ↗', link: 'https://github.com/NotRexed/Hookshot/issues/new/choose' },
       ] },
-      { label: 'Under the hood', collapsed: true, items: [
+      { label: 'Development', collapsed: true, items: [
         { label: 'Reference manual', slug: 'reference/manual' },
         { label: 'Development', slug: 'guides/development' },
         { label: 'Architecture', slug: 'guides/design' },

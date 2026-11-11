@@ -6,7 +6,7 @@ or DualSense touchpad click also opens it. Options are saved in `hookshot_option
 Rows marked **After restart** take effect when the game starts again. Save your progress before choosing
 **Restart now**. Some rows only appear when the build, GPU and driver support them.
 
-## Follow the picture through the settings
+## Resolution and upscaling
 
 | Setting | What it controls |
 |---|---|
@@ -16,8 +16,8 @@ Rows marked **After restart** take effect when the game starts again. Save your 
 | Window scaling filter | Scaling from that whole frame to the window, when the two sizes differ. |
 | Sharpness | The sharpening applied to the resulting picture. |
 
-The [reference manual](../readme.md#in-game-menu) lists supported sizes, modes, hardware requirements and build-time
-SDK requirements. An unavailable upscaler does not necessarily mean your installation is broken.
+The [reference manual](../readme.md#in-game-menu) lists supported sizes and modes. Some upscalers require specific
+hardware or an SDK enabled when building Hookshot.
 
 ## Frame rate and frame generation
 
@@ -31,14 +31,14 @@ it off when measuring the game's performance or diagnosing artifacts.
 
 If the HUD shimmers, see the [frame-generation answer](common-issues.md#the-hud-ghosts-or-shimmers-with-frame-generation).
 
-## A useful starting point
+## Choosing settings
 
 Choose a quality preset suited to your GPU's memory, keep the game cap at 60, and change one setting at a time.
 Compare the same route twice after preparation finishes. First-visit stutter and a slowdown that persists until
 restart are different symptoms; the [common-issues page](common-issues.md) explains what to report.
 
 On a computer with multiple GPUs, check **GPU device** and the `vk: device` entries in the log. For HDR, follow the
-current reference manual's display and platform requirements rather than copying another player's numeric INI values.
+[reference manual's requirements](../readme.md#in-game-menu) for your display and platform.
 
 ## Controls
 

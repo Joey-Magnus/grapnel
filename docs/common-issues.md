@@ -1,8 +1,8 @@
 # Common issues and answers
 
-Answers below come from **responses in closed issues**, with active trackers checked alongside them on
-2026-11-10 (America/Vancouver). A closed issue can mean duplicate, answered or moved; it does not by itself mean
-fixed. These reports mainly concern v2.0.14. Check the linked thread and your version before applying an answer.
+These answers are based on **closed GitHub issues** and their linked trackers, checked on 2026-11-10
+(America/Vancouver). Most reports concern v2.0.14. Some were closed as duplicates of bugs that are still open.
+Check the linked discussion for updates.
 
 ## Quick lookup
 
@@ -22,34 +22,32 @@ fixed. These reports mainly concern v2.0.14. Check the linked thread and your ve
 
 ## The build says a compressed file ends before its frame completes
 
-**Answer: check the input copy.** In #1996, the maintainer identified an incomplete `.nup`, not a renderer failure.
-Make a fresh copy or dump from your own game, check it completed, and build again. If a complete copy still fails,
-report that result with the builder output. The size in that report is specific to that user's file, not a universal
-size requirement.
+**Check that your game copy is complete.** In #1996, the maintainer traced this error to an incomplete `.nup`.
+Copy or dump your own game again, then retry the build. If it still fails with a complete copy, include the builder
+output in your report. File sizes can differ; the size mentioned in the issue applies to that particular dump.
 
 Source: [maintainer response in closed #1996](https://github.com/NotRexed/Hookshot/issues/1996#issuecomment-6781832382).
 
 ## NVIDIA's DLSS SDK could not be downloaded
 
-**Answer: retry the download, or build without optional DLSS.** The response to #1962 identifies a connection reset
-(`WinError 10054`). Retry later or on another network. Unticking NVIDIA DLSS lets the build proceed without that
-optional component; it does not provide DLSS in the resulting build. Report it again if every attempt fails.
+**Retry the download, or build without DLSS.** In #1962, the connection was reset during the download
+(`WinError 10054`). Try again later or on another network. You can also untick NVIDIA DLSS in the builder to
+continue without it. Report the problem if it fails every time.
 
 Source: [maintainer response in closed #1962](https://github.com/NotRexed/Hookshot/issues/1962#issuecomment-6781832944).
 
 ## The builder stays at reading game files
 
-**Status: unresolved in the linked tracker.** #1988 was closed into #1876 for the v2.0.14 update/build stall. Add the
-builder output, exact stage and version there. The closing response does not provide a confirmed fix, and this
-symptom alone does not establish that your input is incomplete.
+**Unresolved.** #1988 was closed into #1876 for the v2.0.14 update/build stall. Add the
+builder output, exact stage and version there. No fix was confirmed in the response.
 
 Source: [maintainer response in closed #1988](https://github.com/NotRexed/Hookshot/issues/1988#issuecomment-6781829857).
 Follow [#1876](https://github.com/NotRexed/Hookshot/issues/1876).
 
 ## The game closes immediately after Play
 
-**Status: unresolved in the linked tracker.** #2004 was closed as a duplicate of #1288. Add `hookshot_log.txt` and
-your GPU details there; include your OS, driver and exact build. There is no universal repair in that response.
+**Unresolved.** #2004 was closed as a duplicate of #1288. Add `hookshot_log.txt` and
+your GPU details there, along with your OS, driver and exact build. No fix was confirmed in the response.
 
 Source: [maintainer response in closed #2004](https://github.com/NotRexed/Hookshot/issues/2004#issuecomment-6783021365).
 Follow [#1288](https://github.com/NotRexed/Hookshot/issues/1288).
@@ -60,8 +58,7 @@ Follow [#1288](https://github.com/NotRexed/Hookshot/issues/1288).
 above 60. Change **Game frame rate cap** in Hookshot's menu, save your progress and apply any requested restart.
 This is the game's cap, not the displayed FPS after frame generation.
 
-The active tracker explains that some timers truncate fractional frame steps; above-60 behavior remains under
-investigation. Treat 60 as the workaround rather than a claim that every timing problem is fixed.
+Some game timers do not advance correctly above 60 FPS. The underlying problem is still being investigated.
 
 Sources: [maintainer response in closed #1927](https://github.com/NotRexed/Hookshot/issues/1927#issuecomment-6778842949),
 [timer explanation in #1742](https://github.com/NotRexed/Hookshot/issues/1742#issuecomment-6781800673).
@@ -72,9 +69,8 @@ Sources: [maintainer response in closed #1927](https://github.com/NotRexed/Hooks
 generation with frame pacing on. Turning pacing off or using 3× avoided that case; the response to #1976 also
 suggests `RX_VK_FSR_FG=0` for the affected path.
 
-These are not universal fixes. In #1953, the reporter initially saw improvement after a restart, then edited the
-answer because shimmering returned in new areas. Disabling frame generation was their more consistent option.
-Change one option at a time and report whether it stays clear after a scene transition.
+Results vary. In #1953, restarting helped at first, but shimmering returned in new areas. That player had better
+results with frame generation off. Test one setting at a time and check whether the problem returns after changing areas.
 
 Sources: [maintainer response in closed #1976](https://github.com/NotRexed/Hookshot/issues/1976#issuecomment-6781826704),
 [narrowed case in closed #1635](https://github.com/NotRexed/Hookshot/issues/1635#issuecomment-6778823477),
@@ -87,26 +83,25 @@ from a short stutter the first time a shader is needed. Record the areas and tra
 with frame generation off, and keep the log from the slow run before starting again.
 
 The [performance-reporting instructions](../readme.md#low-fps-or-stutter) explain which GPU-time and memory lines
-are useful. A restart clearing the slowdown is diagnostic evidence, not a permanent fix.
+to include. Restarting may help temporarily; it does not fix the underlying problem.
 
 Source: [maintainer response in closed #2023](https://github.com/NotRexed/Hookshot/issues/2023#issuecomment-6783024595).
 Follow [#1400](https://github.com/NotRexed/Hookshot/issues/1400).
 
 ## Dungeon walls or blocks are invisible on an older GPU
 
-**Status: known limitations in the mesh-shader fallback.** The response to #1900 identifies the GTX 1050 Ti's lack
+**Known mesh-shader fallback problem.** The response to #1900 identifies the GTX 1050 Ti's lack
 of mesh shaders and points to #1001, even with a correct dump. Include the GPU model and driver when reporting
-missing geometry. Rebuilding the same valid input is not a confirmed solution to this case.
+missing geometry. No fix was confirmed in the response.
 
 Source: [maintainer response in closed #1900](https://github.com/NotRexed/Hookshot/issues/1900#issuecomment-6778205354).
 Follow [#1001](https://github.com/NotRexed/Hookshot/issues/1001).
 
 ## Steam Deck freezes or has missing dungeon geometry
 
-**Status: unresolved in the Linux/Steam Deck tracker.** The v2.0.14 Steam Deck OLED report #1956 was closed into
-#1000. Follow the current tracker for hardware-specific tests and workarounds; an option that helps one scene or
-driver is not established as a fix for every GPU timeout. Include SteamOS version, GPU/driver information, the
-affected area and the last log lines.
+**Unresolved.** The v2.0.14 Steam Deck OLED report #1956 was closed into
+#1000. Workarounds depend on the hardware, driver and scene. Check that thread for current advice, and include
+your SteamOS version, GPU, driver, affected area and last log lines when reporting the problem.
 
 Source: [maintainer response in closed #1956](https://github.com/NotRexed/Hookshot/issues/1956#issuecomment-6780103592).
 Follow [#1000](https://github.com/NotRexed/Hookshot/issues/1000). AMD-on-Windows freezes have their own
@@ -114,17 +109,16 @@ Follow [#1000](https://github.com/NotRexed/Hookshot/issues/1000). AMD-on-Windows
 
 ## Controller buttons do not match the selected layout
 
-**Status: unresolved in the mapping tracker.** #1923 was closed into #1655 for play and ocarina controls disagreeing
+**Unresolved.** #1923 was closed into #1655 for play and ocarina controls disagreeing
 with the selected Xbox/PC layout. Include the controller model, chosen Hookshot layout and bindings, the game's
-own control settings, and which actions disagree. The closing response does not confirm that changing layout
-alone fixes it.
+own control settings, and which actions disagree. No fix was confirmed in the response.
 
 Source: [maintainer response in closed #1923](https://github.com/NotRexed/Hookshot/issues/1923#issuecomment-6778840222).
 Follow [#1655](https://github.com/NotRexed/Hookshot/issues/1655).
 
 ## Textures look low resolution or corrupted on AMD
 
-**Status: unresolved in the rendering tracker.** The RX 9060 XT report #1986 was closed into #1006. Supply a
+**Unresolved.** The RX 9060 XT report #1986 was closed into #1006. Supply a
 comparison, GPU/driver, upscaler and render resolution. The README's
 [RGBA8 workaround](../readme.md#amd-texture-workaround) targets certain blocky or corrupted textures; it is not a
 general cure for blurry rendering and can substantially increase VRAM use. Remove the switch to undo that test.

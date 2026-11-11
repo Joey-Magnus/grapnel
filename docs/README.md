@@ -1,19 +1,16 @@
-# Hookshot field guide
+# Hookshot documentation
 
 <img src="../assets/hookshot.png" alt="Hookshot" width="160">
-
-**Build your game. Find your footing. Keep exploring.**
 
 **We do not host, store, or distribute any game files.** This site and repository contain no ROMs, game dumps, or
 decryption keys. You must supply your own supported copy and build locally on your computer.
 
 [Get started](getting-started.md) · [Common issues](common-issues.md) · **[Report a bug](https://github.com/NotRexed/Hookshot/issues/new/choose)**
 
-Hookshot brings the Switch 2 remake of *The Legend of Zelda: Ocarina of Time* to Windows and Linux through static
-recompilation. The builder works locally with your own supported copy of the game. This guide takes you from the
-first build to the settings, saves and troubleshooting you need along the way.
+Hookshot is a static recompilation of the Switch 2 remake of *The Legend of Zelda: Ocarina of Time* for Windows
+and Linux. These docs cover installation, settings, saves, troubleshooting and development.
 
-## Choose your path
+## Guides
 
 | You want to… | Start here |
 |---|---|
@@ -21,11 +18,11 @@ first build to the settings, saves and troubleshooting you need along the way.
 | Understand resolution, upscaling and frame generation | [Graphics and controls](graphics-and-controls.md) |
 | Find an answer to a familiar problem | [Common issues and answers](common-issues.md) |
 | Update an installation or keep your progress | [Updates and saves](updates-and-saves.md) |
-| Bring a save from another compatible port | [Save transfer guide](saves.md) |
+| Transfer a save from another compatible port | [Save transfer guide](saves.md) |
 | Help diagnose a problem or contribute pipelines | [Reporting and contributing](reporting-and-contributing.md) |
 | Work on the port | [Development guide](development.md) and [contribution rules](../CONTRIBUTING.md) |
 
-## Know which build you are reading about
+## Versions
 
 These docs follow the source branch. A setting described here may not be in the latest stable release yet. Check the
 version at the top of `hookshot_log.txt` and the [release notes](https://github.com/NotRexed/Hookshot/releases) before
@@ -34,7 +31,7 @@ assuming a fix or feature is in your installation. Nightly builds are developmen
 Hookshot is experimental. The [common-issues page](common-issues.md) separates temporary workarounds from unresolved
 reports; a closed duplicate does not mean the underlying bug has been fixed.
 
-## Around the campfire
+## Project links
 
 - [Complete reference manual](../readme.md)
 - [Releases](https://github.com/NotRexed/Hookshot/releases)

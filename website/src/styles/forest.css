@@ -102,6 +102,8 @@ h1#_top { font-family: Georgia, 'Times New Roman', serif; font-weight: 400; lett
 .adventure-hero h1#_top { font-size: clamp(2.3rem, 3.8vw, 3.9rem); line-height: 1.14; font-weight: 400; letter-spacing: -.035em; color: #f4efdc; margin: 1.2rem 0 1.3rem; }
 .adventure-hero h1 em { color: #c9d8b5; font-weight: 400; }
 .hero-intro { max-width: 26rem; font-size: .91rem; line-height: 1.8; color: #bdcbb7; margin: 0; }
+.hero-credit { margin: .6rem 0 0; font-size: .8rem; color: #bdcbb7; }
+.hero-credit a { color: #e0c98a; text-decoration-color: #e0c98a66; }
 .hero-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.8rem; }
 .button-primary, .button-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 1.1rem; text-decoration: none; font-size: .77rem; font-weight: 600; padding: .8rem 1rem; border-radius: 5px; transition: background .18s, border-color .18s; }
 .button-primary { background: #d5bf83; color: #1b3021; border: 1px solid #d5bf83; }

@@ -1,9 +1,9 @@
 # Summary
 
-* [Hookshot field guide](docs/README.md)
+* [Hookshot documentation](docs/README.md)
 * [Report a bug](https://github.com/NotRexed/Hookshot/issues/new/choose)
 
-## Start your adventure
+## Setup and settings
 
 * [Getting started](docs/getting-started.md)
 * [Graphics and controls](docs/graphics-and-controls.md)

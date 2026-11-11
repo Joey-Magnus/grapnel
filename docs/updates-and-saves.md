@@ -18,12 +18,12 @@ successful build. See [Updating](../readme.md#updating) and [Where the files go]
 
 ## Stable and development builds
 
-Use [stable releases](https://github.com/NotRexed/Hookshot/releases/latest) for the normal installation path.
-Use a [nightly build](https://github.com/NotRexed/Hookshot/releases/tag/nightly) when deliberately testing a change
-that has not reached a release. Back up first and record the exact version in any report. The
+Use [stable releases](https://github.com/NotRexed/Hookshot/releases/latest) for normal play.
+[Nightly builds](https://github.com/NotRexed/Hookshot/releases/tag/nightly) include changes that have not reached
+a stable release. Back up first and record the exact version in any report. The
 [development-build instructions](../readme.md#latest-development-build) describe the required launcher arguments.
 
-## Move your progress
+## Transfer saves
 
 The [save transfer guide](saves.md) explains supported ports and emulators, discovery, backups and dry runs.
 Close both programs before copying. The transfer tool copies files; it does not convert saves.
