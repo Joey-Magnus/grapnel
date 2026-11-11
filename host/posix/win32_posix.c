@@ -143,7 +143,10 @@ static void wake_cv(CONDITION_VARIABLE *cv, int all) {
     WaitBucket *b = wait_bucket(cv);
     __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
     pthread_mutex_lock(&b->mu);
-    if (all) pthread_cond_broadcast(&b->cv); else pthread_cond_signal(&b->cv);
+    /* (all, even for one: other condition variables share the bucket, and a signal that woke one of their waiters
+       would leave this one's asleep) */
+    (void)all;
+    pthread_cond_broadcast(&b->cv);
     pthread_mutex_unlock(&b->mu);
 }
 void WakeConditionVariable(CONDITION_VARIABLE *cv) { wake_cv(cv, 0); }
@@ -202,6 +205,21 @@ static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), vo
     if (timed_out) { last_error = ERROR_TIMEOUT; return FALSE; }
     return TRUE;
 }
+/* (any size: the futex is the aligned 32-bit word holding the address, woken by any change near it) */
+BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
+    volatile uint32_t *w = (volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3);
+    const uint32_t seen = *w;
+    if (memcmp((const void *)addr, compare, size)) return TRUE;
+    struct timespec ts = rel_ms(ms);
+    const long r = futex(w, FUTEX_WAIT_PRIVATE, seen, ms == INFINITE ? NULL : &ts);
+    if (r == -1 && errno == ETIMEDOUT) { last_error = ERROR_TIMEOUT; return FALSE; }
+    return TRUE;
+}
+void WakeByAddressSingle(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
+void WakeByAddressAll(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
+#endif
+
+/* (both: the locks a condition variable sleeps with, over cv_wait above) */
 static void srw_unlock(void *l) { pthread_rwlock_unlock((pthread_rwlock_t *)l); }
 static void srw_relock(void *l, ULONG flags) {
     if (flags & CONDITION_VARIABLE_LOCKMODE_SHARED) pthread_rwlock_rdlock((pthread_rwlock_t *)l);
@@ -222,19 +240,6 @@ void InitializeCriticalSection(CRITICAL_SECTION *cs) {
     pthread_mutex_init(cs, &a);
     pthread_mutexattr_destroy(&a);
 }
-/* (any size: the futex is the aligned 32-bit word holding the address, woken by any change near it) */
-BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
-    volatile uint32_t *w = (volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3);
-    const uint32_t seen = *w;
-    if (memcmp((const void *)addr, compare, size)) return TRUE;
-    struct timespec ts = rel_ms(ms);
-    const long r = futex(w, FUTEX_WAIT_PRIVATE, seen, ms == INFINITE ? NULL : &ts);
-    if (r == -1 && errno == ETIMEDOUT) { last_error = ERROR_TIMEOUT; return FALSE; }
-    return TRUE;
-}
-void WakeByAddressSingle(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
-void WakeByAddressAll(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
-#endif
 
 /* ---- time ---- */
 void Sleep(DWORD ms) {
