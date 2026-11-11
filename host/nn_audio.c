@@ -454,13 +454,14 @@ static void delay_frame(Delay *d, Mix *m) {
    Effect handles at 2 x MAX_EFFECTS + index ---- */
 #define MAX_BQFX 16
 typedef struct {
-    int used, mix, enabled, param_on, n, seq;   /* (it runs when SetBiquadFilterEnabled and the parameter's enable are both on) */
+    int used, mix, enabled, n, seq;   /* (enabled: SetBiquadFilterEnabled. The parameter's enable @0 is not read: OoT leaves it 0
+                                         on mix 2's low pass while it turns the filter on with SetBiquadFilterEnabled) */
     int8_t in[MAX_CH], out[MAX_CH];
     float b[3], a[2], z[MAX_CH][2];
 } BqFx;
 static BqFx bqfx[MAX_BQFX];
 static void bqfx_frame(BqFx *f, Mix *m) {
-    if (!f->enabled || !f->param_on || f->n <= 0) return;
+    if (!f->enabled || f->n <= 0) return;
     const int n = f->n > MAX_CH ? MAX_CH : f->n;
     for (int c = 0; c < n; c++) {
         const int bi = f->in[c], bo = f->out[c];
@@ -2045,7 +2046,7 @@ HLE(_ZN2nn5audio15AddBiquadFilterEPNS0_19AudioRendererConfigEPNS0_16BiquadFilter
     }
     BqFx *f = &bqfx[e];
     memset(f, 0, sizeof *f);
-    f->used = 1, f->mix = m, f->seq = ++fx_seq, f->b[0] = 1.0f, f->param_on = 1;
+    f->used = 1, f->mix = m, f->seq = ++fx_seq, f->b[0] = 1.0f;
     put_handle(ARG(1), K_EFFECT, 2 * MAX_EFFECTS + e);
     au_unlock();
     static int logged;
@@ -2061,9 +2062,7 @@ static int read_bq_float(uint64_t p, float b[3], float a[2]) {
 HLE(_ZN2nn5audio24SetBiquadFilterParameterEPNS0_16BiquadFilterTypeERKNS0_22TBiquadFilterParameterIfEE) {
     BqFx *f = bqfx_of(ARG(0));
     if (!f || !ARG(1)) return;
-    const int on = read_bq_float(ARG(1), f->b, f->a);
-    if (on && !f->param_on) memset(f->z, 0, sizeof f->z);
-    f->param_on = on;
+    read_bq_float(ARG(1), f->b, f->a);
 }
 HLE(_ZN2nn5audio22SetBiquadFilterEnabledEPNS0_16BiquadFilterTypeEb) {
     BqFx *f = bqfx_of(ARG(0));
