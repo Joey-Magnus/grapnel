@@ -25,6 +25,9 @@
 #include "vk_reflex.h"
 #include "vk_antilag.h"
 #include "vk_progress.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -135,7 +138,7 @@ bool create_instance() {
     ci.ppEnabledExtensionNames = ext_list.data();
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
-    if (getenv("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
+    if (env_on("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
     if (vkCreateInstance(&ci, nullptr, &dev.instance) != VK_SUCCESS) {
         logf("vk: vkCreateInstance failed");
         return false;
@@ -430,7 +433,7 @@ bool create_device() {
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         p2.pNext = &sg;
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        const bool pin = f13.subgroupSizeControl && sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 && !getenv("RX_VK_NO_SUBGROUP_PIN");
+        const bool pin = f13.subgroupSizeControl && sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 && !env_on("RX_VK_NO_SUBGROUP_PIN");
         dev.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
         dev.subgroup_size = sg.subgroupSize;
         dev.subgroup_max = sc.maxSubgroupSize > sg.subgroupSize ? sc.maxSubgroupSize : sg.subgroupSize;
@@ -449,7 +452,7 @@ bool create_device() {
     dev.mesh_queries = dev.mesh_shader && mesh.meshShaderQueries;
     // (hookshot, issue 640) RDNA1 and older GPUs: no mesh shaders, but task and mesh programs run as compute shaders
     // that write their vertices to buffers, drawn through an ordinary graphics pipeline. It needs buffer device addresses.
-    dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
+    dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && !env_on("RX_VK_NO_MESH_FALLBACK");
     if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
     bool task_mesh_fallback = false;
 #ifdef _WIN32
@@ -460,7 +463,7 @@ bool create_device() {
 #endif
     if (mesh_mode == 1) task_mesh_fallback = false;   // (Native: the card's own mesh shaders for every draw)
     if (const char* e = getenv("RX_VK_TASK_MESH_FALLBACK")) task_mesh_fallback = atoi(e) != 0;
-    dev.task_mesh_fallback = task_mesh_fallback && dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
+    dev.task_mesh_fallback = task_mesh_fallback && dev.mesh_shader && f12.bufferDeviceAddress && !env_on("RX_VK_NO_MESH_FALLBACK");
     if (dev.task_mesh_fallback) logf("vk: task + mesh programs use the compute fallback (RX_VK_TASK_MESH_FALLBACK=0: native)");
     logf("vk: mesh shaders row: %s (%s)", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
          dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
@@ -536,9 +539,50 @@ void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
     }
 }
 
+void retire_swapchain() {
+    if (!dev.swapchain) return;
+    device_wait_idle_locked();
+    reflex_swapchain_destroyed();
+    swap_views_drop();
+    for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
+    vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
+    dev.swapchain = VK_NULL_HANDLE;
+    ++dev.swapchain_generation;
+    dev.swap_rendered.clear();
+    dev.swap_images.clear();
+    dev.swap_spare = 0;
+}
+
+bool invalidate_lost_surface(VkResult result) {
+    if (result != VK_ERROR_SURFACE_LOST_KHR) return false;
+    retire_swapchain();
+    if (dev.surface) vkDestroySurfaceKHR(dev.instance, dev.surface, nullptr);
+    dev.surface = VK_NULL_HANDLE;
+    dev.present_queue_supported = false;
+    static unsigned logged = 0;
+    if (logged++ < 8) logf("vk: presentation surface lost; will retry with a replacement");
+    return true;
+}
+
+namespace {
+bool open_window_surface(bool log_failure);
+void window_size(uint32_t* width, uint32_t* height);
+}
+
 bool create_swapchain(uint32_t width, uint32_t height) {
+    if (!dev.surface) {
+        window_size(&width, &height);
+        if (!width || !height) return false;
+        using Clock = std::chrono::steady_clock;
+        static Clock::time_point next_attempt;
+        const auto now = Clock::now();
+        if (now < next_attempt) return false;
+        next_attempt = now + std::chrono::milliseconds(250);
+        if (!open_window_surface(false)) return false;
+    }
     VkSurfaceCapabilitiesKHR caps;
     VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
+    if (invalidate_lost_surface(result)) return false;
     if (result != VK_SUCCESS) {
         logf("vk: querying surface capabilities failed (VkResult %d)", (int)result);
         return false;
@@ -555,12 +599,15 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     if (!width || !height) return false;
     uint32_t n = 0;
     result = vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, nullptr);
+    if (invalidate_lost_surface(result)) return false;
     if (result != VK_SUCCESS || !n) {
         logf("vk: querying surface formats failed (VkResult %d, count %u)", (int)result, n);
         return false;
     }
     std::vector<VkSurfaceFormatKHR> formats(n);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, formats.data());
+    result = vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, formats.data());
+    if (invalidate_lost_surface(result) || result != VK_SUCCESS || !n) return false;
+    formats.resize(n);
     VkSurfaceFormatKHR fmt = formats[0];
     for (const auto& f : formats)   // (an UNORM target: the game's window textures are presented as they are)
         // (in sRGB: RADV on Wayland lists every format again with PASS_THROUGH_EXT and the compositor's colour spaces,
@@ -596,6 +643,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         modes.resize(n);
         result = vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, modes.data());
     }
+    if (invalidate_lost_surface(result)) return false;
     if (result != VK_SUCCESS || modes.empty())
         logf("vk: querying present modes failed (VkResult %d, count %u); trying mandatory FIFO mode", (int)result, n);
     // (hookshot) the Insert menu's V-Sync (menu_vsync: RX_VK_FIFO=1 On, RX_VK_IMMEDIATE=1 Off for a run): On is FIFO, as on a
@@ -642,7 +690,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     ci.presentMode = mode;
     const uint32_t sharing[2] = {dev.queue_family, dev.present_family};
-    if (dev.present_queue && dev.present_family != dev.queue_family) {   // (presented from another family: no ownership moves)
+    if (dev.present_queue_supported && dev.present_family != dev.queue_family) {   // (presented from another family: no ownership moves)
         ci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
         ci.queueFamilyIndexCount = 2;
         ci.pQueueFamilyIndices = sharing;
@@ -665,17 +713,8 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     VkSwapchainKHR sc;
     result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
     // Passing oldSwapchain retires it even when creation fails. Nothing may acquire from it again.
-    if (dev.swapchain) {
-        device_wait_idle_locked();   // (the present queue's presents of the old swapchain done too)
-        reflex_swapchain_destroyed();   // (no latency sleep or markers may use the destroyed chain)
-        swap_views_drop();   // (hookshot: the overlays' views of its images, before it)
-        for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
-        vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
-        dev.swapchain = VK_NULL_HANDLE;
-        dev.swap_rendered.clear();
-        dev.swap_images.clear();
-        dev.swap_spare = 0;
-    }
+    retire_swapchain();
+    if (invalidate_lost_surface(result)) return false;
     if (result != VK_SUCCESS) {
         logf("vk: vkCreateSwapchainKHR failed (VkResult %d, extent %ux%u, format %d, usage %#x, mode %d, images %u)",
              (int)result, width, height, (int)fmt.format, ci.imageUsage, (int)mode, ci.minImageCount);
@@ -721,7 +760,7 @@ HWND main_window = nullptr;
 // (hookshot) hookshot --prepare-shaders (a builder, after a build): the same work with no game, its progress as
 // "@@progress" lines on stdout. A skip there leaves hookshot_prepare_skipped beside the game: its own starts then
 // leave the work out too (what was not prepared is built when first drawn), until a --prepare-shaders run ends it
-bool prepare_only() { return getenv("HOOKSHOT_PREPARE_ONLY") != nullptr; }
+bool prepare_only() { return env_on("HOOKSHOT_PREPARE_ONLY"); }
 std::string skipped_path() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
@@ -983,14 +1022,42 @@ bool started_up() {
 }
 // (the window's surface made: the presents' own queue kept where its family can present to it, create_device)
 static void choose_present_queue() {
+    dev.present_queue_supported = false;
     if (!dev.present_queue) return;
     VkBool32 ok = VK_FALSE;
     if (vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.present_family, dev.surface, &ok) != VK_SUCCESS || !ok) {
         logf("vk: queue family %u cannot present to the window: presents on the replay's queue", dev.present_family);
-        dev.present_queue = VK_NULL_HANDLE, dev.present_family = dev.queue_family;
         return;
     }
+    dev.present_queue_supported = true;
     logf("vk: presents on a queue of their own, of compute family %u (RX_VK_PRESENT_QUEUE=0: off)", dev.present_family);
+}
+
+bool open_window_surface(bool log_failure) {
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+#ifdef _WIN32
+    VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
+    si.hinstance = GetModuleHandleA(nullptr);
+    si.hwnd = main_window;
+    if (!IsWindow(main_window) || vkCreateWin32SurfaceKHR(dev.instance, &si, nullptr, &surface) != VK_SUCCESS) return false;
+#else
+    const MkwVkWindow* w = prep_window;
+    if (!w || !w->create_surface(w->window, (void*)dev.instance, (void*)&surface)) {
+        if (log_failure)
+            logf("vk: SDL_Vulkan_CreateSurface failed; check SDL_VIDEODRIVER and the Vulkan window-system extensions");
+        return false;
+    }
+#endif
+    VkBool32 ok = VK_FALSE;
+    const VkResult result = vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, surface, &ok);
+    if (result != VK_SUCCESS || !ok) {
+        if (log_failure) logf("vk: queue-family present support failed (VkResult %d, supported %u)", (int)result, ok);
+        vkDestroySurfaceKHR(dev.instance, surface, nullptr);
+        return false;
+    }
+    dev.surface = surface;
+    choose_present_queue();
+    return true;
 }
 
 int start(void* hwnd) {
@@ -1005,14 +1072,7 @@ int start(void* hwnd) {
         return 1;
     }
 #ifdef _WIN32
-    VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
-    si.hinstance = GetModuleHandleA(nullptr);
-    si.hwnd = (HWND)hwnd;
-    if (vkCreateWin32SurfaceKHR(dev.instance, &si, nullptr, &dev.surface) != VK_SUCCESS) return 0;
-    VkBool32 ok = VK_FALSE;
-    vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
-    if (!ok) return 0;
-    choose_present_queue();
+    if (!open_window_surface(true)) return 0;
     RECT r{};
     GetClientRect((HWND)hwnd, &r);
     if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
@@ -1023,17 +1083,7 @@ int start(void* hwnd) {
         logf("vk: unsupported SDL window bridge version %u (expected %u)", w->version, MKWVK_WINDOW_VERSION);
         return 0;
     }
-    if (!w->create_surface(w->window, (void*)dev.instance, (void*)&dev.surface)) {
-        logf("vk: SDL_Vulkan_CreateSurface failed; check SDL_VIDEODRIVER and the Vulkan window-system extensions");
-        return 0;
-    }
-    VkBool32 ok = VK_FALSE;
-    VkResult present = vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
-    if (present != VK_SUCCESS || !ok) {
-        logf("vk: queue-family present support failed (VkResult %d, supported %u)", (int)present, ok);
-        return 0;
-    }
-    choose_present_queue();
+    if (!open_window_surface(true)) return 0;
     int width = 0, height = 0;
     w->drawable_size(w->window, &width, &height);
     if (width <= 0 || height <= 0) {
@@ -1108,7 +1158,7 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no");
-    if (!dev.mesh_shader && !dev.mesh_fallback && !getenv("RX_VK_NO_MESH_WARNING")) {
+    if (!dev.mesh_shader && !dev.mesh_fallback && !env_on("RX_VK_NO_MESH_WARNING")) {
         // (the game draws its foliage, grass and many effects with mesh shaders: without them those draws are left out and the
         // picture is broken (an RX 580's "static"-like scenes, 2026-11-08). Said once, on its own thread, and the game goes on.)
         // (a GPU with no buffer device addresses has no fallback to run either)
