@@ -77,12 +77,18 @@ int64_t prof_ns[PROF_COUNT];
 Device dev;
 PFN_vkGetInstanceProcAddr instance_proc() { return vkx::instance_proc_addr(); }
 
+/// (hookshot) Milliseconds on the steady clock: the log's last line and the preparation's watchdog
+int64_t steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+std::atomic<int64_t> last_log_ms{0};   // (when logf last wrote: the preparation's status line comes after a silence)
 void logf(const char* fmt, ...) {
     char b[1024];
     std::va_list a;
     va_start(a, fmt);
     std::vsnprintf(b, sizeof b, fmt, a);
     va_end(a);
+    last_log_ms.store(steady_ms(), std::memory_order_relaxed);
     if (host) host->log(b);
 }
 
@@ -282,6 +288,7 @@ bool create_device() {
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
+    dlss_fg_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS Frame Generation's through NGX, asked of NGX)
     bool fsr_descriptor_buffer = false;   // (hookshot, linux: only with a Vulkan FSR 4 library beside the game, vk_fsr4.cpp)
     if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
@@ -539,6 +546,17 @@ void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
     }
 }
 
+/// (hookshot) Frame generation as the swapchain is made for it: the fixed multiplier, 2 to 4 (more takes no more images), or 0
+/// for off and Auto. Its present mode under V-Sync Auto and its spare images follow it; present_image makes the swapchain
+/// again when it changes
+int swapchain_framegen() { return opts.framegen >= 2 ? std::min(opts.framegen, 4) : 0; }
+
+/// (hookshot) Whether the swapchain is made for NVIDIA DLSS Frame Generation: a fixed multiplier, and DLSS-G making the sets
+/// (vk_dlss.cpp dlss_fg_runs: asked for, on a device it runs on). V-Sync Auto is FIFO for it, where it was measured; the
+/// renderer's own methods and other GPUs keep Auto's mailbox (or immediate). present_image makes the swapchain again when it
+/// changes
+bool swapchain_dlssg() { return swapchain_framegen() >= 2 && dlss_fg_runs(); }
+
 void retire_swapchain() {
     if (!dev.swapchain) return;
     device_wait_idle_locked();
@@ -650,15 +668,22 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     // card or driver with vsync forced; Auto and Off as below. FIFO is the one mode every driver has
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     const int vsync = menu_vsync();
+    // (hookshot) V-Sync Auto with DLSS Frame Generation at 2x and up: FIFO. Mailbox, NVIDIA's Fast Sync, puts the made frames on
+    // the refresh grid whenever they come slower than the display (DLSS Frame Gen 3x: ~135 shown on a 165 Hz screen), so evenly
+    // timed presents still reached the screen unevenly; FIFO on a VRR display shows each one when it is presented. Only where
+    // that was measured (swapchain_dlssg): the renderer's own frame generation and other GPUs keep Auto as it was
+    const bool fg_fifo = vsync == 0 && swapchain_dlssg();
+    if (fg_fifo) logf("vk: V-Sync Auto with DLSS Frame Generation at %dx: FIFO", swapchain_framegen());
     if (vsync != 1) {
-        for (auto m : modes)
-            if (m == VK_PRESENT_MODE_MAILBOX_KHR) mode = m;
+        if (!fg_fifo)
+            for (auto m : modes)
+                if (m == VK_PRESENT_MODE_MAILBOX_KHR) mode = m;
         // (Windows, no mailbox: AMD's driver has none, and FIFO held anything under 60 fps at 30.
         //  Linux: immediate on NVIDIA's X11 path turns vblank off for every output, so the other
         //  monitor and other programs tear: Auto leaves it to V-Sync Off, which asks for it.)
         const bool want_immediate = vsync == 2;
 #ifdef _WIN32
-        if (want_immediate || mode == VK_PRESENT_MODE_FIFO_KHR)
+        if (want_immediate || (mode == VK_PRESENT_MODE_FIFO_KHR && !fg_fifo))
 #else
         if (want_immediate)
 #endif
@@ -668,6 +693,11 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
     ci.minImageCount = std::max(caps.minImageCount, 4u);   // (hookshot: mailbox with frame interpolation: an image always free)
+    // (hookshot) A fixed frame generation multiplier's set is presented ahead (vk_framegen.cpp present_ahead_wanted): each
+    // of its frames holds an image from the copy to its present, so the set needs as many spare images as it has frames. 3x
+    // and 4x ask for that many over the surface's least (an NVIDIA surface: 5 and 6 images); a set the chain cannot hold is
+    // shown one at a time as before
+    if (swapchain_framegen() >= 3) ci.minImageCount = std::max(ci.minImageCount, caps.minImageCount + (uint32_t)swapchain_framegen());
     if (caps.maxImageCount) ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
     ci.imageFormat = fmt.format;
     ci.imageColorSpace = fmt.colorSpace;
@@ -766,6 +796,132 @@ std::string skipped_path() {
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string path(exe, n);
     return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepare_skipped";
+}
+// (hookshot) The --prepare-shaders run's watchdog, for any GPU and any part of it.
+// - What it waits on, in the log the builder shows: every 30 s that nothing has moved, the part, its count, and whether the
+//   GPU driver faulted; a driver fault as soon as it is caught. (The pipeline steps log their own progress every 10 s,
+//   vk_draw.cpp prepare_progress_log, #2186; this adds the shader programs' count when the log has been quiet for 30 s.)
+//   Before, the builder's details could not tell a slow driver from a stuck one.
+// - When it stops for good: a driver that faults inside a pipeline compile (caught by guarded_graphics: "the driver faulted
+//   compiling", above) can leave that compile unfinished inside it, and builds behind it then wait for ever (on AMD, any build of
+//   the same program: #1823's dump of issue 996): builds stuck on players' cards of all kinds, AMD and NVIDIA (#2107). Whatever
+//   the cause, a part that needs the stuck driver cannot go on. So when nothing has moved for RX_VK_PREPARE_STALL_S seconds
+//   (300; 0: never stopped. Long: some steps read the caches or
+//   decide the predictions for a while with no count, on a slow disk or CPU too), the run says where it stopped and why, leaves
+//   hookshot_prepare_skipped so the game's own starts do not stop in the same place (what was not prepared is built when first
+//   drawn), and ends at once with exit status 4 (make_game.py: "the GPU driver stopped responding"). Not through exit(): that
+//   unloads the driver, which can wait on the same lock. Before, it waited until make_game.py stopped it after 15 minutes with no
+//   line, and the game's first start then stopped in the same place
+// - The pipeline cache's save, the last part, has no count and can take minutes on a large cache. When the run went on from a
+//   part and left workers inside the driver (prepare_left_workers), or the driver faulted, the save can wait on them for ever
+//   (vkGetPipelineCacheData), and so can exit() unloading the driver: then the save is stopped too, after twice the parts' limit
+//   (600 s), and a run that gets through it ends at once (prepare_end). Twice: a fault AMD's retry recovered from ("recovered
+//   with optimization disabled") counts as one, so on such a card every run is risky, and a save that is only slow should not be
+//   stopped at the parts' limit. Otherwise the save is only reported, and its lines stop after the parts' 300 s so that
+//   make_game.py's 15 minutes with no line (PREPARE_SILENCE) still stop a save that never ends
+/// (where the run is, for the watchdog: under one lock, so it reads a part with its own count)
+struct PrepareSeen {
+    int part = -1;
+    size_t done = 0, total = 0;
+    int64_t moved_ms = 0;
+};
+std::mutex prepare_seen_mu;
+PrepareSeen prepare_seen;
+/// A part's count, from its progress: the watchdog's clock starts again when the part or its count changes. Part 3: the save
+void prepare_moved(int part, size_t done, size_t total) {
+    std::lock_guard lk(prepare_seen_mu);
+    if (part != prepare_seen.part || done != prepare_seen.done || !prepare_seen.moved_ms)
+        prepare_seen = {part, done, total, steady_ms()};
+}
+/// The run ends now: the log written out, then TerminateProcess, not exit(), which unloads a driver that can still hold workers
+/// (@@done first for a run that finished: the line the game prints after the preparation, host/hos_main.c)
+[[noreturn]] void prepare_end(int code) {
+    if (host && host->log_flush) host->log_flush();
+    if (!code) std::printf("@@done shaders\n");
+    std::fflush(stdout);
+    std::fflush(stderr);
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
+#endif
+    std::_Exit(code);
+}
+std::atomic<int> driver_faults_seen{0};
+void prepare_watchdog() {
+    static const int stall_s = getenv("RX_VK_PREPARE_STALL_S") ? atoi(getenv("RX_VK_PREPARE_STALL_S")) : 300;
+    // (a status line after this long with no other line; RX_VK_PREPARE_STATUS_S=<s>, for the tests)
+    static const int64_t quiet_s = getenv("RX_VK_PREPARE_STATUS_S") ? std::max(1, atoi(getenv("RX_VK_PREPARE_STATUS_S"))) : 30;
+    prepare_moved(0, 0, 0);
+    std::thread([] {
+        static const char* const parts[] = {"the shader programs", "the predicted pipelines", "the noted pipelines",
+                                            "the pipeline cache's save"};
+        const int64_t limit_s = stall_s > 0 ? stall_s : 300;   // (the save's lines stop after this, whatever RX_VK_PREPARE_STALL_S)
+        const int save_stall_s = stall_s * 2;   // (a risky save's stop: twice the parts', above)
+        for (;;) {
+            Sleep(1000);
+            const int64_t now = steady_ms();
+            PrepareSeen at;
+            {
+                std::lock_guard lk(prepare_seen_mu);
+                at = prepare_seen;
+            }
+            const char* what = at.part >= 0 && at.part < 4 ? parts[at.part] : "the preparation";
+            const int64_t still = (now - at.moved_ms) / 1000;
+            const int faults = driver_faults();
+            const bool left = prepare_left_workers();
+            const bool risky = faults > 0 || left;   // (the driver may be stuck: the save too can wait for ever)
+            // (what it waits on: after a fault in the driver, most likely the driver; else the driver or the disk, a slow one
+            // reading the caches)
+            const char* waiting_on = faults ? "waiting on the GPU driver, which faulted (above)"
+                                     : left ? "waiting on the GPU driver, which still has pipelines it did not finish"
+                                            : "waiting on the GPU driver or the disk";
+            if (faults != driver_faults_seen.exchange(faults))
+                logf("vk: preparation: the GPU driver faulted %d time%s so far (above): a driver can stop responding after one, so a "
+                     "stop here would be why", faults, faults == 1 ? "" : "s");
+            if (stall_s > 0 && (at.part < 3 ? still >= stall_s : risky && still >= save_stall_s)) {
+                if (at.part < 3)
+                    logf("vk: preparation: STOPPED: nothing moved for %d s in %s (%zu of %zu): the GPU driver stopped responding%s. "
+                         "The rest is built in play, when first drawn; updating the GPU driver may help", stall_s, what, at.done,
+                         at.total, faults ? " after it faulted (above)" : "");
+                else
+                    logf("vk: preparation: STOPPED: %s waited %d s on the GPU driver, %s. The pipelines are made; only this "
+                         "file is left out. Updating the GPU driver may help", what, save_stall_s,
+                         faults ? "which faulted (above)" : "which still has pipelines it did not finish");
+                if (FILE* f = fopen(skipped_path().c_str(), "wb")) fclose(f);
+                prepare_end(4);
+            }
+            // (its own lines, at most one every quiet_s: while nothing has moved, what it waits on, whatever else the log says (the
+            // pipeline steps' own lines, vk_draw.cpp prepare_progress_log, come every 10 s and repeat their count while it is
+            // stuck); while the shader programs move, their count when the log has been quiet (the pipeline steps log theirs);
+            // the save, below)
+            static int64_t said_ms = 0;
+            if (now - said_ms < quiet_s * 1000) continue;
+            const bool quiet = now - last_log_ms.load(std::memory_order_relaxed) >= quiet_s * 1000;
+            if (at.part >= 3) {
+                if (!quiet) continue;
+                if (risky)
+                    logf("vk: preparation: still writing %s (%lld s), %s. Stopped at %d s if it does not end", what,
+                         (long long)still, waiting_on, save_stall_s);
+                else if (still < limit_s)
+                    logf("vk: preparation: still writing %s (%lld s): every pipeline is made, this is the disk", what,
+                         (long long)still);
+                else
+                    continue;   // (silent from here: make_game.py's 15 minutes with no line stop a save that never ends)
+            } else if (still >= quiet_s) {
+                if (stall_s > 0)
+                    logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %d s if "
+                         "nothing moves", what, (long long)still, at.done, at.total, waiting_on, stall_s);
+                else
+                    logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what,
+                         (long long)still, at.done, at.total, waiting_on);
+            } else if (at.part == 0 && quiet) {
+                logf("vk: preparation: still working on %s: %zu of %zu", what, at.done, at.total);
+            } else {
+                continue;
+            }
+            said_ms = now;
+            if (host && host->log_flush) host->log_flush();
+        }
+    }).detach();
 }
 // (hookshot) The first start after an update prepares every shader (prepare_run) and the pipelines the last sessions noted
 // (precompile_run): a minute and more, before the game's first frame. They run on a thread of their own while this one, the
@@ -930,9 +1086,11 @@ bool started_up() {
         // from the start: PrepareBar. The fixed shares it had (70%, 20%, 10%) kept the predicted pipelines' minutes in a fifth)
         static int part;
         static PrepareBar bar;
+        prepare_watchdog();
         const auto progress = [](size_t done, size_t total) {
             static int last = -1;
             if (!total) return;
+            prepare_moved(part, done, total);
             bar.at(part, done, total);
             const int at = (int)(bar.fraction() * 1000);
             if (at == last) return;
@@ -954,12 +1112,20 @@ bool started_up() {
             bar.skip(1);
         }
         part = 1;
+        prepare_moved(1, 0, 0);
         if (prepared) predict_run(progress);
         part = 2;
+        prepare_moved(2, 0, 0);
         bar.reach(2);
         precompile_run(progress);
+        prepare_moved(3, 0, 0);   // (the pipeline cache written out: the watchdog reports it, and stops it only when risky)
         pipeline_cache_save(true);
         remove(skipped_path().c_str());
+        if (prepare_left_workers() || driver_faults() > 0) {   // (exit() would unload a driver that may still hold workers)
+            logf("vk: preparation: done; the run ends at once (%s)",
+                 prepare_left_workers() ? "pipelines left in the driver" : "the driver faulted");
+            prepare_end(0);
+        }
         return true;
     }
     if (FILE* f = fopen(skipped_path().c_str(), "rb")) {
@@ -1133,10 +1299,12 @@ __attribute__((visibility("default")))
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
     pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
-    if (!prep_running.load() || prepare_stopped()) return;
-    logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
-    prepare_stop();
-    if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
+    if (prep_running.load() && !prepare_stopped()) {
+        logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
+        prepare_stop();
+        if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
+    }
+    dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
 }
 
 extern "C"

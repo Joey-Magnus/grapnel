@@ -298,6 +298,8 @@ void vma_log_image_blocks();   // (the image pools' blocks: what they hold, and 
 PFN_vkGetInstanceProcAddr instance_proc();   // vk_main.cpp
 
 bool create_swapchain(uint32_t width, uint32_t height);
+int swapchain_framegen();   // (vk_main.cpp: frame generation's fixed multiplier as the swapchain is made for it, 0 none)
+bool swapchain_dlssg();     // (vk_main.cpp: and DLSS-G makes its sets: V-Sync Auto's FIFO)
 void retire_swapchain();   // (dev.present_mu held)
 bool invalidate_lost_surface(VkResult result);   // (dev.present_mu held)
 bool replay_start();                          // vk_replay.cpp
@@ -313,6 +315,9 @@ void prepare_guess(size_t out[3]);   // (the three parts' counts from the files,
 /// what is done kept (the program cache, the driver's) and not counted as a start that ended inside them
 void prepare_stop();
 bool prepare_stopped();
+int driver_faults();   // (hookshot, vk_draw.cpp) the driver faults the pipeline compiles caught so far (guarded_graphics, guarded_compute)
+void prepare_left_workers_note();   // (hookshot, vk_draw.cpp) predict_run or precompile_run left workers inside the driver
+bool prepare_left_workers();
 void fill_replay_table(MkwVkRenderer& t);     // vk_replay.cpp
 
 } // namespace mkwvk
