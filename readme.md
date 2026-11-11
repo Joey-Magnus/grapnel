@@ -196,7 +196,9 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 - The game's data folder holds what is yours: `%LOCALAPPDATA%\Hookshot` on Windows, `~/.local/share/hookshot` on Linux
   (`$XDG_DATA_HOME/hookshot` when that is set). In it are your saves (`save`) and the settings (`hookshot_options.ini`,
   `hookshot_env.txt`), so deleting or rebuilding the game folder loses none of them. `--user <folder>` puts them
-  somewhere else ([command line arguments](#running-the-game-from-the-command-line)).
+  somewhere else ([command line arguments](#running-the-game-from-the-command-line)). A portable game folder (one with
+  a `.hookshot_builder_home` file) keeps them in its own `user` folder instead, so they go with the drive it is on. A
+  second game folder whose saves would clash with the first's keeps its saves and settings in its own `user` folder too.
 - The game folder has two folders of its own the game writes: `cache`, the shader and pipeline caches (several GB, made
   for this version and this graphics card), and `logs`, `hookshot_log.txt` and the runs before it. `cache` can be
   deleted at any time: the next start prepares the shaders again (minutes on some PCs). Each game folder keeps its own,
@@ -206,12 +208,12 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
   not be deleted whole (a file in use or read-only), what is left is renamed `user.moved`: delete it once the game shows
   your saves.
   The same folder has `ngx`, where DLSS's runtime can be put (see NVIDIA DLSS below), and on Linux the builder's own
-  `builder` folder, with its installed updates. `--user` does not move those.
+  `builder` folder, with its installed updates and NVIDIA's DLSS SDK (`ngx-sdk`). `--user` does not move those.
   To carry on with a save from an emulator (Lichii, Eglantine, Orchid, ...) or NX2navi, or to take yours there, see
   [using a save from an emulator](docs/saves.md).
 - To uninstall, delete the game folder (its caches and logs go with it), the builder's folder and the shortcuts, and the
-  data folder too to remove your saves and settings (on Linux that also removes the builder's installed updates, in its
-  `builder` folder).
+  data folder too to remove your saves and settings (on Linux that also removes the builder's installed updates and the DLSS
+  SDK, in its `builder` folder).
 
 ### If something goes wrong
 
@@ -687,11 +689,9 @@ license. Never share a game folder built with them, and do not post builds made 
   sure no other folder has a newer one). Never copy NGX's core, `_nvngx.dll`, beside the game: it comes with NVIDIA's
   driver.
 - **Linux, the Hookshot Builder (the AppImage):** the same tick as on Windows, and nothing else to do: no variable is
-  passed to the AppImage and no file is copied by hand. The build downloads the SDK into the builder's cache folder,
-  `$XDG_CACHE_HOME/hookshot-builder/ngx-sdk` (`~/.cache/hookshot-builder/ngx-sdk`), builds the game with it and puts
-  DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, in the game folder's `ngx` folder. The builder's settings
-  (`~/.config/hookshot/builder.ini`) remember that you accepted NVIDIA's license, so an update keeps DLSS even after the
-  cache was emptied: it downloads the SDK again.
+  passed to the AppImage and no file is copied by hand. The build downloads the SDK into
+  `$XDG_DATA_HOME/hookshot/builder/ngx-sdk` (`~/.local/share/hookshot/builder/ngx-sdk`), builds the game with it and
+  puts DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, in the game folder's `ngx` folder.
 - **Linux, a build from source:** `scripts/linux/ngx-sdk.sh <sdk folder>` (it runs `scripts/ngx_sdk.py --platform
   linux`) asks you to accept NVIDIA's license and fetches `libnvsdk_ngx.a` for the build and
   `libnvidia-ngx-dlss.so.<version>`, DLSS's runtime. Then run the build with `HOOKSHOT_NGX_SDK=<sdk folder>` set:

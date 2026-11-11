@@ -4,7 +4,8 @@
    Which folder: --user <folder> when given; else, for a game started with nothing (as a player starts it: image.bin in the
    game folder), %LOCALAPPDATA%\Hookshot on Windows and $XDG_DATA_HOME/hookshot (~/.local/share/hookshot) on Linux; else (a
    development run given its image.bin) "user" in the current folder, as before. A builder's folder whose platform folder cannot
-   be made keeps <game>/user.
+   be made keeps <game>/user. A portable install (#2367's Builder: .hookshot_builder_home in the game folder) keeps its data
+   folder in the game folder too, <game>/user, so it goes with the drive the game is on.
 
    What goes where:
    - the data folder: the saves and the settings (hookshot_options.ini, hookshot_env.txt), what belongs to the player;
@@ -18,11 +19,12 @@
    - for the platform folder only (a --user folder or a development run is the caller's to fill): the entries of <game>/user (the
      saves; on Linux since an earlier build already, on Windows now) into the data folder, a rename, else a copy and delete
      (another drive). All or nothing: when one of its entries is in the data folder already, or one cannot move (whatever moved is
-     moved back), the saves stay in <game>/user, as they were (hos_user_dir names it), and nothing is lost or split. A copy whose
-     original cannot be deleted after (a file held or read-only) leaves <game>/user renamed user.moved, so that a later start does
-     not take the leftover for the saves. A link (a symbolic link, a Windows junction) is never copied through or deleted into: one
-     that cannot be renamed keeps the saves where they are. The settings likewise, each on its own; one that cannot move stays, and
-     is then the default;
+     moved back), the saves stay in <game>/user, as they were, and nothing is lost or split; the data folder is then
+     <game>/user too, so that the settings stay with the saves (a second game folder beside the first keeps its own of both). A
+     copy whose original cannot be deleted after (a file held or read-only) leaves <game>/user renamed user.moved, so that a
+     later start does not take the leftover for the saves. A link (a symbolic link, a Windows junction), or a folder holding one,
+     is never moved, renamed or copied: the saves stay with it. The settings, each on its own; one that cannot move stays, and
+     the log says it is not read. For a portable install, the settings alone, into <game>/user;
    - whenever the game folder is known: its loose caches into cache/ and its logs into logs/ (renames on the same drive), the
      Vulkan pipeline cache renamed from mkw_vk_pipelines*.bin to hookshot_vk_pipelines*.bin on the way; the button prompts an
      older build made in the game folder's prompts/ (Common.*, External.bfotf.zs) are deleted: they are made again in cache/.
@@ -50,6 +52,8 @@ static int data_ready;
 /* (what the move did, for the log once it is open) */
 static int moved_files, tidied_files, kept_files, saves_moved, saves_kept;
 static char set_aside[MAX_PATH];   /* (<game>/user renamed after a copy whose original could not be deleted whole) */
+static int saves_link, portable;   /* (the saves hold a link, kept where they are; a portable install's data folder) */
+static char unread_options[MAX_PATH], unread_env[MAX_PATH];   /* (a settings file beside the game the game does not read) */
 static char kept_first[MAX_PATH];
 static char saves_from[MAX_PATH];
 
@@ -161,8 +165,9 @@ static void delete_tree(const char *p) {
 /* from to to, which is not there yet: a rename, else (another drive) a copy and delete, never through a link. 1 moved, 0 left
    where it was. *left: set when the copy is whole but some of the original could not be deleted (held, read-only) */
 static int move_entry(const char *from, const char *to, int *left) {
-    if (MoveFileExA(from, to, 0)) return 1;
+    /* (a link, or a folder holding one, is never moved: renamed into another folder, a relative link names nothing there) */
     if (tree_has_link(from)) return 0;
+    if (MoveFileExA(from, to, 0)) return 1;
     if (copy_tree(from, to)) {
         delete_tree(from);
         if (exists(from) && left) *left = 1;
@@ -189,7 +194,10 @@ static const char *move_saves(const char *beside) {
         if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
         char to[MAX_PATH];
         snprintf(to, sizeof to, "%s" SEP_S "%s", data_dir, fd.cFileName);
-        if (exists(to) || count == MAX_SAVE_ENTRIES) saves_kept++;
+        char from[MAX_PATH];
+        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
+        if (tree_has_link(from)) saves_link = 1, saves_kept++;   /* (a link: the saves stay with it, whole) */
+        else if (exists(to) || count == MAX_SAVE_ENTRIES) saves_kept++;
         else snprintf(names[count++], MAX_PATH, "%s", fd.cFileName);
     } while (FindNextFileA(h, &fd));
     FindClose(h);
@@ -208,7 +216,10 @@ static const char *move_saves(const char *beside) {
         for (int k = i - 1; k >= 0; k--) {
             snprintf(from, sizeof from, "%s" SEP_S "%s", data_dir, names[k]);
             snprintf(to, sizeof to, "%s" SEP_S "%s", beside, names[k]);
-            if (exists(to) || !move_entry(from, to, NULL)) saves_kept++;   /* (a leftover there: both copies stay) */
+            /* (what its copy left of the original, part deleted, goes first: the whole copy comes back in its place. One that
+               cannot be deleted keeps both: nothing lost, the whole copy stays in the data folder) */
+            if (exists(to)) delete_tree(to);
+            if (exists(to) || !move_entry(from, to, NULL)) saves_kept++;
         }
         saves_moved = 0;
         return beside;
@@ -290,19 +301,21 @@ static void tidy_game(const char *game) {
     }
 }
 
+/* the game folder's settings into the data folder (game: the folder, with its separator) */
+static void move_settings(const char *game) {
+    char data[MAX_PATH];
+    snprintf(data, sizeof data, "%s" SEP_S, data_dir);
+    for (size_t i = 0; i < sizeof to_data / sizeof *to_data; i++) moved_files += move_file(game, to_data[i], data);
+}
+
 /* the game folder's saves and settings of a build from before, into the data folder (game: the folder, with its separator) */
 static void migrate(const char *game) {
     char path[MAX_PATH];
     snprintf(path, sizeof path, "%suser", game);
-    const char *saves = move_saves(path);
-    if (saves != data_dir) {
-        static char kept[MAX_PATH];
-        snprintf(kept, sizeof kept, "%s", saves);
-        hos_user_dir = kept;
-    }
-    char data[MAX_PATH];
-    snprintf(data, sizeof data, "%s" SEP_S, data_dir);
-    for (size_t i = 0; i < sizeof to_data / sizeof *to_data; i++) moved_files += move_file(game, to_data[i], data);
+    if (move_saves(path) != data_dir)   /* (the saves stay in <game>/user: the settings stay with them, the data folder too. A
+                                           second game folder's saves meet the first's: it keeps its own saves and settings) */
+        snprintf(data_dir, sizeof data_dir, "%s", path), hos_user_dir = data_dir;
+    move_settings(game);
     if (moved_files || saves_moved) {   /* (a note where they went, for a player who looks there: what moved, and only that) */
         snprintf(path, sizeof path, "%sfiles-moved.txt", game);
         FILE *f = fopen(path, "w");
@@ -310,7 +323,8 @@ static void migrate(const char *game) {
             fprintf(f, "Hookshot's %s now in\n%s\n\nThey moved there from this folder.%s%s The shader caches are in this folder's "
                        "cache folder (it can be deleted: the next start makes them again), the logs in its logs folder.\n",
                     saves_moved && moved_files ? "saves and settings are" : saves_moved ? "saves are" : "settings are", data_dir,
-                    saves_kept ? " The saves stay in this folder's user folder: one of them could not move." : "",
+                    saves_kept ? " The saves stay in this folder's user folder (one of them could not move), with the settings."
+                               : "",
                     set_aside[0] ? " The user folder was copied whole, but some of it could not be deleted after: what is left is "
                                    "in user.moved, which can be deleted once the game shows your saves." : "");
             fclose(f);
@@ -385,10 +399,14 @@ void hos_data_init(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace") || !strcmp(argv[i], "--prepare-shaders")) continue;
         else image = 1;
     }
-    char game_image[MAX_PATH];
+    char game_image[MAX_PATH], marker[MAX_PATH];
     const int builder_folder = !image && hos_game_file(game_image, sizeof game_image, "image.bin") && exists(game_image);
+    /* (a portable install, #2367's Builder: .hookshot_builder_home in the game folder. Its data folder is the game folder's
+       user/, so the saves go with the drive the game is on; they are there already, so nothing moves but the settings) */
+    portable = builder_folder && hos_game_file(marker, sizeof marker, ".hookshot_builder_home") && exists(marker);
     int move = 0;
     if (user && *user) snprintf(data_dir, sizeof data_dir, "%s", user);
+    else if (portable) hos_game_file(data_dir, sizeof data_dir, "user"), move = 2;
     else if (builder_folder && platform_dir()) move = 1;
     else if (builder_folder) hos_game_file(data_dir, sizeof data_dir, "user");   /* (no platform folder: the game's, as before) */
     else snprintf(data_dir, sizeof data_dir, "user");
@@ -400,7 +418,16 @@ void hos_data_init(int argc, char **argv) {
         if (hos_game_file(sub, sizeof sub, "cache")) CreateDirectoryA(sub, NULL);
         if (hos_game_file(sub, sizeof sub, "logs")) CreateDirectoryA(sub, NULL);
         tidy_game(game);
-        if (move) migrate(game);
+        if (move == 1) migrate(game);
+        else if (move == 2) move_settings(game);
+        /* (a settings file beside the game that the game does not read: the options never are; hookshot_env.txt is when the
+           data folder has none. Players were told to put them there: the log says so) */
+        char beside[MAX_PATH], mine[MAX_PATH];
+        if (hos_game_file(beside, sizeof beside, "hookshot_options.ini") && exists(beside))
+            snprintf(unread_options, sizeof unread_options, "%s", beside);
+        if (hos_game_file(beside, sizeof beside, "hookshot_env.txt") && exists(beside) &&
+            hos_data_path(mine, sizeof mine, "hookshot_env.txt") && exists(mine))
+            snprintf(unread_env, sizeof unread_env, "%s", beside);
     }
 }
 
@@ -425,10 +452,14 @@ const wchar_t *hos_data_dir_w(void) {
 #endif
 
 void hos_data_log_migration(void) {
-    hos_log("data: %s", data_dir);
+    hos_log("data: %s%s", data_dir, portable ? " (a portable install, .hookshot_builder_home: the game folder's user)" : "");
     if (saves_moved || saves_kept) {
-        if (saves_kept)
-            hos_log("data: %d of %s's entries could not move: the saves stay in %s", saves_kept, saves_from, saves_from);
+        if (saves_link)
+            hos_log("data: %s holds a link (to a folder elsewhere): it is left as it is, the saves and settings stay in %s",
+                    saves_from, saves_from);
+        else if (saves_kept)
+            hos_log("data: %d of %s's entries could not move: the saves stay in %s, the settings with them", saves_kept, saves_from,
+                    saves_from);
         else hos_log("data: the saves moved from %s", saves_from);
         if (set_aside[0])
             hos_log("data: %s could not be deleted whole after its copy: what is left is set aside as %s", saves_from, set_aside);
@@ -437,4 +468,9 @@ void hos_data_log_migration(void) {
     if (tidied_files) hos_log("data: %d logs and shader caches moved into the game folder's logs and cache folders", tidied_files);
     if (kept_files)
         hos_log("data: %d files stayed in the game folder (one there already, or no room): %s, ...", kept_files, kept_first);
+    char mine[MAX_PATH];
+    if (unread_options[0] && hos_data_path(mine, sizeof mine, "hookshot_options.ini"))
+        hos_log("data: %s is not read: the game's settings are %s", unread_options, mine);
+    if (unread_env[0] && hos_data_path(mine, sizeof mine, "hookshot_env.txt"))
+        hos_log("data: %s is not read: the switches are %s's", unread_env, mine);
 }

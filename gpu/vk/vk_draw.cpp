@@ -1243,57 +1243,7 @@ uint64_t program_wm_sig(const Program& p) {
 std::mutex note_mu;
 FILE* note_file = nullptr;
 std::unordered_set<uint64_t> noted;   // (a pipeline once in the file, however many runs meet it)
-/// (once, at the first use of the notes) The pipelines the build shipped (hookshot_pipelines_shipped.bin in the game folder,
-/// nx2/make_game.py seed_pipelines: the list recorded on the development PC, this build's stamp first) become this PC's notes
-/// when those are missing or of another build. Notes of this build stay: they hold what play here added. Taken once per stamp
-/// (hookshot_pipelines_shipped.taken in cache/ records it): notes precompile_run dropped after two starts that did not get through
-/// it are not taken back from the shipped list at the next start, which would crash there again
-void notes_adopt_shipped(const std::string& path) {
-    const uint64_t stamp = program_cache_stamp();
-    auto head = [](const std::string& p, uint64_t h[2]) {
-        h[0] = h[1] = 0;
-        if (FILE* f = fopen(p.c_str(), "rb")) {
-            if (fread(h, 8, 2, f) != 2) h[0] = h[1] = 0;
-            fclose(f);
-        }
-    };
-    uint64_t have[2], ship[2], taken[2];
-    head(path, have);
-    if (have[0] == stamp && have[1] == sizeof(PipeNote)) return;
-    const std::string taken_path = cache_path("hookshot_pipelines_shipped.taken");
-    head(taken_path, taken);
-    if (taken[0] == stamp) return;   // (taken once for this build already: what is missing now was dropped)
-    const std::string shipped = game_file("hookshot_pipelines_shipped.bin");
-    head(shipped, ship);
-    if (ship[0] != stamp || ship[1] != sizeof(PipeNote)) return;
-    // (fopen, as every other file here: its paths are UTF-8 under the exe's manifest, std::filesystem's narrow ones may not be)
-    FILE* in = fopen(shipped.c_str(), "rb");
-    FILE* out = in ? fopen((path + ".tmp").c_str(), "wb") : nullptr;
-    bool ok = in && out;
-    std::vector<char> buf(1 << 16);
-    for (size_t n; ok && (n = fread(buf.data(), 1, buf.size(), in)) > 0;) ok = fwrite(buf.data(), 1, n, out) == n;
-    ok = ok && !ferror(in);
-    if (in) fclose(in);
-    if (out) ok = fclose(out) == 0 && ok;
-    if (ok && MoveFileExA((path + ".tmp").c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        if (FILE* f = fopen(taken_path.c_str(), "wb")) {
-            const uint64_t rec[2] = {stamp, sizeof(PipeNote)};
-            fwrite(rec, 8, 2, f);
-            fclose(f);
-        }
-        logf("vk: the shipped pipeline notes (%s) taken as this PC's", shipped.c_str());
-    } else {
-        DeleteFileA((path + ".tmp").c_str());
-    }
-}
-std::string pipe_notes_path() {
-    static const std::string path = [] {
-        std::string p = cache_path("hookshot_pipelines.bin");
-        notes_adopt_shipped(p);
-        return p;
-    }();
-    return path;
-}
+std::string pipe_notes_path() { return cache_path("hookshot_pipelines.bin"); }
 /// The notes of this build (hookshot_pipelines.bin), each pipeline once
 /// (hookshot) Targets a pipeline can be made with: at most 8 colour targets, a sample count Vulkan has, a topology it has.
 /// The notes and the state list are files: what they say is checked before a pipeline is made from it

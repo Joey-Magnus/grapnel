@@ -65,17 +65,5 @@ class PipelineNotesOpenTests(unittest.TestCase):
         self.assertIn("std::lock_guard lk(state_mu);", run[notes:states])
 
 
-    def test_the_shipped_notes_are_taken_once_per_build(self):
-        # (precompile_run drops the notes after two starts that did not get through it; taking the shipped list back at the
-        # next start would crash there again, two starts in three: it is taken once per stamp, which a record in cache/ keeps)
-        adopt = block(self.draw, "void notes_adopt_shipped(const std::string& path)")
-        self.assertIn('cache_path("hookshot_pipelines_shipped.taken")', adopt)
-        self.assertIn("if (taken[0] == stamp) return;", adopt)
-        self.assertLess(adopt.index("if (taken[0] == stamp) return;"), adopt.index("fopen(shipped.c_str()"))
-        self.assertIn("fwrite(rec, 8, 2, f)", adopt)
-        run = block(self.draw, "void precompile_run(void (*progress)(size_t done, size_t total))")
-        self.assertIn("remove(pipe_notes_path().c_str());", run)
-
-
 if __name__ == "__main__":
     unittest.main()

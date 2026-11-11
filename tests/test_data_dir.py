@@ -10,7 +10,11 @@ chose and the saves' folder. The program is copied into game folders built in a 
 - a builder's folder uses $XDG_DATA_HOME/hookshot; the settings go there, the saves from <game>/user, and a note is left;
   language.txt (the builder's) stays, and the prompts made from the player's controls are deleted;
 - a file already where it goes is not written over: the game folder's copy stays where it is;
-- when a save entry cannot move (one of that name is there already), the saves stay in <game>/user together;
+- when a save entry cannot move (one of that name is there already, as for a second game folder beside the first), the
+  saves stay in <game>/user together, and the data folder with them: the settings move there, not to the shared folder;
+- a relative link in the saves, on the same drive, is never renamed into the data folder, where it would name nothing;
+- a settings file beside the game the game does not read is said in the log;
+- a portable install (.hookshot_builder_home): the data folder is <game>/user, and nothing goes to the per-user folder;
 - the game in bin/: the files come from the folder above it, the one with image.bin;
 - across file systems (the data folder on another drive, where a rename fails: /dev/shm against /tmp here), the saves are
   copied and deleted; an entry that cannot be copied brings back the ones that went (all or none); a link is never copied
@@ -113,10 +117,11 @@ def other_fs(tmp, built):
         shutil.move(str(game / "user" / "save"), str(emulator))
         os.symlink(emulator, game / "user" / "save")
         data, user, out = run(exe, [], tmp / "f", other / "f")
-        assert user == game / "user", (user, out)
+        assert user == data == game / "user", (user, out)   # (the settings stay with the saves)
         assert (emulator / "0100" / "file").read_text() == "my save" and (game / "user" / "save").is_symlink()
-        assert (game / "user" / "mouse_sens.txt").exists() and not (data / "mouse_sens.txt").exists(), out   # (all or none)
-        assert not (data / "save").exists()
+        shared = other / "f" / "hookshot"
+        assert (game / "user" / "mouse_sens.txt").exists() and not (shared / "mouse_sens.txt").exists(), out   # (all or none)
+        assert not (shared / "save").exists()
 
         if as_root:
             print("cross-file-system permission cases skipped: run as root")
@@ -131,9 +136,10 @@ def other_fs(tmp, built):
             data, user, out = run(exe, [], tmp / "g", other / "g")
         finally:
             os.chmod(game / "user" / "present.txt", 0o600)
-        assert user == game / "user", (user, out)
+        assert user == data == game / "user", (user, out)   # (the settings stay with the saves)
         assert (game / "user" / "save" / "0100" / "file").read_text() == "my save" and (game / "user" / "mouse_sens.txt").exists()
-        assert not (data / "save").exists() and not (data / "mouse_sens.txt").exists(), out
+        shared = other / "g" / "hookshot"
+        assert not (shared / "save").exists() and not (shared / "mouse_sens.txt").exists(), out
         assert "the saves stay in" in out, out
 
         # copied whole, but the original cannot be deleted (a read-only folder): <game>/user is set aside as user.moved, and the
@@ -223,7 +229,9 @@ def main():
         data2, _, out = run(exe, [], tmp / "b", xdg)
         assert data2 == data and "moved" not in out, out
 
-        # what is there already is not written over; saves that cannot all move stay together
+        # a second game folder (a nightly beside a release): its saves meet the first one's and stay in its user/; its settings
+        # stay with them there, so it runs with its own of both and the first folder's settings are untouched. What is there
+        # already is not written over
         game = tmp / "c" / "game"
         exe = game_folder(game, built)
         xdg = tmp / "c" / "xdg"
@@ -232,12 +240,52 @@ def main():
         (game / "cache").mkdir(parents=True)
         (game / "cache" / "hookshot_programs.bin").write_text("newer")
         data, user, out = run(exe, [], tmp / "c", xdg)
-        assert data == xdg / "hookshot" and user == game / "user", (data, user)
-        assert (data / "hookshot_options.ini").read_text() == "mine\n" and (game / "hookshot_options.ini").exists()
+        assert data == user == game / "user", (data, user, out)
+        assert (game / "user" / "hookshot_options.ini").read_text() == "vsync=1\n" and not (game / "hookshot_options.ini").exists()
+        assert (xdg / "hookshot" / "hookshot_options.ini").read_text() == "mine\n"
         assert (game / "user" / "save" / "0100" / "file").exists() and (game / "user" / "mouse_sens.txt").exists()
         assert (game / "cache" / "hookshot_programs.bin").read_text() == "newer" and (game / "hookshot_programs.bin").exists()
         assert (game / "cache" / "hookshot_vk_pipelines.bin").exists()
-        assert "the saves stay in" in out and "stayed in the game folder" in out, out
+        assert "the saves stay in" in out and "the settings with them" in out and "stayed in the game folder" in out, out
+        data2, user2, out = run(exe, [], tmp / "c", xdg)   # (every start: the same, its own saves and settings)
+        assert data2 == user2 == game / "user" and "settings files moved" not in out, out
+
+        # a relative link (user/save -> a folder beside the game, synced elsewhere), on the same drive: never renamed into the
+        # data folder, where it would name nothing; the saves and settings stay with it, the folder it names untouched
+        game = tmp / "l" / "game"
+        exe = game_folder(game, built)
+        synced = tmp / "l" / "synced-saves"
+        shutil.move(str(game / "user" / "save"), str(synced))
+        os.symlink(os.path.join("..", "..", "synced-saves"), game / "user" / "save")
+        data, user, out = run(exe, [], tmp / "l", tmp / "l" / "xdg")
+        assert data == user == game / "user", (data, user, out)
+        assert (game / "user" / "save").is_symlink() and (game / "user" / "save" / "0100" / "file").read_text() == "my save"
+        assert not (tmp / "l" / "xdg" / "hookshot" / "save").exists() and "holds a link" in out, out
+
+        # a settings file beside the game the game does not read is said in the log: hookshot_env.txt when the data folder has
+        # one, the options always
+        game = tmp / "u" / "game"
+        exe = game_folder(game, built)
+        xdg = tmp / "u" / "xdg"
+        run(exe, [], tmp / "u", xdg)   # (moves both into the data folder)
+        (game / "hookshot_env.txt").write_text("RX_VK_X=2\n")
+        (game / "hookshot_options.ini").write_text("vsync=0\n")
+        (xdg / "hookshot" / "hookshot_options.ini").write_text("vsync=1\n")
+        _, _, out = run(exe, [], tmp / "u", xdg)
+        assert "hookshot_env.txt is not read" in out and "hookshot_options.ini is not read" in out, out
+
+        # a portable install (.hookshot_builder_home, #2367): the data folder is the game folder's user/; the saves stay there,
+        # only the settings move into it; nothing goes to the per-user folder
+        game = tmp / "p" / "game"
+        exe = game_folder(game, built)
+        (game / ".hookshot_builder_home").write_text("../HookshotBuilder")
+        xdg = tmp / "p" / "xdg"
+        data, user, out = run(exe, [], tmp / "p", xdg)
+        assert data == user == game / "user" and "portable install" in out, (data, user, out)
+        assert (game / "user" / "save" / "0100" / "file").read_text() == "my save"
+        assert (game / "user" / "hookshot_options.ini").exists() and not (game / "hookshot_options.ini").exists()
+        assert not (xdg / "hookshot").exists() and not (game / "files-moved.txt").exists()
+        tidied(game)
 
         # the game in bin/ beside image.bin (the launcher's layout): the folder above bin/ is the game folder
         game = tmp / "d" / "game"
