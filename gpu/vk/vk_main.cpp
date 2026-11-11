@@ -436,6 +436,7 @@ bool create_device() {
         facts.driver_id = drv.driverID;
         facts.device_type = p2.properties.deviceType;
         facts.driver_info = drv.driverInfo;
+        dev.driver_id = drv.driverID;   // (the one query of the driver's properties: the subgroup block below no longer makes its own)
         dev.fixes = vendor_fixes(facts);
         vendor_fixes_env(dev.fixes, [](const char* name) -> const char* { return getenv(name); });
         logf("vk: vendor fixes for %s (%s): pipeline cache saves apart from builds %d, static alpha to coverage %d",
@@ -449,9 +450,7 @@ bool create_device() {
     {   // (hookshot, after TotK Recomp's vk_caps.c) NVN's programs are written for 32 lanes: the translator is told 32, and the lane
         // shuffles of OoT's networks and the lane masks of its mesh programs depend on it. NVIDIA's GPUs have no other size; AMD's
         // default to 64 where they like, and the networks' output came out as coloured noise (Hookshot issues 10 and 14)
-        VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceSubgroupSizeControlProperties sc{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
-        sc.pNext = &drv;
         VkPhysicalDeviceSubgroupProperties sg{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
         sg.pNext = &sc;
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -461,7 +460,6 @@ bool create_device() {
         dev.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
         dev.subgroup_size = sg.subgroupSize;
         dev.subgroup_max = sc.maxSubgroupSize > sg.subgroupSize ? sc.maxSubgroupSize : sg.subgroupSize;
-        dev.driver_id = drv.driverID;
         logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x", sg.subgroupSize, sc.minSubgroupSize, sc.maxSubgroupSize,
              (unsigned)dev.sg32_stages);
     }

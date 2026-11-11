@@ -129,7 +129,8 @@ int save_replace(const char* from, const char* to, unsigned flags) {
 // The play generations' part of a save (gpu/vk/vk_draw.cpp, tests/test_pipeline_play_cache.py): at each save, after the
 // cache's own part, whatever that did.
 std::atomic<int> play_saves{0};
-void play_cache_save() { ++play_saves; }
+std::atomic<int> play_saves_forced{0};   // (of them, the forced saves: the play files' copy gets the forced wait then)
+void play_cache_save(bool forced) { ++play_saves, play_saves_forced += forced; }
 std::atomic<bool> in_play{false};
 bool play_cache_in_use() { return in_play.load(); }
 
@@ -267,6 +268,7 @@ int run(const std::string& name) {
         CHECK(gate_last_wait == kCopyWaitStart);
         pipeline_cache_save(true);
         CHECK(gate_last_wait == kCopyWaitForced);
+        CHECK(play_saves == 3 && play_saves_forced == 1);  // (the play files: forced only with the forced save)
     } else if (name == "in-play") {
         // In play the cache is not written at a save for a little growth: what play makes is in the play files.
         pcache_saved_size = 64;

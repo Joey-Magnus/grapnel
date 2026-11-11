@@ -777,10 +777,10 @@ void cache_copy_end();
 /// tried again at the next save). The copy is held apart from pipeline builds as pcache's is (cache_copy_begin): no build goes into
 /// a generation being written (play_cache_save waits for its users), but Intel's driver is not known to fault only when the
 /// build is into the same cache, so the lock is the same one
-size_t play_file_write(VkPipelineCache cache, const std::string& path) {
+size_t play_file_write(VkPipelineCache cache, const std::string& path, int wait_ms) {
     size_t n = 0;
     std::vector<uint8_t> data;
-    if (!cache_copy_begin(kCopyWaitStart)) return 0;
+    if (!cache_copy_begin(wait_ms)) return 0;
     {
         struct End { ~End() { cache_copy_end(); } } end;
         if (vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
@@ -823,7 +823,7 @@ size_t play_files_merge() {
     }
     if (!merged.empty()) logf("vk: pipeline cache: %zu play files merged (%zu KB)", merged.size(), merged_kb);
     if (merged.size() >= kPlayFilesKept) {   // (into the one file, here at the start, and out of the play files)
-        if (const size_t wrote = play_file_write(pcache, pcache_path)) {
+        if (const size_t wrote = play_file_write(pcache, pcache_path, kCopyWaitStart)) {   // (the start: no builds yet)
             for (const std::string& path : merged) remove(path.c_str());
             logf("vk: pipeline cache: the play files written into it (%zu KB)", wrote >> 10);
         }
@@ -851,7 +851,7 @@ void play_cache_begin() {
 int play_drain_ms = 30000;   // (how long a save waits for a generation's builds to end: play_cache_save)
 /// (pipeline_cache_save's thread, or the window's close) play's generation taken away once nothing is being made with it, a new one
 /// in its place, and written alone. One not written is kept and tried again at the next save
-void play_cache_save() {
+void play_cache_save(bool forced) {
     static std::mutex mu;   // (a save's thread and the window's close, pipeline_cache_close)
     std::lock_guard lk(mu);
     static std::vector<PlayCache*> unsaved, draining;
@@ -882,7 +882,9 @@ void play_cache_save() {
     }
     for (auto it = unsaved.begin(); it != unsaved.end();) {
         PlayCache* old = *it;
-        if (const size_t wrote = play_file_write(old->cache, play_path(play_seq + 1))) {
+        // (in play one try, as pcache's save: a generation not written is kept and tried again at the next save, and builds are
+        // not held back for it; at the window's close or a forced save, the forced wait)
+        if (const size_t wrote = play_file_write(old->cache, play_path(play_seq + 1), forced ? kCopyWaitForced : 0)) {
             play_seq++;
             logf("vk: pipeline cache: play file %u saved (%zu KB): %lld pipelines, %lld from the driver's cache, %lld compiled; %lld "
                  "more from the start's cache",
@@ -1257,10 +1259,11 @@ VkResult apart_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo*
     cache_use_end(held);
     return r;
 }
-/// (pcache_apart) The copy of a cache's data held apart from the builds, tried for up to wait_ms (kCopyWaitForced for pcache's
-/// forced saves: the exit, Restart now, the prepare's end; kCopyWaitStart for a save of pcache before play and for every play file,
-/// play_file_write; 0, one try, for a save of pcache in play, which is tried again at the next one); false when the builds kept it.
-/// While it waits, new builds hold back for it for up to 1 s (copy_pending, cache_use_begin). Never a blocking lock: a waiting exclusive lock holds back new
+/// (pcache_apart) The copy of a cache's data held apart from the builds, tried for up to wait_ms: kCopyWaitForced for the forced
+/// saves (the exit, the window's close, Restart now, the prepare's end), pcache's and the play files' alike; kCopyWaitStart for a
+/// save of pcache before play and the start's merge; 0, one try, for a save in play, pcache's or a play file's, which is tried
+/// again at the next one. False when the builds kept it. While a forced copy waits, new builds hold back for it for up to 1 s
+/// (copy_pending, cache_use_begin); a shorter one does not hold back the builds a draw may wait on. Never a blocking lock: a waiting exclusive lock holds back new
 /// shared ones (Windows' SRW locks), so every later build would wait behind it, and for good when a worker is stuck in the driver
 /// (prepare_left_workers): the save is then left out, and logged
 bool cache_copy_begin(int wait_ms) {
@@ -1269,10 +1272,12 @@ bool cache_copy_begin(int wait_ms) {
     if (wait_ms <= 0) return false;
     // (a deadline on the clock, not a count of sleeps: Windows' timer can make Sleep(2) last 15.6 ms)
     const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
-    copy_pending++;
+    // (only a forced copy holds new builds back: in play a build a draw waits on would otherwise wait for a save)
+    const bool hold = wait_ms >= kCopyWaitForced;
+    if (hold) copy_pending++;
     bool got = false;
     while (!(got = pcache_use.try_lock()) && std::chrono::steady_clock::now() < end) Sleep(2);
-    copy_pending--;
+    if (hold) copy_pending--;
     return got;
 }
 void cache_copy_end() {
@@ -9049,7 +9054,7 @@ void pipeline_cache_play() {
 }
 void pipeline_cache_close() {
     try {
-        if (play_cache.load()) play_cache_save();
+        if (play_cache.load()) play_cache_save(true);   // (the window's close: the forced wait, as the exit's save has)
     } catch (const std::exception& e) {
         logf("vk: pipeline cache save failed: %s", e.what());
     }
@@ -9123,7 +9128,7 @@ void pipeline_cache_save(bool force) {
             logf("vk: pipeline cache save failed: %s", e.what());
         }
         try {
-            play_cache_save();   // (what play made since the last save, alone)
+            play_cache_save(force);   // (what play made since the last save, alone)
         } catch (const std::exception& e) {
             logf("vk: pipeline cache save failed: %s", e.what());
         }

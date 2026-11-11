@@ -148,6 +148,14 @@ def check_source():
     begin, read, end = (saved_now.index(t) for t in ("cache_copy_begin(kCopyWaitForced)", "vkGetPipelineCacheData(", "cache_copy_end();"))
     if not begin < read < end or saved_now.count("vkGetPipelineCacheData(") != 1:
         raise SystemExit("FAIL: pcache_saved_now reads the cache's data outside the gate")
+    # (the forced wait for the play files at the window's close and with a forced save; one try in play)
+    if "play_cache_save(true)" not in cut(draw, "void pipeline_cache_close() {") or "play_cache_save(force);" not in save:
+        raise SystemExit("FAIL: the play files' copy does not get the forced wait at the window's close or a forced save")
+    if "forced ? kCopyWaitForced : 0" not in cut(draw, "void play_cache_save(bool forced) {"):
+        raise SystemExit("FAIL: a play file's copy in play waits for the gate")
+    # (only a forced copy holds new builds back: a build a draw waits on must not wait for a save in play)
+    if "const bool hold = wait_ms >= kCopyWaitForced;" not in gate or "if (hold) copy_pending++;" not in gate:
+        raise SystemExit("FAIL: a copy that is not forced holds the builds back")
     # (a play file's copy too: inside the gate's block, which ends it on the way out)
     play = cut(draw, "size_t play_file_write(")
     block_at = play.index("struct End { ~End() { cache_copy_end(); } } end;")
