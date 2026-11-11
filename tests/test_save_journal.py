@@ -31,17 +31,36 @@ UID = "5a3c9e1f0b7d24680000000000000001"
 
 DRIVER = r'''
 #include "save_journal.c"
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 static void die(int step) { (void)step; fflush(stdout); exit(3); }
 static void say(const char *fmt, ...) { va_list a; va_start(a, fmt); vprintf(fmt, a); va_end(a); putchar('\n'); }
 int main(int argc, char **argv) {
-    /* driver <user> <uid> recover | session <changes folder or -> <crash at> [commit 0|1] */
+    /* driver <user> <uid> recover | lock <hold s> | unsuitable | session <changes folder or -> <crash at> [commit 0|1]
+       [then: "nowork" (the working copy deleted before Commit), "fallback" (a failed Commit written in place, as nn_fs.c
+       does), "break-tx" (POSIX: save-tx made read-only before Commit: the commit fails)] */
     SaveJournal j;
     if (argc < 4 || !sj_paths(&j, argv[1], argv[2])) return 2;
     sj_log = say;
+    if (!strcmp(argv[3], "unsuitable")) {
+        const char *why = sj_unsuitable(&j);
+        printf("unsuitable: %s\n", why ? why : "no");
+        return 0;
+    }
+    const int locked = sj_lock(&j);
+    printf("lock: %d\n", locked);
+    fflush(stdout);
+    if (!strcmp(argv[3], "lock")) {
+        if (argc > 4) sleep_ms((unsigned)atoi(argv[4]) * 1000u);
+        return locked ? 8 : 0;
+    }
+    if (locked) return 8;   /* (as nn_fs.c: never the journal of a save another process holds) */
     printf("recover: %s\n", sj_recover(&j));
     if (!strcmp(argv[3], "recover")) return 0;
     if (strcmp(argv[3], "session") || argc < 6) return 2;
-    if (sj_work_open(&j)) return 4;
+    const int opened = sj_work_open(&j);
+    if (opened) return opened == -2 ? 7 : 4;
     if (strcmp(argv[4], "-")) {   /* (the game's changes: the working copy becomes that folder) */
         int files = 0;
         uint64_t bytes = 0;
@@ -50,10 +69,25 @@ int main(int argc, char **argv) {
     j.crash_at = atoi(argv[5]);
     j.crash = die;
     if (argc > 6 && !atoi(argv[6])) return 0;   /* (no Commit: the game quit before it) */
+    const char *then = argc > 7 ? argv[7] : "";
+    if (!strcmp(then, "nowork")) remove_tree(j.work);
+#ifndef _WIN32
+    if (!strcmp(then, "break-tx")) {   /* (a staging copy that cannot be made, and a save folder that refuses new files) */
+        char sub[SJ_PATH], deep[SJ_PATH + 8];
+        make_dir(j.fresh), join(sub, j.fresh, "held"), make_dir(sub);
+        snprintf(deep, sizeof deep, "%s/x", sub), close(open(deep, O_CREAT | O_WRONLY, 0644));
+        chmod(sub, 0555);
+        if (argc > 8) chmod(argv[8], 0555);
+    }
+#endif
     int changed = 0;
-    char what[256];
-    const int r = sj_commit(&j, &changed, what, sizeof what);
+    char what[512];
+    int r = sj_commit(&j, &changed, what, sizeof what);
     printf("commit: %d changed %d steps %d: %s\n", r, changed, j.step, what);
+    if (r && (!strcmp(then, "fallback") || !strcmp(then, "break-tx"))) {
+        r = sj_commit_in_place(&j, what, sizeof what);
+        printf("in place: %d: %s\n", r, what);
+    }
     return r ? 6 : 0;
 }
 '''
@@ -133,7 +167,7 @@ class Check:
 
     def clean_tx(self, user, why, allowed=()):
         left = sorted(os.listdir(Path(user) / "save-tx" / UID)) if (Path(user) / "save-tx" / UID).is_dir() else []
-        left = [n for n in left if n not in allowed]
+        left = [n for n in left if n not in allowed and n != "lock"]   # (the session lock's file stays)
         if left:
             self.fail("%s: left in save-tx: %s" % (why, left))
 
@@ -223,6 +257,45 @@ def main():
         c.clean_tx(user, "the start after an uncommitted session")
         print("PASS: a working copy never committed is dropped at the next start")
 
+        # A second process on the same data folder: the journal is not its (the session lock), and it touches nothing
+        user = c.folder("two-games")
+        write_tree(user / "save" / UID, A)
+        c.run(user, "session", changes, 0, 0)   # (a run that left its working copy, as a game still running does)
+        holder = subprocess.Popen([str(exe), str(user), UID, "lock", "6"], stdout=subprocess.PIPE, text=True)
+        if "lock: 0" not in holder.stdout.readline():
+            c.fail("the first process did not get the session lock")
+        out = c.run(user, "session", changes, 0, code=8)
+        if "lock: 1" not in out or c.save(user) != A or tree(user / "save-tx" / UID / "work") != B:
+            c.fail("a second process used a journal another process holds:\n" + out)
+        holder.wait()
+        out = c.run(user, "recover")
+        if "lock: 0" not in out or "working copy" not in out:
+            c.fail("the lock was not free after the first process ended:\n" + out)
+        print("PASS: a second process on the same save gets no journal and leaves the first's working copy alone")
+
+        # A Commit with its working copy gone commits nothing (never an empty save)
+        user = c.folder("no-work")
+        write_tree(user / "save" / UID, A)
+        out = c.run(user, "session", changes, 0, 1, "nowork", code=6)
+        if "working copy" not in out or c.save(user) != A or [n for n in os.listdir(user / "save-tx" / UID) if n.startswith("ready")]:
+            c.fail("a Commit without its working copy made a save:\n" + out)
+        print("PASS: a Commit whose working copy is gone fails and leaves the save as it was")
+
+        # A commit waiting in save-tx is not put over a save something else replaced since (another Hookshot, the journal
+        # off, a copied-in save): the newer save stays, the waiting commit goes to save-backup
+        user = c.folder("stale-ready")
+        write_tree(user / "save" / UID, A)
+        c.run(user, "session", changes, commit_point + 1, code=3)   # (dies just after the commit point: ready-<n> waits)
+        newer = dict(A)
+        newer["slot_00/progress.sav"] = b"N0" * 4000
+        write_tree(user / "save" / UID, newer)
+        out = c.run(user, "recover")
+        aside = [n for n in c.backups(user) if n.startswith("unapplied-")]
+        if c.save(user) != newer or len(aside) != 1 or tree(user / "save-backup" / UID / aside[0]) != B:
+            c.fail("a waiting commit was rolled over a newer save:\n" + out)
+        c.clean_tx(user, "the start after a stale commit")
+        print("PASS: a commit waiting over a save that was replaced since is kept aside, not rolled over the newer save")
+
         # Backups: the newest 3, in order
         user = c.folder("rotate")
         write_tree(user / "save" / UID, A)
@@ -248,7 +321,7 @@ def main():
             os.chmod(user / "save", 0o555)   # (save/<uid> cannot be renamed away)
             try:
                 out = c.run(user, "session", changes, 0)
-                ready = [n for n in os.listdir(user / "save-tx" / UID) if n.startswith("ready-")]
+                ready = [n for n in os.listdir(user / "save-tx" / UID) if n.startswith("ready-") and not n.endswith(".base")]
                 if len(ready) != 1 or tree(user / "save-tx" / UID / ready[0]) != B or c.save(user) != A:
                     c.fail("a commit that could not be swapped in is not waiting in save-tx:\n" + out)
                 out = c.run(user, "session", "-", 0, 0)   # (the next session's working copy: from the waiting commit)
@@ -273,6 +346,61 @@ def main():
             if c.save(user) != B or tree(outside) != {"secret.sav": b"x"}:
                 c.fail("links in the save were copied or followed:\n" + out)
             print("PASS: links in a save are left out; a data folder with UTF-8 in its name works")
+
+            # A save that is a link (a cloud folder) or on another drive: no journal for it
+            user = c.folder("linked")
+            write_tree(tmp / "elsewhere" / UID, A)
+            (user / "save").mkdir()
+            os.symlink(tmp / "elsewhere" / UID, user / "save" / UID)
+            out = c.run(user, "unsuitable")
+            if "link" not in out:
+                c.fail("a linked save folder was taken for the journal:\n" + out)
+            out = c.run(c.folder("plain"), "unsuitable")
+            if "unsuitable: no" not in out:
+                c.fail("a plain save folder was refused:\n" + out)
+            print("PASS: a save folder that is a link is refused for the journal (it is written in place, as before)")
+
+            # A Commit that fails is written over the save in place instead (as before the journal)
+            user = c.folder("fallback")
+            write_tree(user / "save" / UID, A)
+            try:
+                out = c.run(user, "session", changes, 0, 1, "break-tx")
+            finally:
+                for d, dirs, _ in os.walk(user):
+                    for n in dirs:
+                        os.chmod(os.path.join(d, n), 0o755)
+            if "commit: -1" not in out or "in place: 0" not in out or c.save(user) != B:
+                c.fail("a failed Commit's changes did not reach the save:\n" + out)
+            print("PASS: a Commit that fails writes the save in place instead, so the progress is kept")
+
+            # And when that fails too, the next start keeps the working copy in save-backup (unsaved-...)
+            user = c.folder("unsaved")
+            write_tree(user / "save" / UID, A)
+            try:
+                out = c.run(user, "session", changes, 0, 1, "break-tx", user / "save" / UID, code=6)
+            finally:
+                for d, dirs, _ in os.walk(user):
+                    for n in dirs:
+                        os.chmod(os.path.join(d, n), 0o755)
+                os.chmod(user / "save" / UID, 0o755)
+            out2 = c.run(user, "recover")
+            kept = [n for n in c.backups(user) if n.startswith("unsaved-")]
+            if "in place: -1" not in out or len(kept) != 1 or tree(user / "save-backup" / UID / kept[0]) != B:
+                c.fail("changes no Commit could save were dropped:\n" + out + out2)
+            print("PASS: changes that could not be saved at all are kept in save-backup at the next start, not dropped")
+
+            # A rollback that fails: no save is mounted, never an empty one over the save in save-tx/old
+            user = c.folder("stuck-old")
+            write_tree(user / "save-tx" / UID / "old", A)
+            (user / "save").mkdir()
+            os.chmod(user / "save", 0o555)
+            try:
+                out = c.run(user, "session", "-", 0, 0, code=7)
+            finally:
+                os.chmod(user / "save", 0o755)
+            if tree(user / "save-tx" / UID / "old") != A or (user / "save" / UID).exists():
+                c.fail("a failed rollback was followed by a new, empty save:\n" + out)
+            print("PASS: a rollback that fails leaves the old save where it is and mounts none")
         else:
             print("SKIP: the held-up save and the links (POSIX, not as root)")
 

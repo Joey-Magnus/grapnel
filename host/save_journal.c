@@ -4,6 +4,8 @@
    the calling thread, and the file calls written here for Windows and POSIX.
 
    Copyright (c) 2026 Valiantsin Dzerakh
+   (whose fs_host.c is itself adapted from MacNativeGames games/totk/runtime/fs_host.c @ b75be8cf, MIT, Copyright (c) 2026
+   MacNativeGames contributors, under the same permission notice)
 
    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
    documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
@@ -54,6 +56,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define SEP '/'
@@ -102,19 +105,65 @@ static int remove_file(const char *p) {
 static int remove_dir(const char *p) { return RemoveDirectoryW(W(p)) ? 0 : -1; }
 static int remove_link(const char *p) { const wchar_t *w = W(p); return DeleteFileW(w) || RemoveDirectoryW(w) ? 0 : -1; }
 static void sleep_ms(unsigned ms) { Sleep(ms); }
-/* 0, -1, or 1 when another program holds a file in it (worth another try) */
-static int rename_once(const char *from, const char *to, int durable) {
-    wchar_t a[SJ_PATH + 8], b[SJ_PATH + 8];
-    wide(from, a, SJ_PATH + 8), wide(to, b, SJ_PATH + 8);
-    if (MoveFileExW(a, b, durable ? MOVEFILE_WRITE_THROUGH : 0)) return 0;
-    const DWORD e = GetLastError();
-    return e == ERROR_ACCESS_DENIED || e == ERROR_SHARING_VIOLATION || e == ERROR_LOCK_VIOLATION ? 1 : -1;
-}
 /* NTFS journals its folder entries; flushing the folder's handle is as far as Windows goes */
 static void sync_dir(const char *p) {
     HANDLE h = CreateFileW(W(p), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
                            FILE_FLAG_BACKUP_SEMANTICS, NULL);
     if (h != INVALID_HANDLE_VALUE) FlushFileBuffers(h), CloseHandle(h);
+}
+static void parent_of(const char *p, char *out) {
+    snprintf(out, SJ_PATH, "%s", p);
+    char *s = strrchr(out, '\\'), *f = strrchr(out, '/');
+    if (f > s) s = f;
+    if (s && s != out) *s = 0;
+    else snprintf(out, SJ_PATH, "%s", ".");
+}
+/* 0, -1, or 1 when another program holds a file in it (worth another try). MOVEFILE_WRITE_THROUGH does not flush a rename
+   within one volume, so durable renames flush both folders after it, as on POSIX */
+static int rename_once(const char *from, const char *to, int durable) {
+    wchar_t a[SJ_PATH + 8], b[SJ_PATH + 8];
+    wide(from, a, SJ_PATH + 8), wide(to, b, SJ_PATH + 8);
+    if (!MoveFileExW(a, b, durable ? MOVEFILE_WRITE_THROUGH : 0)) {
+        const DWORD e = GetLastError();
+        return e == ERROR_ACCESS_DENIED || e == ERROR_SHARING_VIOLATION || e == ERROR_LOCK_VIOLATION ? 1 : -1;
+    }
+    if (durable) {
+        char pa[SJ_PATH], pb[SJ_PATH];
+        parent_of(to, pb), parent_of(from, pa);
+        sync_dir(pb);
+        if (strcmp(pa, pb)) sync_dir(pa);
+    }
+    return 0;
+}
+/* A file over another, in one step (the in-place fallback's per-file replace) */
+static int replace_file(const char *from, const char *to) {
+    return MoveFileExW(W(from), W(to), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+}
+/* The session lock: an exclusive lock on <tx>/lock, held while the process runs. 0 taken, 1 another process holds it */
+typedef HANDLE LockH;
+#define NO_LOCK INVALID_HANDLE_VALUE
+static int lock_take(const char *p, LockH *h) {
+    *h = CreateFileW(W(p), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                     OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (*h == INVALID_HANDLE_VALUE) return -1;
+    OVERLAPPED o = {0};
+    if (LockFileEx(*h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &o)) return 0;
+    CloseHandle(*h), *h = INVALID_HANDLE_VALUE;
+    return 1;
+}
+static void lock_drop(LockH h) { if (h != INVALID_HANDLE_VALUE) CloseHandle(h); }
+/* A file's size and last write time (the fingerprint's), 0 when it cannot be read */
+static int stat_of(const char *p, uint64_t *size, uint64_t *mtime) {
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    if (!GetFileAttributesExW(W(p), GetFileExInfoStandard, &d)) return 0;
+    *size = (uint64_t)d.nFileSizeHigh << 32 | d.nFileSizeLow;
+    *mtime = (uint64_t)d.ftLastWriteTime.dwHighDateTime << 32 | d.ftLastWriteTime.dwLowDateTime;
+    return 1;
+}
+/* Whether two existing folders are on one volume (the renames between them stay renames) */
+static int same_volume(const char *a, const char *b) {
+    wchar_t va[MAX_PATH + 1], vb[MAX_PATH + 1];
+    return GetVolumePathNameW(W(a), va, MAX_PATH + 1) && GetVolumePathNameW(W(b), vb, MAX_PATH + 1) && !_wcsicmp(va, vb);
 }
 typedef HANDLE FileH;
 #define NO_FILE INVALID_HANDLE_VALUE
@@ -150,7 +199,10 @@ static int list_dir(const char *p, Entry **out) {
         if (n == cap) *out = (Entry *)realloc(*out, sizeof **out * (size_t)(cap = cap ? cap * 2 : 16));
         if (!*out) { FindClose(f); return -1; }
         Entry *e = &(*out)[n];
-        if (WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, e->name, (int)sizeof e->name, NULL, NULL) <= 0) continue;
+        if (WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, e->name, (int)sizeof e->name, NULL, NULL) <= 0) {
+            FindClose(f);   /* (a name too long in UTF-8: the listing would be incomplete, so it fails) */
+            return -1;
+        }
         e->kind = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? K_LINK
                   : (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? K_DIR : K_FILE;
         n++;
@@ -195,6 +247,37 @@ static int rename_once(const char *from, const char *to, int durable) {
         if (strcmp(a, b)) sync_dir(a);
     }
     return 0;
+}
+/* A file over another, in one step (the in-place fallback's per-file replace) */
+static int replace_file(const char *from, const char *to) {
+    if (rename(N(from), N(to))) return -1;
+    char b[SJ_PATH];
+    parent_of(to, b);
+    sync_dir(b);
+    return 0;
+}
+/* The session lock: an exclusive flock on <tx>/lock, held while the process runs. 0 taken, 1 another process holds it */
+typedef int LockH;
+#define NO_LOCK (-1)
+static int lock_take(const char *p, LockH *h) {
+    *h = open(N(p), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (*h < 0) return -1;
+    if (!flock(*h, LOCK_EX | LOCK_NB)) return 0;
+    const int busy = errno == EWOULDBLOCK;
+    close(*h), *h = -1;
+    return busy ? 1 : -1;
+}
+static void lock_drop(LockH h) { if (h >= 0) close(h); }
+static int stat_of(const char *p, uint64_t *size, uint64_t *mtime) {
+    struct stat st;
+    if (lstat(N(p), &st)) return 0;
+    *size = (uint64_t)st.st_size;
+    *mtime = (uint64_t)st.st_mtim.tv_sec * 1000000000u + (uint64_t)st.st_mtim.tv_nsec;
+    return 1;
+}
+static int same_volume(const char *a, const char *b) {
+    struct stat sa, sb;
+    return !stat(N(a), &sa) && !stat(N(b), &sb) && sa.st_dev == sb.st_dev;
 }
 typedef int FileH;
 #define NO_FILE (-1)
@@ -390,12 +473,24 @@ static int same_tree(const char *a, const char *b) {
 /* ---- backups ----------------------------------------------------------------------------------------------------- */
 static int name_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
 /* The backups' folder names (a digit first), oldest first: n, at most 64 */
+/* A backup's name as rotate_backup makes them: YYYYMMDD-HHMMSS-mmm, then -NNN... for more in one millisecond. Other
+   folders there (a player's own, "unsaved-...", "unapplied-...") are never pruned */
+static int backup_name(const char *s) {
+    static const char form[] = "dddddddd-dddddd-ddd";
+    for (int i = 0; form[i]; i++)
+        if (form[i] == 'd' ? s[i] < '0' || s[i] > '9' : s[i] != form[i]) return 0;
+    for (s += sizeof form - 1; *s;) {
+        if (*s++ != '-' || *s < '0' || *s > '9') return 0;
+        while (*s >= '0' && *s <= '9') s++;
+    }
+    return 1;
+}
 static int backup_names(SaveJournal *j, char (*names)[48]) {
     Entry *e;
     const int n = list_dir(j->backups, &e);
     int k = 0;
     for (int i = 0; i < n; i++)
-        if (e[i].kind == K_DIR && e[i].name[0] >= '0' && e[i].name[0] <= '9' && strlen(e[i].name) < 48 && k < 64)
+        if (e[i].kind == K_DIR && backup_name(e[i].name) && strlen(e[i].name) < 48 && k < 64)
             strcpy(names[k++], e[i].name);
     free(e);
     qsort(names, (size_t)k, sizeof *names, name_cmp);
@@ -430,6 +525,70 @@ static void rotate_backup(SaveJournal *j) {
         if (!join(dst, j->backups, names[i])) remove_tree(dst);
 }
 
+/* A folder moved into save-backup under <prefix>-<UTC time>, kept (not one rotate_backup prunes). 0 on success */
+static int keep_aside(SaveJournal *j, const char *from, const char *prefix) {
+    struct tm t;
+    const unsigned ms = (unsigned)now_utc_ms(&t);
+    char name[64], dst[SJ_PATH];
+    snprintf(name, sizeof name, "%s-%04d%02d%02d-%02d%02d%02d-%03u", prefix, t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
+             t.tm_min, t.tm_sec, ms);
+    make_dirs(j->backups);
+    return join(dst, j->backups, name) || move(from, dst, MOVE_TRIES) ? -1 : 0;
+}
+
+/* ---- the fingerprint of the committed save a commit was made over (S1 of the review: a commit waiting in save-tx is put
+   in place only over the save it was made over. One that waited while something else replaced the save (Hookshot with
+   HOS_SAVE_JOURNAL=0, an older Hookshot, a copied-in save, the in-place fallback below) would have rolled the older
+   progress back over it) ---- */
+static uint64_t fp_mix(uint64_t h, const void *p, size_t n) {
+    for (size_t i = 0; i < n; i++) h = (h ^ ((const unsigned char *)p)[i]) * 0x100000001b3ULL;
+    return h;
+}
+static uint64_t fp_tree(const char *dir, const char *rel, uint64_t h) {
+    Entry *e;
+    const int n = list_dir(dir, &e);
+    if (n < 0) return fp_mix(h, "?", 1);
+    qsort(e, (size_t)n, sizeof *e, entry_cmp);
+    for (int i = 0; i < n; i++) {
+        char p[SJ_PATH], r[SJ_PATH];
+        if (join(p, dir, e[i].name)) continue;
+        snprintf(r, sizeof r, "%s/%s", rel, e[i].name);
+        h = fp_mix(h, e[i].kind == K_DIR ? "D" : e[i].kind == K_LINK ? "L" : "F", 1);
+        h = fp_mix(h, r, strlen(r) + 1);
+        uint64_t size = 0, mtime = 0;
+        if (e[i].kind == K_FILE && stat_of(p, &size, &mtime)) h = fp_mix(fp_mix(h, &size, 8), &mtime, 8);
+        if (e[i].kind == K_DIR) h = fp_tree(p, r, h);
+    }
+    free(e);
+    return h;
+}
+static void fingerprint(const char *dir, char *out, size_t cap) {
+    if (kind(dir) != K_DIR) snprintf(out, cap, "absent");
+    else snprintf(out, cap, "%016llx", (unsigned long long)fp_tree(dir, "", 0xcbf29ce484222325ULL));
+}
+static int write_text(const char *path, const char *text) {   /* (durable: a temporary file, flushed, renamed over) */
+    char tmp[SJ_PATH];
+    if ((size_t)snprintf(tmp, sizeof tmp, "%s.tmp", path) >= sizeof tmp) return -1;
+    remove_file(tmp);
+    const FileH h = open_new(tmp);
+    if (h == NO_FILE) return -1;
+    const int bad = write_all(h, text, (unsigned)strlen(text)) || flush_file(h);
+    close_file(h);
+    return bad || replace_file(tmp, path) ? -1 : 0;
+}
+static int read_text(const char *path, char *out, size_t cap) {
+    const FileH h = open_read(path);
+    if (h == NO_FILE) return -1;
+    const long long n = read_some(h, out, (unsigned)cap - 1);
+    close_file(h);
+    if (n < 0) return -1;
+    out[n] = 0;
+    return 0;
+}
+static void base_path(const char *ready, char *out) {   /* (tx is at most SJ_PATH - 32 long: sj_paths) */
+    if ((size_t)snprintf(out, SJ_PATH, "%s.base", ready) >= SJ_PATH) *out = 0;
+}
+
 /* ---- the journal ------------------------------------------------------------------------------------------------- */
 int sj_paths(SaveJournal *j, const char *user, const char *uid) {
     memset(j, 0, sizeof *j);
@@ -447,6 +606,21 @@ const char *sj_newest(const SaveJournal *j) { return *j->ready ? j->ready : j->s
 static int swap_in(SaveJournal *j) {
     if (!*j->ready) return 0;
     rotate_backup(j);   /* (an old a failed (5) left: (3) needs its name) */
+    char base[SJ_PATH], was[64], now[64];
+    base_path(j->ready, base);
+    if (kind(j->save) == K_DIR && !read_text(base, was, sizeof was)) {
+        fingerprint(j->save, now, sizeof now);
+        if (strcmp(was, now)) {   /* (the save changed since this commit was made over it: it is the newer one) */
+            const int kept = !keep_aside(j, j->ready, "unapplied");
+            LOG("save: a commit waiting in %s was made over an older save than %s, which something replaced since (another "
+                "Hookshot, HOS_SAVE_JOURNAL=0, a copied-in save): the newer save is kept, the waiting commit %s", j->ready, j->save,
+                kept ? "moved to save-backup (unapplied-...)" : "COULD NOT be moved aside and stays in save-tx");
+            if (!kept) return -1;
+            remove_file(base);
+            *j->ready = 0;
+            return 0;
+        }
+    }
     if (exists(j->save) && move(j->save, j->old, SWAP_TRIES)) {
         LOG("save: the committed save %s cannot be replaced now (a file in it is open in another program?): the commit waits "
             "in %s, which the game loads, and the next Commit or start tries again", j->save, j->ready);
@@ -458,6 +632,7 @@ static int swap_in(SaveJournal *j) {
         move(j->old, j->save, MOVE_TRIES);   /* (else the next start rolls forward) */
         return -1;
     }
+    remove_file(base);
     *j->ready = 0;
     if (crashed(j)) return -1;
     rotate_backup(j);
@@ -480,10 +655,10 @@ static void ready_scan(SaveJournal *j) {
         if (e[i].kind == K_DIR && ready_number(e[i].name) > j->ready_seq) j->ready_seq = ready_number(e[i].name);
     for (int i = 0; i < n; i++) {
         const unsigned k = e[i].kind == K_DIR ? ready_number(e[i].name) : 0;
-        char p[SJ_PATH];
+        char p[SJ_PATH], base[SJ_PATH];
         if (!k || join(p, j->tx, e[i].name)) continue;
         if (k == j->ready_seq) snprintf(j->ready, SJ_PATH, "%s", p);
-        else remove_tree(p);
+        else remove_tree(p), base_path(p, base), remove_file(base);
     }
     free(e);
 }
@@ -515,6 +690,18 @@ static const char *recover(SaveJournal *j) {
     }
     if (*j->ready)
         did = swap_in(j) ? "a finished commit waits in save-tx: the game loads it from there" : "completed a finished commit";
+    char unsaved[SJ_PATH];
+    join(unsaved, j->tx, "unsaved");
+    if (exists(j->work) && exists(unsaved)) {   /* (a run whose Commit failed and whose changes could not be written at all) */
+        if (!keep_aside(j, j->work, "unsaved")) {
+            did = "KEPT the last run's working copy, whose Commit failed, in save-backup (unsaved-...): copy it over the save "
+                  "to have its progress";
+            remove_file(unsaved);
+        } else
+            did = "the last run's working copy, whose Commit failed, stays in save-tx/work";
+        return did;
+    }
+    remove_file(unsaved);
     if (exists(j->work)) {
         if (remove_tree_retry(j->work)) LOG("save: the last run's working copy %s could not be deleted", j->work);
         if (!strcmp(did, "nothing to recover")) did = "dropped the last run's working copy (changes after its last Commit)";
@@ -526,6 +713,16 @@ int sj_work_open(SaveJournal *j) {
     int files = 0;
     uint64_t bytes = 0;
     make_dirs(j->tx);
+    if (!*j->ready && !exists(j->save) && exists(j->old)) {   /* (a rollback that failed: never an empty save over it) */
+        LOG("save: %s is missing and the save before it is still in %s: no save is mounted", j->save, j->old);
+        return -2;
+    }
+    char unsaved[SJ_PATH];
+    join(unsaved, j->tx, "unsaved");
+    if (exists(unsaved) && exists(j->work)) {
+        LOG("save: %s holds a run's changes that were never saved: it is not replaced", j->work);
+        return -2;
+    }
     if (!*j->ready && !exists(j->save)) make_dirs(j->save);   /* (no save yet: the game makes one, empty, as on a console) */
     if (remove_tree_retry(j->work) || copy_tree(j, sj_newest(j), j->work, 0, &files, &bytes)) {
         LOG("save: the working copy %s could not be made from %s", j->work, sj_newest(j));
@@ -545,6 +742,12 @@ int sj_commit(SaveJournal *j, int *changed, char *what, size_t cap) {
     j->step = j->dead = 0;
     *changed = 0;
     snprintf(what, cap, "?");
+    char unsaved[SJ_PATH];
+    join(unsaved, j->tx, "unsaved");
+    if (kind(j->work) != K_DIR) {   /* (never an empty or partial save from a working copy that is gone) */
+        snprintf(what, cap, "the working copy %s is missing: nothing was committed", j->work);
+        return -1;
+    }
     const char *base = sj_newest(j);
     if (kind(base) == K_DIR && same_tree(j->work, base)) {   /* (the game wrote what the save holds: no commit, no backup) */
         const int waits = swap_in(j);
@@ -558,16 +761,23 @@ int sj_commit(SaveJournal *j, int *changed, char *what, size_t cap) {
         return -1;
     }
     if (crashed(j)) return -1;
-    char ready[SJ_PATH];
+    char ready[SJ_PATH], base_file[SJ_PATH], fp[64];
+    fingerprint(j->save, fp, sizeof fp);   /* (the save this commit replaces: swap_in checks it is still that one) */
     if ((size_t)snprintf(ready, sizeof ready, "%s%cready-%010u", j->tx, SEP, j->ready_seq + 1) >= sizeof ready ||
-        move(j->fresh, ready, MOVE_TRIES)) {
+        (base_path(ready, base_file), write_text(base_file, fp)) || move(j->fresh, ready, MOVE_TRIES)) {
         remove_tree(j->fresh);
+        remove_file(base_file);
         snprintf(what, cap, "the finished copy could not be renamed: the save is as it was");
         return -1;
     }
     /* (the commit point: from here the next start loads this) */
     j->ready_seq++;
-    if (*j->ready) remove_tree(j->ready);   /* (superseded: the working copy was made from it and had all of it) */
+    if (*j->ready) {   /* (superseded: the working copy was made from it and had all of it) */
+        char old_base[SJ_PATH];
+        base_path(j->ready, old_base);
+        remove_tree(j->ready), remove_file(old_base);
+    }
+    remove_file(unsaved);
     snprintf(j->ready, SJ_PATH, "%s", ready);
     *changed = 1;
     if (crashed(j)) return -1;
@@ -576,4 +786,89 @@ int sj_commit(SaveJournal *j, int *changed, char *what, size_t cap) {
     snprintf(what, cap, "%d files, %llu KB%s", files, (unsigned long long)(bytes >> 10),
              waits ? "; it waits in save-tx until the committed save can be replaced" : "");
     return 0;
+}
+
+int sj_lock(SaveJournal *j) {
+    char p[SJ_PATH];
+    make_dirs(j->tx);
+    if (join(p, j->tx, "lock")) return -1;
+    LockH h;
+    const int r = lock_take(p, &h);
+    if (!r) {
+        j->lock = (intptr_t)h;
+        j->locked = 1;
+    }
+    return r;
+}
+
+void sj_unlock(SaveJournal *j) {
+    if (j->locked) {
+        lock_drop((LockH)j->lock);
+        j->locked = 0;
+    }
+}
+
+const char *sj_unsuitable(SaveJournal *j) {
+    char save_dir[SJ_PATH], tx_dir[SJ_PATH], backup_dir[SJ_PATH];
+    parent_of(j->save, save_dir), parent_of(j->tx, tx_dir), parent_of(j->backups, backup_dir);
+    if (kind(j->save) == K_LINK) return "the save folder is a link (a junction or a symbolic link)";
+    if (kind(save_dir) == K_LINK) return "the folder of saves is a link (a junction or a symbolic link)";
+    make_dirs(save_dir), make_dirs(tx_dir), make_dirs(backup_dir);
+    if (!same_volume(save_dir, tx_dir) || !same_volume(save_dir, backup_dir))
+        return "the save folder is on another drive than save-tx and save-backup beside it";
+    return NULL;
+}
+
+static int copy_over(const char *src, const char *dst, uint64_t *bytes, int *files) {
+    if (make_dir(dst) || kind(dst) != K_DIR) return -1;
+    Entry *e, *d;
+    const int n = list_dir(src, &e);
+    if (n < 0) return -1;
+    int bad = 0;
+    for (int i = 0; i < n && !bad; i++) {
+        char s[SJ_PATH], t[SJ_PATH], tmp[SJ_PATH];
+        if (e[i].kind == K_LINK) continue;
+        if (join(s, src, e[i].name) || join(t, dst, e[i].name)) { bad = 1; break; }
+        if (e[i].kind == K_DIR) { bad = copy_over(s, t, bytes, files); continue; }
+        if ((size_t)snprintf(tmp, sizeof tmp, "%s.hs-new", t) >= sizeof tmp) { bad = 1; break; }
+        remove_file(tmp);
+        bad = copy_file(s, tmp, 1, bytes) || replace_file(tmp, t);   /* (each file replaced whole, as before the journal) */
+        if (bad) remove_file(tmp);
+        else ++*files;
+    }
+    const int m = bad ? 0 : list_dir(dst, &d);   /* (what the game deleted goes too) */
+    for (int i = 0; i < m; i++) {
+        char s[SJ_PATH], t[SJ_PATH];
+        if (d[i].kind == K_LINK || join(s, src, d[i].name) || join(t, dst, d[i].name)) continue;
+        if (!exists(s)) remove_tree(t);
+    }
+    if (m > 0) free(d);
+    free(e);
+    return bad ? -1 : 0;
+}
+
+int sj_commit_in_place(SaveJournal *j, char *what, size_t cap) {
+    int files = 0;
+    uint64_t bytes = 0;
+    char unsaved[SJ_PATH];
+    join(unsaved, j->tx, "unsaved");
+    if (kind(j->work) != K_DIR) {
+        snprintf(what, cap, "the working copy is missing");
+        return -1;
+    }
+    if (copy_over(j->work, sj_newest(j), &bytes, &files)) {
+        write_text(unsaved, "the last Commit failed and its changes could not be written: the next start keeps work\n");
+        snprintf(what, cap, "could not be written in place either: the changes stay in %s, and the next start keeps them in "
+                 "save-backup", j->work);
+        return -1;
+    }
+    remove_file(unsaved);
+    snprintf(what, cap, "written in place over %s instead, file by file, as before the journal (%d files, %llu KB)",
+             sj_newest(j), files, (unsigned long long)(bytes >> 10));
+    return 0;
+}
+
+void sj_mark_unsaved(SaveJournal *j) {
+    char unsaved[SJ_PATH];
+    if (!join(unsaved, j->tx, "unsaved")) write_text(unsaved, "a Commit failed: the next start keeps the working copy\n");
 }
