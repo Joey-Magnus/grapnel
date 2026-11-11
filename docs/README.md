@@ -4,6 +4,9 @@
 
 **Build your game. Find your footing. Keep exploring.**
 
+**We do not host, store, or distribute any game files.** This site and repository contain no ROMs, game dumps, or
+decryption keys. You must supply your own supported copy and build locally on your computer.
+
 [Get started](getting-started.md) · [Common issues](common-issues.md) · **[Report a bug](https://github.com/NotRexed/Hookshot/issues/new/choose)**
 
 Hookshot brings the Switch 2 remake of *The Legend of Zelda: Ocarina of Time* to Windows and Linux through static

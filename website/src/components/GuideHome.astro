@@ -12,6 +12,7 @@ const paths = {
 };
 ---
 <div class="home-content not-content">
+  <aside class="own-copy-note" aria-label="Game files notice"><span aria-hidden="true">◇</span><p><strong>We do not host, store, or distribute any game files.</strong> This site and repository contain no ROMs, game dumps, or decryption keys. You must supply your own supported copy of the game; Hookshot builds it locally on your computer.</p></aside>
   <div class="section-heading"><p class="eyebrow">THE ESSENTIALS</p><h2>Choose your next step</h2><p>A little less setup. A little more adventure.</p></div>
   <div class="quest-grid">
     {guides.map((g) => <a class="quest-card" href={`${base}guides/${g.href}/`}>
@@ -28,5 +29,4 @@ const paths = {
     </div>
   </section>
   <section class="community-strip"><div><p class="eyebrow">BUILT BY THE COMMUNITY</p><h2>Every discovery helps.</h2><p>Share a useful report, contribute a pipeline list, or improve the guide.</p></div><a class="button-secondary" href={`${base}guides/reporting-and-contributing/`}>Join the effort <span aria-hidden="true">→</span></a></section>
-  <aside class="own-copy-note"><span aria-hidden="true">◇</span><p><strong>Your game. Your computer.</strong> Hookshot builds locally from your own supported copy. Game files, keys, executables, and saves are not included with these docs.</p></aside>
 </div>

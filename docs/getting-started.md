@@ -5,6 +5,9 @@ Hookshot Builder creates a playable installation on your computer. Start with th
 
 ## Before you begin
 
+**We do not host, store, or distribute any game files.** This site and repository contain no ROMs, game dumps, or
+decryption keys. You must provide your own supported copy; Hookshot builds the game locally on your computer.
+
 You need your own supported copy: program `0400486024DEC000`, update v131072, build `e0f3ccfa`, supplied as a `.nup`
 or extracted `romfs` and `exefs` folders. The builder checks the version before building.
 

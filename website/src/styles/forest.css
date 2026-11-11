@@ -154,6 +154,7 @@ h1#_top { font-family: Georgia, 'Times New Roman', serif; font-weight: 400; lett
 .own-copy-note > span { color: var(--gold); font-size: 1.2rem; line-height: 1.5; }
 .own-copy-note p { margin: 0; font-size: .74rem; color: var(--soft-text); line-height: 1.8; }
 .own-copy-note strong { color: var(--sl-color-gray-1); font-weight: 500; }
+.own-copy-note + .section-heading { margin-top: 2rem; }
 .field-footer { border-top: 1px solid var(--border); padding: 2rem 0 1rem; margin-top: 2rem; font-size: .75rem; color: var(--soft-text); }
 .field-footer p { display: flex; flex-wrap: wrap; gap: .7rem; margin: 0 0 1rem; }
 .field-footer strong { color: var(--sl-color-white); font-family: Georgia, serif; font-weight: 400; letter-spacing: .1em; }

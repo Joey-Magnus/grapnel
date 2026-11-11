@@ -10,6 +10,12 @@ branch of the fork. It has not been submitted as an upstream pull request or ado
 The header and landing page use the **original Hookshot logo from the project's README**, unchanged. The surrounding
 forest-green, parchment and gold design is a theme for this guide.
 
+## No game files here
+
+**We do not host, store, or distribute any game files.** This documentation site and repository contain no ROMs,
+game dumps, or decryption keys. You must supply your own supported copy of the game. All game building happens
+locally on your computer.
+
 ## What you can try
 
 - Browse the installation, settings and save guides through the sidebar.
