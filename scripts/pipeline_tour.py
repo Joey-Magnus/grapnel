@@ -161,6 +161,10 @@ EXTRAS = [
     ("Ganondorf's room", "GanonCastle", "RestartPos_Ganondorf_BossBattle", "adult"),
     ("Ganon's arena", "GanonCastle", "FinalBattle_BossInStartPos", "adult"),
 ]
+# Game Over: the "gameover" part (its own run: hearts are not protected there) takes Link, a child, to the crater, whose heat
+# empties his hearts; A now and then chooses Continue on the Game Over screen
+GAME_OVER_AT = "Death Mountain Crater"
+GAME_OVER_FRAMES = 60 * 120
 # Stops the game does not teleport out of (the request is refused: "result 0"), visited last in their part
 LAST = {"Haunted Wasteland"}
 # Where Link uses his items and their effects (one picked from the pause menu, a different one each time): a few stops per age,
@@ -239,7 +243,7 @@ BOOTS_SPAN = 5.3
 
 
 PARTS = ("all", "child", "adult", "opening", "child-overworld", "child-dungeons", "adult-overworld", "adult-dungeons", "dungeons",
-         "extras")
+         "extras", "gameover")
 
 
 def plan_stops(a, part="all", stops=None, first=None):
@@ -253,7 +257,7 @@ def plan_stops(a, part="all", stops=None, first=None):
     under = lambda plan: [(age, i) for age, i in plan if i >= first_dungeon]
     plan = {"all": child + adult, "child": child, "adult": adult, "opening": [], "child-overworld": over(child),
             "dungeons": under(child) + under(adult), "adult-overworld": over(adult), "child-dungeons": under(child),
-            "adult-dungeons": under(adult), "extras": []}[part]
+            "adult-dungeons": under(adult), "extras": [], "gameover": []}[part]
     plan = [(age, i) for age, i in plan if (age, a["teleports"][i][0]) not in LEFT_OUT]
     # (a stop the game will not teleport out of goes last: the next map change after it is the next run's)
     ages = [age for age, _ in plan]
@@ -284,6 +288,8 @@ def route(a, part="all", stops=None, first=None):
             steps += [("age",), ("items",)]   # (the adult's equipment is only given to the adult: a child's add is lost)
             age = want
         steps.append(("visit", want, i, k))
+    if part == "gameover":   # (hearts not protected: the crater's heat takes them, the Game Over screen, Continue)
+        steps.append(("gameover", [n for n, _ in a["teleports"]].index(GAME_OVER_AT)))
     if part == "extras":
         extras = [x for x in EXTRAS if x[3] == "child"] + [x for x in EXTRAS if x[3] == "adult"]
         if first:
@@ -710,6 +716,8 @@ def run(args):
         env.pop("HOS_HEADLESS", None)   # (the output stays 640x360, scaled into the window)
         env["HOS_WINDOW_SIZE"] = args.window
         env["HOS_WINDOW_NOACTIVATE"] = "1"
+    if args.part == "gameover":
+        env["HOS_OOT_PROTECT_HEARTS"] = "0"
     for kv in args.env:
         k, _, v = kv.partition("=")
         if v == "-":
@@ -781,6 +789,16 @@ def run(args):
             elif kind == "age":
                 teleport(g, a["age"], lambda st: st["age"] == "adult")
                 count("age switched: adult")
+            elif kind == "gameover":
+                banc = a["bancs"][step[1]][0]
+                teleport(g, a["teleport"] + step[1], lambda st: st["map"] == banc)
+                count("%s (child), hearts not protected" % GAME_OVER_AT)
+                end = g.frame + GAME_OVER_FRAMES
+                while g.frame < end and not g.dry:   # (the heat; then A: Continue)
+                    g.frames(180)
+                    if g.frame > end - GAME_OVER_FRAMES // 2:
+                        g.send("0:A/100")
+                count("Game Over")
             elif kind == "extra":
                 _, label, banc, start_pos, age = step
                 try:
