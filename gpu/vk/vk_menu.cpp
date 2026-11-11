@@ -642,6 +642,11 @@ const char* hn_framegen(int v, int variant) {
     return b[std::clamp(v, 2, 8)];
 }
 MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
+const char* tx_framegen_by(int v) { return v ? "Built-in" : "Auto"; }
+MENU_HINTS(hn_framegen_by, 0,
+           "NVIDIA DLSS Frame Generation where it runs (RTX 40 and newer, with the Upscaler's depth and motion), else the "
+           "built-in one.",
+           "The renderer's own: made from the finished picture alone.")
 const char* tx_vsync(int v) {
     static const char* const t[] = {"Auto", "On", "Off"};
     return t[std::clamp(v, 0, 2)];
@@ -774,6 +779,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
+    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, 1, 1, tx_framegen_by,
+     "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation needs a temporal Upscaler (DLSS, DLAA or FSR) for "
+     "the scene's depth and motion. Changes at once.", hn_framegen_by, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, 0, 6, 1, tx_fps_cap,
      "Limits frames rendered by the game. Generated frames are additional. Takes a restart. "
@@ -782,7 +790,8 @@ Row rows[] = {
      "refresh rate is the limit.",
      nullptr, true, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
-     "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex, false, true},
+     "NVIDIA GPUs: each frame starts as late as it can, for less input delay. With frame generation too: it paces the "
+     "game's frames.", hn_reflex, false, true},
     {TAB_GRAPHICS, "AMD Anti-Lag 2", &opts.antilag, 0, 1, 1, tx_antilag,
      "AMD GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_antilag, false, true},
     {TAB_GRAPHICS, "Detail", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
@@ -854,6 +863,9 @@ Row rows[] = {
      "Inverts horizontal look (left/right) on the right analog stick.", nullptr, false, true},
     {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
      "Inverts vertical look (up/down) on the right analog stick.", nullptr, false, true},
+    {TAB_CONTROLS, "Camera speed", &opts.camera_speed, 50, 400, 25, tx_percent,
+     "How fast the right stick turns the camera, in percent of the game's own speed; the camera keys too, and the mouse "
+     "with Mouse camera As the stick. The game's own camera speed setting still applies.", nullptr, false, true},
     {TAB_CONTROLS, "Stick dead zone", &opts.stick_dead_zone, 0, 5, 1, tx_stick_dead_zone,
      "How far a stick moves before the game sees it, on each axis. Lower for a precise stick, higher for one that drifts. "
      "The game's own dead zone still follows.", nullptr, false, true},
@@ -1193,9 +1205,9 @@ constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // 
 int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume; }
+bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 // (hookshot) A run's environment over a saved row (RX_VK_PACE=1, HOS_OUTPUT_RES=...): for that run only. save() writes the
@@ -1364,7 +1376,8 @@ void save() {
             const char* eq = strchr(line, '=');
             if (!eq || eq == line) continue;
             const std::string key(line, (size_t)(eq - line));
-            bool mine = key == "microphone_device" || key == "options_version";
+            // (memory_budget too: save() writes it, and the file's old line, kept after it, won at the next start)
+            bool mine = key == "microphone_device" || key == "options_version" || key == "memory_budget";
             for (const Row& r : rows)
                 if (!mine && r.value && key == ini_key(r)) mine = true;
             if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
@@ -1394,6 +1407,14 @@ void save() {
         }
         fclose(f);
     }
+}
+
+/// (hookshot) The Button prompts row: a new face shows at once where the game has every part of the prompts from
+/// host/prompts.c, nothing to restart for then; else, as the other restart rows, at the next start
+void prompts_at_once(const Row& r) {
+    if (r.value == &opts.prompts && host && host->prompts_live &&
+        (host->prompts_live() & HOS_PROMPTS_LIVE_ALL) == HOS_PROMPTS_LIVE_ALL)
+        restart_state.restart_value(restart_slot_of(r), *r.value);
 }
 
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
@@ -1440,6 +1461,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (hookshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
         samplers_changed();
+    prompts_at_once(r);   // (hookshot)
     {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
         int now[mr::kMax];
         restart_values(now);
