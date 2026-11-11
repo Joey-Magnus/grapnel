@@ -484,6 +484,7 @@ static const unsigned char oot_item_kinds[] = {OOT_CHEAT_ITEMS(OOT_NO_SECTION, O
 
 static int oot_item_count(Ctx *c, const char *name);
 static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
+static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value);
 
 static void oot_inventory_refresh(Ctx *c, int64_t now) {
     void rx_option_set(int id, int value);
@@ -829,6 +830,14 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         release_link(c);
     }
     *c = saved;
+    /* (issue 2217) An area that hides the minimap while Link is in it sets MapIconDeactivateByAreaActor, which is saved,
+       and shows the minimap again as he walks out. This map change takes him out without that: the flag stayed set, and
+       no area had a minimap from then on, in that save and every one made from it. Cleared once the event manager takes the
+       request (0: it did not, and Link stays); the map he arrives in sets it again where it hides its own. A save it is
+       already stuck in is mended by its next teleport. */
+    int hidden = 0;
+    if (ok && result && oot_gamedata_bool(c, 0x9a4dd779u, &hidden) && hidden && oot_gamedata_set_bool(c, 0x9a4dd779u, 0))
+        hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): shown again");
     teleport.requested_at = now;
     teleport.check_at = now + 1500000000LL;
     teleport.destination = index;
@@ -1618,8 +1627,9 @@ static int game_main(int argc, char **argv) {
            at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
         if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
             const double r = hos_wide_clamp(want);
-            /* (the height kept, the width at the screen's ratio, at most 3840 x 2160's pixels with the shape kept:
-               host/hos_wide_size.h, which the Insert menu's Output and Render resolution rows share; issue 1031) */
+            /* (the height kept, the width at the screen's ratio, at most hos_wide_max_px() pixels (5120 x 2160's, a 21:9 screen's
+               native at the 4K output) with the shape kept: host/hos_wide_size.h, which the Insert menu's Output and Render
+               resolution rows share; issue 1031) */
             unsigned ow, oh;
             hos_wide_size(output_h, r, hos_wide_max_px(), &ow, &oh);
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */

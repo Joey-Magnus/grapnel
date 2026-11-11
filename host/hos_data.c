@@ -19,12 +19,14 @@
    - for the platform folder only (a --user folder or a development run is the caller's to fill): the entries of <game>/user (the
      saves; on Linux since an earlier build already, on Windows now) into the data folder, a rename, else a copy and delete
      (another drive). All or nothing: when one of its entries is in the data folder already, or one cannot move (whatever moved is
-     moved back), the saves stay in <game>/user, as they were, and nothing is lost or split; the data folder is then
-     <game>/user too, so that the settings stay with the saves (a second game folder beside the first keeps its own of both). A
-     copy whose original cannot be deleted after (a file held or read-only) leaves <game>/user renamed user.moved, so that a
-     later start does not take the leftover for the saves. A link (a symbolic link, a Windows junction), or a folder holding one,
-     is never moved, renamed or copied: the saves stay with it. The settings, each on its own; one that cannot move stays, and
-     the log says it is not read. For a portable install, the settings alone, into <game>/user;
+     moved back), the saves stay in <game>/user, as they were, and nothing is lost or split (saves in both places are said in
+     saves-in-two-places.txt, neither picked nor merged); the data folder is then <game>/user too, so that the settings stay with
+     the saves (a second game folder beside the first keeps its own of both). A copy whose original cannot be deleted after (a file
+     held or read-only) leaves <game>/user renamed user.moved, so that a later start does not take the leftover for the saves. A
+     link (a symbolic link, a Windows junction) is never renamed or copied through: on Linux it is made again in the data folder,
+     to the same folder (#2282); on Windows the saves stay with it. A user/ that is a link itself is the player's choice of place,
+     used as it is. The settings, each on its own; one that cannot move stays, and the log says it is not read. For a portable
+     install, the settings alone, into <game>/user;
    - whenever the game folder is known: its loose caches into cache/ and its logs into logs/ (renames on the same drive), the
      Vulkan pipeline cache renamed from mkw_vk_pipelines*.bin to hookshot_vk_pipelines*.bin on the way; the button prompts an
      older build made in the game folder's prompts/ (Common.*, External.bfotf.zs) are deleted: they are made again in cache/.
@@ -39,6 +41,8 @@
 #define SEP_S "\\"
 #else
 #include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #define SEP '/'
 #define SEP_S "/"
 #endif
@@ -52,7 +56,9 @@ static int data_ready;
 /* (what the move did, for the log once it is open) */
 static int moved_files, tidied_files, kept_files, saves_moved, saves_kept;
 static char set_aside[MAX_PATH];   /* (<game>/user renamed after a copy whose original could not be deleted whole) */
-static int saves_link, portable;   /* (the saves hold a link, kept where they are; a portable install's data folder) */
+/* (saves_link: the saves hold a link, kept where they are, or are one (2); portable: a portable install's data folder;
+   saves_twice: saves both in <game>/user and in the data folder) */
+static int saves_link, portable, saves_twice;
 static char unread_options[MAX_PATH], unread_env[MAX_PATH];   /* (a settings file beside the game the game does not read) */
 static char kept_first[MAX_PATH];
 static char saves_from[MAX_PATH];
@@ -78,16 +84,47 @@ static const char *const made_again[] = {
     "prompts" SEP_S "Common.blarc.key", "prompts" SEP_S "External.bfotf.zs", "prompts" SEP_S "rsizetable.mod.zs",
 };
 
-static int exists(const char *p) { return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES; }
+static int exists(const char *p) {
+#ifndef _WIN32
+    struct stat st;   /* (a link that names nothing is there too) */
+    if (lstat(p, &st) == 0) return 1;
+#endif
+    return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
+}
 static int is_dir(const char *p) {
     const DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 /* a symbolic link or a Windows junction (host/posix marks a symbolic link so too) */
 static int is_link(const char *p) {
+#ifndef _WIN32
+    struct stat st;   /* (lstat: one that names nothing is a link too) */
+    return lstat(p, &st) == 0 && S_ISLNK(st.st_mode);
+#else
     const DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT);
+#endif
 }
+#ifndef _WIN32
+/* (linux, #2282) A symbolic link in the saves, to a folder the player keeps elsewhere (a synced folder, another drive), is made
+   again in the new place to the same folder, never entered or copied through: written in full (realpath), so that one written
+   from where it stood ("../../sync") still names it; one to an entry that moves too names that entry in the new place
+   (move_old, move_new); one that names nothing goes as it was written */
+static const char *move_old, *move_new;   /* (the folder on the move, as realpath names it, and where it goes) */
+static int copy_link(const char *from, const char *to) {
+    char target[PATH_MAX], there[PATH_MAX];
+    const size_t old = move_old ? strlen(move_old) : 0;
+    if (!realpath(from, target)) {
+        const ssize_t n = readlink(from, target, sizeof target - 1);
+        if (n < 0) return 0;
+        target[n] = 0;
+    } else if (old && !strncmp(target, move_old, old) && target[old] == SEP) {
+        snprintf(there, sizeof there, "%s%s", move_new, target + old);
+        snprintf(target, sizeof target, "%s", there);
+    }
+    return symlink(target, to) == 0;
+}
+#endif
 /* (a link is never copied through: tree_has_link says whether a copy would) */
 static int tree_has_link(const char *p) {
     if (is_link(p)) return 1;
@@ -109,6 +146,9 @@ static int tree_has_link(const char *p) {
     return found;
 }
 static int copy_tree(const char *from, const char *to) {
+#ifndef _WIN32
+    if (is_link(from)) return copy_link(from, to);
+#endif
     if (!is_dir(from)) {
         FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
         int ok = in && out;
@@ -165,9 +205,16 @@ static void delete_tree(const char *p) {
 /* from to to, which is not there yet: a rename, else (another drive) a copy and delete, never through a link. 1 moved, 0 left
    where it was. *left: set when the copy is whole but some of the original could not be deleted (held, read-only) */
 static int move_entry(const char *from, const char *to, int *left) {
-    /* (a link, or a folder holding one, is never moved: renamed into another folder, a relative link names nothing there) */
+#ifdef _WIN32
+    /* (a link or junction, or a folder holding one, is never moved: renamed into another folder, a relative one names nothing
+       there, and copied, the folder it names would be emptied after) */
     if (tree_has_link(from)) return 0;
     if (MoveFileExA(from, to, 0)) return 1;
+#else
+    /* (a folder holding a link is copied, its links made again (copy_link), never renamed: from another folder a link written
+       from where it stood names nothing) */
+    if (!tree_has_link(from) && MoveFileExA(from, to, 0)) return 1;
+#endif
     if (copy_tree(from, to)) {
         delete_tree(from);
         if (exists(from) && left) *left = 1;
@@ -182,6 +229,14 @@ enum { MAX_SAVE_ENTRIES = 64 };
 static const char *move_saves(const char *beside) {
     if (!is_dir(beside)) return data_dir;
     snprintf(saves_from, sizeof saves_from, "%s", beside);
+    if (is_link(beside)) {   /* (a user/ that is a link itself is the player's choice of place: used as it is, nothing moves) */
+        saves_link = 2;
+        return beside;
+    }
+#ifndef _WIN32
+    char real[PATH_MAX];
+    move_old = realpath(beside, real), move_new = data_dir;   /* (copy_link: links to entries that move too follow them) */
+#endif
     static char names[MAX_SAVE_ENTRIES][MAX_PATH];
     int count = 0;
     char pattern[MAX_PATH];
@@ -196,8 +251,11 @@ static const char *move_saves(const char *beside) {
         snprintf(to, sizeof to, "%s" SEP_S "%s", data_dir, fd.cFileName);
         char from[MAX_PATH];
         snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
-        if (tree_has_link(from)) saves_link = 1, saves_kept++;   /* (a link: the saves stay with it, whole) */
-        else if (exists(to) || count == MAX_SAVE_ENTRIES) saves_kept++;
+#ifdef _WIN32
+        if (tree_has_link(from)) saves_link = 1, saves_kept++;   /* (a link or junction: the saves stay with it, whole) */
+        else
+#endif
+        if (exists(to) || count == MAX_SAVE_ENTRIES) saves_kept++;
         else snprintf(names[count++], MAX_PATH, "%s", fd.cFileName);
     } while (FindNextFileA(h, &fd));
     FindClose(h);
@@ -213,6 +271,10 @@ static const char *move_saves(const char *beside) {
         }
         /* (one could not go: those that went come back, so the saves stay whole in one place) */
         saves_kept = count - i;
+#ifndef _WIN32
+        char real_data[PATH_MAX];
+        move_old = realpath(data_dir, real_data), move_new = beside;   /* (the links made again go back the other way) */
+#endif
         for (int k = i - 1; k >= 0; k--) {
             snprintf(from, sizeof from, "%s" SEP_S "%s", data_dir, names[k]);
             snprintf(to, sizeof to, "%s" SEP_S "%s", beside, names[k]);
@@ -312,9 +374,36 @@ static void move_settings(const char *game) {
 static void migrate(const char *game) {
     char path[MAX_PATH];
     snprintf(path, sizeof path, "%suser", game);
-    if (move_saves(path) != data_dir)   /* (the saves stay in <game>/user: the settings stay with them, the data folder too. A
-                                           second game folder's saves meet the first's: it keeps its own saves and settings) */
+    char shared_saves[MAX_PATH], own_saves[MAX_PATH];
+    snprintf(shared_saves, sizeof shared_saves, "%s" SEP_S "save", data_dir);
+    snprintf(own_saves, sizeof own_saves, "%s" SEP_S "save", path);
+    const int both = is_dir(shared_saves) && is_dir(own_saves);
+    if (move_saves(path) != data_dir) {   /* (the saves stay in <game>/user: the settings stay with them, the data folder too. A
+                                             second game folder's saves meet the first's: it keeps its own saves and settings) */
+        if (both) {
+            /* (saves in both places: this game folder's are used, the data folder's are not, and a player who does not know
+               why sees the wrong ones: an older build started in this folder after the move made new ones here, or another
+               game folder moved its own to the data folder first. Neither is picked over the other or merged: a note says
+               where both are and how to choose) */
+            saves_twice = 1;
+            char note[MAX_PATH];
+            snprintf(note, sizeof note, "%ssaves-in-two-places.txt", game);
+            if (!exists(note)) {
+                FILE *f = fopen(note, "w");
+                if (f) {
+                    fprintf(f, "Hookshot found saves in two places:\n\n  %s (used by this game folder)\n  %s (not used by it)\n\n"
+                               "This happens when an older version of Hookshot was started in this folder after its saves had "
+                               "moved (it made new ones here), or when another game folder had moved its saves first.\n\n"
+                               "To use the other saves instead: close the game, rename this folder's user folder (to user.old, "
+                               "for example) and start the game again: it then uses the other saves, with the settings beside "
+                               "them. To keep some slots from each, copy them with scripts/oot_saves.py (docs/saves.md). Nothing "
+                               "was deleted.\n", own_saves, shared_saves);
+                    fclose(f);
+                }
+            }
+        }
         snprintf(data_dir, sizeof data_dir, "%s", path), hos_user_dir = data_dir;
+    }
     move_settings(game);
     if (moved_files || saves_moved) {   /* (a note where they went, for a player who looks there: what moved, and only that) */
         snprintf(path, sizeof path, "%sfiles-moved.txt", game);
@@ -453,13 +542,18 @@ const wchar_t *hos_data_dir_w(void) {
 
 void hos_data_log_migration(void) {
     hos_log("data: %s%s", data_dir, portable ? " (a portable install, .hookshot_builder_home: the game folder's user)" : "");
-    if (saves_moved || saves_kept) {
-        if (saves_link)
+    if (saves_moved || saves_kept || saves_link) {
+        if (saves_link == 2)
+            hos_log("data: %s is a link (the player's own place for the saves): used as it is, the settings with them", saves_from);
+        else if (saves_link)
             hos_log("data: %s holds a link (to a folder elsewhere): it is left as it is, the saves and settings stay in %s",
                     saves_from, saves_from);
         else if (saves_kept)
             hos_log("data: %d of %s's entries could not move: the saves stay in %s, the settings with them", saves_kept, saves_from,
                     saves_from);
+        if (saves_twice)
+            hos_log("data: saves in two places: this game folder's (used) and the shared data folder's (not used): see "
+                    "saves-in-two-places.txt in the game folder");
         else hos_log("data: the saves moved from %s", saves_from);
         if (set_aside[0])
             hos_log("data: %s could not be deleted whole after its copy: what is left is set aside as %s", saves_from, set_aside);
