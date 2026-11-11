@@ -65,6 +65,9 @@ and displayed frames measure different things. No stable-60-FPS guarantee is mad
 
 ```sh
 python3 -I -B tests/test_dlss5_api.py
+python3 -I -B tests/test_dlss5_control.py
+python3 -I -B tests/test_dlss5_controls.py
+python3 -I -B tests/test_dlss5_menu.py
 python3 -I -B tests/test_dlss5_mapping.py
 python3 -I -B tests/test_dlss5_present_sync.py
 ```
@@ -85,8 +88,11 @@ and real scene timing remain separate acceptance checks.
 
 The adapter exposes `HOS_DLSS5_CONTROL` only to its child game. It names a private
 session directory with a versioned file protocol; the renderer does not map or
-interpret the external project's shared-memory ABI. The separate F1 menu change
-consumes this interface. The adapter no longer exports the former F10 menu hook.
+interpret the external project's shared-memory ABI. The native F1 Graphics page
+provides the basic controls and an advanced section for all 19 settings, plus model
+status. Controls are unavailable outside an active adapter session. The adapter
+no longer exports the former F10 menu hook. Filesystem work stays on the native
+client worker, and helper control/persistence stays on the adapter worker.
 
 `state` is an atomic ASCII `key=value` snapshot, capped at 4096 bytes: `protocol=1`,
 `ack`, `available`, `helper_state`, `model_up`, `error`, and all 19 documented
