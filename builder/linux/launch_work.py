@@ -175,7 +175,7 @@ class Work(object):
 
     def bar(self):
         """in the bar that fills (Paper: "Build Menu - Building", "Releases Menu - Updating"): "Building... 42%" """
-        verb = self.title.split(" ")[0] if self.title.split(" ")[0] in ("Building", "Updating", "Switching") else "Working"
+        verb = self.title.split(" ")[0] if self.title.split(" ")[0] in ("Building", "Updating", "Switching", "Rebuilding") else "Working"
         return "%s... %d%%" % (verb, int(self.fraction * 100))
 
     def step_line(self, now=None):
@@ -198,6 +198,8 @@ class Work(object):
     def rebuild_line(self):
         """the first line under an update's bar: a version is never downloaded ready to play, its tools build the game
         again from the player's own files, and that is said plainly ("Rebuilding your game as v2.2.0")"""
+        if self.title.startswith("Rebuilding "):   # (the version in the folder, built again: Settings' Rebuild, or its own row)
+            return "Rebuilding your game with your settings now"
         name = self.title.partition(" to ")[2]
         return "Rebuilding your game as %s" % name if name else "Rebuilding your game"
 
@@ -219,4 +221,6 @@ class Work(object):
         if not self.update:
             return "The build stopped"
         verb, _space, rest = self.title.partition(" ")
+        if verb == "Rebuilding":
+            return "The rebuild of %s stopped" % rest
         return "The %s %s stopped" % ("update" if verb == "Updating" else "switch", rest)

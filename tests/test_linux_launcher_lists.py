@@ -46,6 +46,10 @@ check("candidates among the releases, in order", [c.label for c in ll.tab_rows(_
 _old = ll.make_lists([("v1.2.0", False, True), ("v1.1.0", False, True)], "v1.2.0", "v1.1.0", [], False, None, False)
 check("a folder without its game files says why nothing can be brought", _old["releases"][0].tip,
       "This game folder was built before it kept its game files: build it again from the Build tab")
+check("...and its own version says nothing of a rebuild", _old["releases"][1].tip, None)
+_kept = ll.make_lists([("v1.2.0", False, True), ("v1.1.0", False, True)], "v1.2.0", "v1.1.0", [], True, None, False)
+check("the version in a folder that keeps its game files: pressed, it is rebuilt", _kept["releases"][1].tip,
+      "Your game. Press it to rebuild it with your settings now")
 check("the same tag with and without v", ll.same_tag("V1.0.0", "1.0.0"), True)
 check("no tag is no tag", ll.same_tag(None, "1.0.0"), False)
 

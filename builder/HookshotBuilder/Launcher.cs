@@ -56,6 +56,9 @@ public partial class MainWindow
         cancelHalfWay = preview.Contains("cancel");
         stepsHalfWay = preview.Contains("steps");
         var pick = preview.FirstOrDefault(p => p.StartsWith("pick="))?[5..];
+        // (the saved choices first: Settings showed its switches off until the Build tab was opened, and a switch changed before
+        // that saved the whole file from that screen, the game file chosen last time and the other switches lost with it)
+        ApplySettings();
         EnterLauncher(folder, pick, check: false);
         // (tab=build|releases|settings: that tab of the menu, open)
         if (preview.FirstOrDefault(p => p.StartsWith("tab=")) is { } tab)
@@ -73,6 +76,7 @@ public partial class MainWindow
         if (preview.Contains("go") && launchLists?.All.FirstOrDefault(c => string.Equals(c.Key, pick, StringComparison.OrdinalIgnoreCase)) is { } pressed)
         {
             if (pressed.Reach) Bring(pressed);
+            else if (pressed.Here) Rebuild(pressed);   // (the one in the folder: built again with the settings now)
             if (launchState != LaunchState.Idle) return;
         }
         if (preview.Contains("pages"))   // (the Build tab opened: the game files looked for)
@@ -201,6 +205,7 @@ public partial class MainWindow
         FoldText.Text = launchLists.Folded ? $"{launchLists.Older} older releases" : "Fewer releases";
         FoldTurn.ScaleY = launchLists.Folded ? 1 : -1;   // (the arrow points down while they are folded, up to fold them again)
         ShowLowMem();
+        ShowRebuildNote();
         ReleasesNote.Text = launchChecked && launchReleases.Count == 0 ? "GitHub did not answer: only the versions on this PC are listed." : "";
         ReleasesNote.Visibility = ReleasesNote.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         Render();
@@ -210,7 +215,9 @@ public partial class MainWindow
     void LauncherRowClick(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is not LaunchChoice c || Busy) return;
-        if (c.Here) Pick(c);
+        // (the one in the folder: built again with the settings now, asked first; a folder without its game files cannot be)
+        if (c.Here && c.Rebuilds && File.Exists(GameExe(launchFolder))) Rebuild(c);
+        else if (c.Here) Pick(c);
         else if (c.Reach) Bring(c);
     }
 
@@ -247,6 +254,60 @@ public partial class MainWindow
         // update, which takes this builder's place with that version's. The latest release as before; any other by its own tag)
         readyNote = null;
         Updater.UpdateFolder(this, launchFolder, tag, fetched: false, named: !SameTag(tag, latestTag));
+    }
+
+    // ---- the game built again as it is, with the settings now: DLSS and FSR 4 take effect at a build, not when they are switched ----
+
+    /// (how the game in the folder was built: FSR 4 by make_game.py's mark, DLSS by NVIDIA's DLL in its ngx folder)
+    bool BuiltWithFsr => launchFolder.Length > 0 && File.Exists(System.IO.Path.Combine(launchFolder, ".hookshot_fsr"));
+    bool BuiltWithDlss => launchFolder.Length > 0 && File.Exists(System.IO.Path.Combine(launchFolder, "ngx", "nvngx_dlss.dll"));
+    LaunchChoice? HereChoice => launchLists?.All.FirstOrDefault(c => c.Here);
+
+    /// Settings' note, when the switches no longer say how the game was built, with Rebuild beside it. (Turning DLSS off is not
+    /// one: NVIDIA's DLL stays in the folder, and the game's Upscaler menu chooses whether it is used)
+    void ShowRebuildNote()
+    {
+        if (RebuildRow == null) return;
+        string? why = null;
+        if (HereChoice is { Rebuilds: true } && File.Exists(GameExe(launchFolder)))
+        {
+            var fsr = FsrTick.IsChecked == true && fsrLicense;
+            if (fsr && !BuiltWithFsr) why = "Built without FSR 4";
+            else if (!fsr && BuiltWithFsr) why = "Built with FSR 4";
+            else if (DlssTick.IsChecked == true && !BuiltWithDlss) why = "Built without DLSS";
+        }
+        // (one line, as the panel has room for: the whole under the pointer)
+        RebuildNote.Text = why ?? "";
+        RebuildNote.ToolTip = why == null ? null
+            : $"{why}. Rebuild builds your game again from its game files with your settings now, {AboutTime()} on this PC. Your saves stay.";
+        RebuildRow.Visibility = why != null ? Visibility.Visible : Visibility.Collapsed;
+        RebuildLink.IsEnabled = !Busy;
+    }
+
+    void RebuildClick(object sender, RoutedEventArgs e)
+    {
+        if (HereChoice is { } c) Rebuild(c);
+    }
+
+    /// The version in the folder built again from the game files it keeps, with its own tools and the settings now (asked first)
+    void Rebuild(LaunchChoice c)
+    {
+        if (c.Tag is not { } tag || Busy) return;
+        var name = VersionName(tag);
+        var saved = BuilderSettings.Load(SettingsPath);
+        var with = $"FSR 4 {(saved?.Fsr == true && saved.FsrLicense ? "on" : "off")}, DLSS {(saved?.Dlss == true ? "on" : "off")}";
+        var ask = $"Rebuild {name}?\n\nYour game is built again from your game files with your settings now ({with}). That takes {AboutTime()} on " +
+                  "this PC, and Play waits until it is done. Your saves and settings stay.";
+        if (Shot == null && MessageBox.Show(this, ask, "Hookshot", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+        // (its builder is here, as it built the folder; one removed since is installed again first, as for any version)
+        if (BuilderHere(tag) == null && !ByEngine(launchReleases.FirstOrDefault(r => SameTag(r.Tag, tag)), false, EngineSetup() != null))
+        {
+            MessageBox.Show(this, $"The builder of {name} is not on this PC any more, and its release has none to download here.", "Hookshot",
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        StartWork(c, rebuild: true);
     }
 
     /// Update Available, at the panel's foot: the latest release brought
@@ -393,7 +454,8 @@ public partial class MainWindow
         LauncherUpdate.ToolTip = available ? $"Update to {VersionName(latestTag!)}: your game is rebuilt from your game files ({AboutTime()}). Your saves and settings stay." : null;
         FootBar.Visibility = footWorking ? Visibility.Visible : Visibility.Collapsed;
         FootStopped.Visibility = footStopped ? Visibility.Visible : Visibility.Collapsed;
-        FootStopped.Content = launchState == LaunchState.Stopped && work?.Bar.StartsWith("Switching") == true ? "Switch stopped" : "Update stopped";
+        FootStopped.Content = launchState != LaunchState.Stopped ? "Update stopped" : work?.IsRebuild == true ? "Rebuild stopped"
+            : work?.Bar.StartsWith("Switching") == true ? "Switch stopped" : "Update stopped";
         FootCancel.Visibility = footWorking ? Visibility.Visible : Visibility.Collapsed;
         FootLinks.Visibility = footStopped ? Visibility.Visible : Visibility.Collapsed;
         FootLine.Text = available ? $"{VersionName(latestTag!)} Latest" : "";
@@ -482,12 +544,13 @@ public partial class MainWindow
     /// The version picked brought into the launch folder: its builder installed beside this one when it is not on the PC (the
     /// setup, hidden), then the folder built with that builder's own tools (its make_game.py, hidden). The window is the
     /// launcher's throughout
-    async void StartWork(LaunchChoice c)
+    async void StartWork(LaunchChoice c, bool rebuild = false)
     {
         var tag = c.Tag!;
         var tools = BuilderHere(tag);
         var ahead = launchBuilt == null || !IsRelease(launchBuilt) || Newer(tag, launchBuilt);
-        (workTarget, work, workCancelled, workStopped, shotWorking) = (c, new LaunchWork(VersionName(tag), ahead, fetch: tools == null), false, "", false);
+        (workTarget, work, workCancelled, workStopped, shotWorking) =
+            (c, new LaunchWork(VersionName(tag), ahead, fetch: tools == null, rebuild), false, "", false);
         workLog.Clear();
         launchState = LaunchState.Working;
         readyNote = null;
@@ -521,16 +584,19 @@ public partial class MainWindow
         // know the word: an older version's make_game.py would stop on an argument it does not know)
         var saved = BuilderSettings.Load(SettingsPath);
         var known = MakeGameText(tools!);
+        // (a rebuild is for the settings now: what the folder was built with does not carry over, and FSR 4 switched off is taken
+        // out, --no-fsr, where that version's make_game.py knows the word)
         var dlss = (saved?.Dlss == true ||
-                    (File.Exists(System.IO.Path.Combine(launchFolder, "ngx", "nvngx_dlss.dll")) &&
+                    (!rebuild && File.Exists(System.IO.Path.Combine(launchFolder, "ngx", "nvngx_dlss.dll")) &&
                      File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")))) &&
                    Knows(known, "--fetch-ngx-sdk") && Knows(known, "--accept-nvidia-license");
         var fsr = ((saved?.Fsr == true && saved.FsrLicense) ||
-                   (File.Exists(System.IO.Path.Combine(launchFolder, ".hookshot_fsr")) &&
+                   (!rebuild && File.Exists(System.IO.Path.Combine(launchFolder, ".hookshot_fsr")) &&
                     File.Exists(System.IO.Path.Combine(launchFolder, "amd_fidelityfx_upscaler_vk.dll")) &&
                     File.Exists(System.IO.Path.Combine(launchFolder, "LICENSE-AMD-FSR-SDK.md")))) &&
                   Knows(known, "--fsr") && Knows(known, "--fetch-fsr-runtime") && Knows(known, "--accept-amd-license");
         var args = new List<string> { "--update", launchFolder };
+        if (rebuild && !fsr && BuiltWithFsr && Knows(known, "--no-fsr")) args.Add("--no-fsr");
         if (Storage.WorkChosen && Knows(known, "--work")) args.AddRange(new[] { "--work", Storage.Work });
         if (dlss) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
         if (fsr) args.AddRange(new[] { "--fsr", "--fetch-fsr-runtime", "--accept-amd-license" });

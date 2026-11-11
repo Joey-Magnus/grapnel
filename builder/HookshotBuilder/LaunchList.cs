@@ -26,10 +26,10 @@ sealed class LaunchChoice
     public string Key => "release:" + Tag;
 
     // (the row, MainWindow.xaml's VersionRow: the tick on what Play plays, the arrow on one a press brings, dim that nothing can)
-    public bool Ticked => Picked && Here;
+    public bool Ticked => Picked && Here && !Busy;   // (the one being rebuilt shows the turning mark alone)
     public bool Arrow => !Here && Reach && !Busy;
     public bool Dim => !Here && !Reach && !Picked;
-    public string? Tip => Here ? null : Reach ? "Not on this PC yet"
+    public string? Tip => Here ? (Rebuilds ? "Your game. Press it to rebuild it with your settings now" : null) : Reach ? "Not on this PC yet"
         : !Rebuilds ? "This game folder was built before it kept its game files: build it again from the Build tab"
         : "Not on this PC, and its release has no builder to download";
 }

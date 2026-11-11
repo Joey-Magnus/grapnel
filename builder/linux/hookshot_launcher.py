@@ -529,7 +529,29 @@ class Launcher(object):
         return messagebox.askyesno("Hookshot", ("Update to %s?\n\n%s" if ahead else "Switch back to %s?\n\n%s") % (name, rebuild),
                                    parent=self.app)
 
-    def start_update(self, tag=None, fetched=False):
+    def rebuild(self):
+        """The version in the folder built again from the game files it keeps, with the settings now (asked first): Settings'
+        Rebuild, or its own row in Releases. DLSS takes effect at a build, not when it is switched"""
+        if self.state == "working" or not self.has_game():
+            return
+        name = version_name(self.built) if self.built and is_release(self.built) else "your game"
+        ask = ("Rebuild %s?\n\nYour game is built again from your game files with your settings now (DLSS %s). That takes %s on "
+               "this PC, and Play waits until it is done. Your saves and settings stay." %
+               (name, "on" if self.app.dlss.get() else "off", about(self.typical)))
+        if messagebox.askyesno("Hookshot", ask, parent=self.app):
+            self.start_update(self.built if self.built and is_release(self.built) else None, rebuild=True)
+
+    def rebuild_note(self):
+        """Settings' note when DLSS is on and the game in the folder was built without it, else None. (Turning it off is not
+        one: NVIDIA's library stays in the folder, and the game's Upscaler menu chooses whether it is used)"""
+        if self.has_game() and self.app.dlss.get() and not self.hb.folder_has_dlss(self.folder):
+            return "Built without DLSS"
+        return None
+
+    def has_game(self):
+        return bool(self.folder) and os.path.isfile(os.path.join(self.folder, "bin", "hookshot"))
+
+    def start_update(self, tag=None, fetched=False, rebuild=False):
         """The folder updated or switched to a release: its builder installed first when these tools are not it (the new
         builder then starts on this folder, hookshot_builder's begin_update), else the folder built again here"""
         app = self.app
@@ -541,8 +563,8 @@ class Launcher(object):
         if tag is None and not ahead and not self.asked(target):
             return
         fetch = not fetched and not (app.tools and target == app.tools)
-        work = Work(("Updating to " if ahead else "Switching to ") + name, update=True, fetch=fetch, shaders=bool(app.prepare.get()),
-                    not_prepared=self.hb.make_game.NOT_PREPARED)
+        title = ("Rebuilding " if rebuild else "Updating to " if ahead else "Switching to ") + name
+        work = Work(title, update=True, fetch=fetch, shaders=bool(app.prepare.get()), not_prepared=self.hb.make_game.NOT_PREPARED)
         self.bringing = target
         self.begin_work(work)
         if not fetch:
@@ -585,7 +607,9 @@ class Launcher(object):
 
     def run_update(self):
         app, hb = self.app, self.hb
-        dlss = hb.folder_has_dlss(self.folder)   # (a folder built with NVIDIA DLSS, its license accepted then, is built with it again)
+        # (a folder built with NVIDIA DLSS, its license accepted then, is built with it again; a rebuild is for the settings now)
+        rebuilding = self.work is not None and self.work.title.startswith("Rebuilding ")
+        dlss = bool(app.dlss.get()) if rebuilding else hb.folder_has_dlss(self.folder)
         try:
             jobs = self.build_jobs()
         except ValueError:
@@ -1056,7 +1080,8 @@ class Launcher(object):
             self.links(cx, bottom - u(8), [("Show details" if not self.details else "Hide details", lambda: self.show_details(not self.details)),
                                            (self.copied or "Copy error log", self.copy_details), ("Dismiss", self.dismiss)])
             y = bottom - u(16) - u(8) - u(38)
-            self.button(x0, y, x1, y + u(38), "Update stopped", STOP, press=self.retry, tip="Try again")
+            word = "Rebuild stopped" if work.title.startswith("Rebuilding ") else "Update stopped"
+            self.button(x0, y, x1, y + u(38), word, STOP, press=self.retry, tip="Try again")
             top = self.wrapped(x0, y - u(8), work.error.rstrip(".") + ". " + KEPT, "LsWhy", WHY, u(235), anchor="sw", lines=5)
         elif self.newer_out() and self.state != "working":
             # (that installing it rebuilds the game, and how long that takes here: not in Paper, said before it is pressed)
@@ -1237,10 +1262,12 @@ class Launcher(object):
         self.scroll = min(self.scroll, max(0, len(rows) - self.rows_fit))
         busy = self.state == "working"
         for choice in rows[self.scroll:self.scroll + self.rows_fit]:
-            if choice.here:
-                ink, mark, press, tip = HERE, "tick", None, "In your game folder"
-            elif busy and self.bringing and same_tag(choice.tag, self.bringing):
+            if busy and self.bringing and same_tag(choice.tag, self.bringing):   # (being brought, or rebuilt: the turning mark)
                 ink, mark, press, tip = BUSY, "refresh", None, None
+            elif choice.here:
+                # (built again with the settings now, asked first: a folder without its game files cannot be)
+                can = choice.rebuilds and not busy and self.has_game()
+                ink, mark, press, tip = HERE, "tick", self.rebuild if can else None, choice.tip if can else "In your game folder"
             elif choice.reach:
                 ink, mark = QUIET, "download"
                 press = None if busy else (lambda choice=choice: self.bring(choice))
@@ -1284,6 +1311,15 @@ class Launcher(object):
         y = self.switch(y + u(12), "Enable DLSS", bool(app.dlss.get()), self.dlss_pressed,
                         "NVIDIA DLSS, for NVIDIA RTX graphics cards. The build downloads NVIDIA's SDK under NVIDIA's license. "
                         "NVIDIA's files stay on this PC: never share a game folder built with them.")
+        # (DLSS takes effect at a build: when the game was built without it, this says so, with Rebuild beside it)
+        # (one line, as the panel has room for: the whole under the pointer)
+        note = self.rebuild_note()
+        if note:
+            self.link(u(251), y + u(8) + u(8), "Rebuild", None if self.state == "working" else self.rebuild, anchor="e")
+            top = y + u(8)
+            y = self.wrapped(u(16), top, note, "LsLabel", BUGS, u(170), lines=1)
+            self.region(u(16), top, u(190), y, tip="%s. Rebuild builds your game again from its game files with your settings now, "
+                                                   "%s on this PC. Your saves stay." % (note, about(self.typical)))
         # (#2206's RX_VK_PCACHE_LOAD=0, a line of the game folder's hookshot_env.txt, so it holds however the game is started:
         # game_env.py. Only with a game folder; the game's own setting, not the build's: it takes effect at its next start)
         if self.folder and os.path.isdir(self.folder):

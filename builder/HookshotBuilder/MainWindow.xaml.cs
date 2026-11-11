@@ -816,6 +816,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
             DlssTick.IsChecked = false;
         SaveSettings();   // (kept at once, not only when Build is pressed: ticked and closed, it is still ticked next time)
+        ShowRebuildNote();
     }
 
     const string FsrLicense =
@@ -842,6 +843,7 @@ public partial class MainWindow : Window
             if (!fsrLicense) FsrTick.IsChecked = false;
         }
         SaveSettings();
+        ShowRebuildNote();
     }
 
     static readonly (string Id, string Build, string Update)[] Stages =

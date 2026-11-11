@@ -78,6 +78,7 @@ check("the step it stopped in", states(w)[2][:2], ("compile", "stopped"))
 check("what the stopped state says", w.stopped_title(), "The build stopped")
 check("an update's", lw.Work("Updating to v2.1.0", update=True).stopped_title(), "The update to v2.1.0 stopped")
 check("a switch back's", lw.Work("Switching to v2.0.14", update=True).stopped_title(), "The switch to v2.0.14 stopped")
+check("a rebuild's", lw.Work("Rebuilding v2.1.0", update=True).stopped_title(), "The rebuild of v2.1.0 stopped")
 
 # ---- a version whose builder is downloaded first ----
 w = lw.Work("Updating to v2.1.0", update=True, fetch=True)
@@ -103,6 +104,9 @@ check("the compile before its own time", w.under_bar(1800, now=1600.0), "Rebuild
 w.line("@@eta 190")
 check("the compile's own time wins", w.under_bar(1800, now=1600.0), "Rebuilding your game as v2.2.0\nCompile · 3 min left")
 check("a switch back", lw.Work("Switching to v2.0.14", update=True).rebuild_line(), "Rebuilding your game as v2.0.14")
+check("a rebuild: the version in the folder, with the settings now", lw.Work("Rebuilding v2.1.0", update=True).rebuild_line(),
+      "Rebuilding your game with your settings now")
+check("a rebuild's bar", lw.Work("Rebuilding v2.1.0", update=True).bar(), "Rebuilding... 0%")
 for seconds, want in ((None, "around half an hour or more"), (1810, "about 30 minutes"), (100, "about 5 minutes"), (3900, "about 1 h 5 min"),
                       (3600, "about 1 h")):
     check("about(%r)" % seconds, lw.about(seconds), want)

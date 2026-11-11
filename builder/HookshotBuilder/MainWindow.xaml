@@ -807,7 +807,10 @@
               </ScrollViewer>
 
               <!-- ==== Settings: what is on or off (Paper: "Settings Menu") ==== -->
-              <StackPanel x:Name="SettingsPage" Grid.Row="1" Margin="16,12,16,0" Visibility="Collapsed">
+              <!-- (scrolled as Releases is, when a note under a switch makes it taller than the panel) -->
+              <ScrollViewer x:Name="SettingsPage" Grid.Row="1" Margin="0,12,0,0" Style="{StaticResource SlimScroll}" VerticalScrollBarVisibility="Auto"
+                            HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+              <StackPanel Margin="16,0,16,0">
                 <Grid>
                   <TextBlock Style="{StaticResource Small}" Text="Prepare Shaders" VerticalAlignment="Center"/>
                   <!-- (make_game.py's last step, the game's prepare-shaders run: off, the game prepares them at its first start) -->
@@ -830,6 +833,15 @@
                   <CheckBox x:Name="FsrTick" Style="{StaticResource Switch}" HorizontalAlignment="Right" IsChecked="False" Click="FsrChanged"
                             AutomationProperties.Name="AMD FSR 4"
                             ToolTip="For AMD Radeon graphics cards. The build downloads AMD's runtime under AMD's license (asked when it is switched on). It is chosen in the game's Insert menu, as the Upscaler."/>
+                </Grid>
+                <!-- (DLSS and FSR 4 take effect at a build: when they no longer say how the game in the folder was built, this says so,
+                     and Rebuild builds it again with them, Launcher.cs ShowRebuildNote) -->
+                <Grid x:Name="RebuildRow" Margin="0,8,0,0" Visibility="Collapsed">
+                  <TextBlock x:Name="RebuildNote" Style="{StaticResource Small}" Foreground="#E3B955" Width="160" HorizontalAlignment="Left"
+                             TextWrapping="Wrap"/>
+                  <Button x:Name="RebuildLink" Style="{StaticResource SmallLink}" HorizontalAlignment="Right" VerticalAlignment="Top" Content="Rebuild"
+                          Click="RebuildClick" AutomationProperties.Name="Rebuild the game"
+                          ToolTip="Builds your game again from the game files it keeps, with your settings now. Your saves and settings stay."/>
                 </Grid>
                 <!-- (#2206's RX_VK_PCACHE_LOAD=0, a line of the game folder's hookshot_env.txt, so it holds however the game is started:
                      GameEnv.cs. The game's own setting, not the build's: it takes effect at the next start, nothing is rebuilt) -->
@@ -864,6 +876,7 @@
                   <Run Text="These versions contain the latest experimental features and changes, "/><Run Text="bugs may occur." Foreground="#E3B955"/>
                 </TextBlock>
               </StackPanel>
+              </ScrollViewer>
             </Grid>
 
             <!-- ==== the foot: Check for updates; Update Available when there is one; the bar of an update under way, and Cancel;

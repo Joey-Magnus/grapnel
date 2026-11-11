@@ -87,7 +87,7 @@ class Choice(object):
     @property
     def tip(self):
         if self.here:
-            return None
+            return "Your game. Press it to rebuild it with your settings now" if self.rebuilds else None
         if self.reach:
             return "Not on this PC yet"
         if not self.rebuilds:

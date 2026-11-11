@@ -94,7 +94,14 @@ static class Program
         // (and its dim rows say why: the folder, not the release)
         Require(l.Releases[0].Tip!.StartsWith("This game folder was built before it kept its game files"), "the dim row's reason: " + l.Releases[0].Tip);
         l = LaunchList.Make(github, "v1.2.0", "v1.2.0", NoBuilders, rebuilds: true, null, false);
-        Require(l.Releases[1].Tip == "Not on this PC, and its release has no builder to download" && l.Releases[0].Tip == null, "a release with nothing to download says so: " + l.Releases[1].Tip);
+        Require(l.Releases[1].Tip == "Not on this PC, and its release has no builder to download", "a release with nothing to download says so: " + l.Releases[1].Tip);
+        // (the one in the folder, which keeps its game files: pressed, it is rebuilt with the settings now)
+        Require(l.Releases[0].Tip == "Your game. Press it to rebuild it with your settings now", "the version here can be rebuilt: " + l.Releases[0].Tip);
+        Require(l.Releases[0].Ticked, "the version here is ticked");
+        l.Releases[0].Busy = true;
+        Require(!l.Releases[0].Ticked, "...and, being rebuilt, shows the turning mark alone");
+        Require(LaunchList.Make(github, "v1.2.0", "v1.2.0", NoBuilders, rebuilds: false, null, false).Releases[0].Tip == null,
+                "a folder without its game files: the version here says nothing of a rebuild");
 
         // ---- how a release is brought: the setup's engine mode installs only from a setup list ----
         Require(LaunchList.ByEngine(new ReleaseInfo("v1.3.0", false, true, SetupList: true), builderHere: false, engineSetup: true), "the setup and its list: the engine mode");
@@ -217,6 +224,11 @@ static class Program
         Feed(w, "@@error The compiler stopped on src_4.c.");
         Require(w.Error == "The compiler stopped on src_4.c." && w.Done == null && w.StoppedTitle == "The switch to v2.0.14 stopped", "why it stopped, and what the launcher calls it");
         Require(new LaunchWork("v2.2.0", true, true).StoppedTitle == "The update to v2.2.0 stopped", "an update that stopped");
+        // (the version in the folder built again with the settings now: Settings' Rebuild, or its own row)
+        var again = new LaunchWork("v2.2.0", ahead: false, fetch: false, rebuild: true);
+        Require(again.IsRebuild && again.Bar == "Rebuilding... 0%" && again.Title == "Rebuilding v2.2.0 - 0%", "a rebuild's bar: " + again.Bar);
+        Require(again.Rebuild == "Rebuilding your game with your settings now", "a rebuild's line: " + again.Rebuild);
+        Require(again.StoppedTitle == "The rebuild of v2.2.0 stopped", "a rebuild that stopped: " + again.StoppedTitle);
 
         // ---- tools that say what this launcher does not know (a later version's, an older one's) ----
         w = new LaunchWork("v3.0.0", ahead: true, fetch: false);

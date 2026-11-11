@@ -30,6 +30,8 @@ sealed class LaunchWork
 
     readonly string name, verb;
     readonly bool fetch;
+    /// (the version in the folder built again, with the settings now: Settings' Rebuild, or its own row in Releases)
+    public bool IsRebuild { get; }
     string? stage;          // (make_game.py's stage now; null while the builder is still being got)
     int part = 1, parts = 1;
     int changed = -1, compiled;
@@ -41,11 +43,11 @@ sealed class LaunchWork
     DateTime shaderStarted;
 
     /// name: the version, as written ("v2.2.0"); ahead: it is ahead of the one the folder holds (an update), else a switch back;
-    /// fetch: its builder is not on this PC and is downloaded first
-    public LaunchWork(string name, bool ahead, bool fetch)
+    /// fetch: its builder is not on this PC and is downloaded first; rebuild: it is the version in the folder, built again
+    public LaunchWork(string name, bool ahead, bool fetch, bool rebuild = false)
     {
-        (this.name, this.fetch) = (name, fetch);
-        verb = ahead ? "Updating to" : "Switching to";
+        (this.name, this.fetch, IsRebuild) = (name, fetch, rebuild);
+        verb = rebuild ? "Rebuilding" : ahead ? "Updating to" : "Switching to";
         says = fetch ? "Getting its builder" : "Starting";
     }
 
@@ -68,7 +70,7 @@ sealed class LaunchWork
     }
     /// (the first line under the bar: a version is never downloaded ready to play, its tools build the game again from the
     /// player's own files, and that is said plainly)
-    public string Rebuild => $"Rebuilding your game as {name}";
+    public string Rebuild => IsRebuild ? "Rebuilding your game with your settings now" : $"Rebuilding your game as {name}";
 
     /// The two lines under the bar: what it is, then the step and the time left. Until the compile gives its own time, the time
     /// is what a build took on this PC before (typical, in seconds; null when none was kept) less the time gone (elapsed)
@@ -86,7 +88,8 @@ sealed class LaunchWork
     public string? Error { get; private set; }
 
     /// What the stopped state says under the button's "Retry": the version, and the reason in one line
-    public string StoppedTitle => $"The {(verb.StartsWith("Updating") ? "update" : "switch")} to {name} stopped";
+    public string StoppedTitle => IsRebuild ? $"The rebuild of {name} stopped"
+        : $"The {(verb.StartsWith("Updating") ? "update" : "switch")} to {name} stopped";
 
     public void Line(string line)
     {
