@@ -10,7 +10,8 @@ of the back end into a Sirit fixture: a compute shader that adds 1.0 to a word, 
 it, and without descriptor aliasing (no f32 view to add through). Each must pass spirv-val; the first must be one
 OpAtomicFAddEXT and no compare-exchange, the others the loop and no float-add capability. The device's half (the
 extension asked for, only that feature on, RX_VK_NATIVE_FADD=0, the profile and the program cache's stamp) and the
-global-address fallback are checked in the source. Nothing runs on a GPU.
+global-address fallback are checked in the source. The switch's values (native_fadd_wanted, vk_main.cpp) are compiled
+alone against a table: #2042's rule, so =on is on and =off, =false, =no and empty are off. Nothing runs on a GPU.
 
     python -I -B tests/test_native_float_atomic_add.py --headers <SPIRV-Headers/include> [--cxx g++] [--spirv-val spirv-val]
 """
@@ -184,6 +185,8 @@ def check_source():
         ("if (!fadd_off) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);",
          "VK_EXT_shader_atomic_float is not asked for, or RX_VK_NATIVE_FADD=0 still enables it"),
         ('getenv("RX_VK_NATIVE_FADD")', "RX_VK_NATIVE_FADD is not read"),
+        ("const bool fadd_off = !native_fadd_wanted(fadd_env);",
+         "RX_VK_NATIVE_FADD is not read through native_fadd_wanted (the switches' rule)"),
         ("if (atomic_float) *tail = &afloat, tail = &afloat.pNext;", "the atomic float features are not queried"),
         ("dev.float_atomic_add = atomic_float && afloat.shaderBufferFloat32AtomicAdd;",
          "the native add does not follow shaderBufferFloat32AtomicAdd"),
@@ -208,6 +211,48 @@ def check_source():
     stamp = shader[shader.index("uint64_t translator_stamp() {"):]
     if "profile().support_float32_atomic_add" not in stamp[:stamp.index("return h;")]:
         raise SystemExit("FAIL: programs made with OpAtomicFAddEXT stay in the program cache for a GPU without it")
+
+
+# RX_VK_NATIVE_FADD's value (None: unset) and whether the float add is then asked to be the GPU's own (#2042's rule:
+# hookshot_env.h env_value_off)
+SWITCH_CASES = [(None, 1), ("1", 1), ("on", 1), ("yes", 1), ("true", 1), ("2", 1), ("0", 0), (" 0 ", 0), ("off", 0),
+                ("OFF", 0), ("false", 0), ("no", 0), ("", 0)]
+SWITCH_FIXTURE = r"""
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+@@WANTED@@
+int main(int argc, char** argv) {
+    for (int i = 1; i + 1 < argc; i += 2) {   // (argv: value or -unset, then 1 native or 0 the loop, ...)
+        const char* v = strcmp(argv[i], "-unset") ? argv[i] : nullptr;
+        if (native_fadd_wanted(v) != (atoi(argv[i + 1]) != 0)) {
+            printf("FAIL: RX_VK_NATIVE_FADD=[%s]: %s\n", v ? v : "(unset)", native_fadd_wanted(v) ? "native" : "the loop");
+            return 1;
+        }
+    }
+    return 0;
+}
+"""
+
+
+def check_switch(cxx, tmp):
+    main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
+    wanted = cut(main_cpp, "static bool native_fadd_wanted(", "vk_main.cpp")
+    cpp, exe = tmp / "switch.cpp", tmp / "switch"
+    cpp.write_text(SWITCH_FIXTURE.replace("@@WANTED@@", wanted), encoding="utf-8")
+    r = subprocess.run([cxx, "-std=c++20", "-include", str(VK / "compat" / "hookshot_env.h"), "-Wall", "-Wextra", "-Werror",
+                        str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        print(r.stdout + r.stderr)
+        raise SystemExit("FAIL: native_fadd_wanted did not build alone")
+    argv = []
+    for value, want in SWITCH_CASES:
+        argv += ["-unset" if value is None else value, str(want)]
+    r = subprocess.run([str(exe), *argv], capture_output=True, text=True, timeout=30)
+    if r.returncode:
+        print(r.stdout + r.stderr)
+        raise SystemExit("FAIL: RX_VK_NATIVE_FADD is not read by the switches' rule")
+    print("switch: %d values of RX_VK_NATIVE_FADD as the switches' rule reads them" % len(SWITCH_CASES))
 
 
 def main():
@@ -237,6 +282,7 @@ def main():
     sirit = VK / "sirit"
     with tempfile.TemporaryDirectory(prefix="native-float-add-") as tmp:
         tmp = Path(tmp)
+        check_switch(args.cxx, tmp)
         cpp, exe = tmp / "fixture.cpp", tmp / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
         r = subprocess.run([args.cxx, "-std=c++20", "-O1", "-I" + str(sirit / "include"), "-I" + str(sirit / "src"),
