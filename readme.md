@@ -123,6 +123,10 @@ The game is also added to your applications menu as "Hookshot". That entry, and 
 launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
 update.
 
+On a Steam Deck or another PC with Steam, **Add to Steam** (in the launcher and when a build finishes) adds the game to
+Steam's library as a non-Steam game, for Game Mode and Steam Input. Close Steam first: Steam writes its own list over a
+change when it exits. From a terminal: `python3 -I builder/linux/steam_shortcut.py <game folder>`.
+
 The same AppImage also builds and starts the game without opening the window, for a machine you reach over SSH or for a
 script: see [Linux, the AppImage from the command line](#build-from-source).
 
@@ -857,6 +861,7 @@ Hookshot exists thanks to the work of many people:
 - **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround Ocarina of Time used before
   its fog and lighting were fixed.
 - **Mesa (NAK)**: the reference for Ampere's instruction encoding.
+- **[lethevimlet/oot-bc250](https://github.com/lethevimlet/oot-bc250)**: the Steam shortcut writer behind Add to Steam.
 - Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (NVIDIA
   DLSS, DLAA and Reflex, the exposure flicker and fog fixes, build speed, CI), madebyjordan (AMD FSR 4.1), N3oTraX (FSR 4 on
   Linux), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,
