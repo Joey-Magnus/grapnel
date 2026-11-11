@@ -1,0 +1,192 @@
+"""Which GPUs get which vendor workaround (gpu/vk/vk_vendor.h), on made-up devices, and where the renderer uses them.
+
+vendor_fixes() is compiled with the Vulkan headers and run on the properties of GPUs players have: NVIDIA's driver on
+Windows and Linux (and NVK on the same cards), AMD's Windows driver in its two branches (RDNA 1/2: "AMD proprietary
+shader compiler"; RDNA 3/4: LLPC), RADV, AMDVLK, Intel's Windows driver on an integrated GPU and on an Arc card, ANV,
+llvmpipe. Each fix must be on for the GPUs it is for and off for every other, and NVIDIA's driver must get none: that is
+what keeps the renderer on NVIDIA as it was. The RX_VK_ switches force each one either way.
+Then the source: the device's fixes are made from its properties at device creation, dynamic alpha to coverage is
+switched off with static_a2c, every pipeline build that takes a cache holds it for the build, and every read of the
+pipeline cache's data in play is inside the copy's gate.
+
+    python -I -B tests/test_vendor_fixes.py --headers <Vulkan-Headers/include> [--cxx g++]
+"""
+import argparse
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+
+ROOT = Path(__file__).resolve().parents[1]
+VK = ROOT / "gpu" / "vk"
+
+# name, vendor, driver id, device type, driverInfo -> pcache_apart, static_a2c
+DEVICES = [
+    ("RTX 3090, NVIDIA's Linux driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "580.105.08", "00"),
+    ("RTX 4070 laptop, NVIDIA's Windows driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "581.57", "00"),
+    ("GTX 1650, NVK", 0x10DE, "MESA_NVK", "DISCRETE_GPU", "Mesa 26.0.1", "00"),
+    ("RX 6700 XT, AMD's Windows driver (RDNA 2 branch)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU",
+     "26.10.1 (AMD proprietary shader compiler)", "00"),
+    ("RX 5700, AMD's Windows driver (RDNA 1 branch)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU",
+     "25.9.1 (AMD proprietary shader compiler)", "00"),
+    ("RX 9070 XT, AMD's Windows driver (LLPC)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC)", "00"),
+    ("RX 7600, AMD's Windows driver, no driverInfo", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "", "00"),
+    ("RX 580, RADV", 0x1002, "MESA_RADV", "DISCRETE_GPU", "Mesa 26.2.5", "00"),
+    ("Steam Deck, RADV", 0x1002, "MESA_RADV", "INTEGRATED_GPU", "Mesa 25.1.0", "00"),
+    ("RX 6800, AMDVLK", 0x1002, "AMD_OPEN_SOURCE", "DISCRETE_GPU", "2025.Q2.1 (LLPC)", "00"),
+    ("UHD Graphics, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7088", "11"),
+    ("Iris Xe, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7092", "11"),
+    ("Arc B580, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "DISCRETE_GPU", "101.8132", "10"),
+    ("Iris Xe, ANV", 0x8086, "INTEL_OPEN_SOURCE_MESA", "INTEGRATED_GPU", "Mesa 26.0.1", "00"),
+    ("llvmpipe", 0x10005, "MESA_LLVMPIPE", "CPU", "Mesa 26.0.1 (LLVM 20.1.8)", "00"),
+]
+FIELDS = ['pcache_apart', 'static_a2c']
+
+FIXTURE = r"""
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <string>
+#include "vk_vendor.h"
+using namespace mkwvk;
+static std::map<std::string, std::string> env;
+static const char* get(const char* name) {
+    auto it = env.find(name);
+    return it == env.end() ? nullptr : it->second.c_str();
+}
+static void print(const char* what, const VendorFixes& x) {
+    std::printf("%s %d%d\n", what, x.pcache_apart, x.static_a2c);
+}
+int main() {
+    struct D { const char* name; uint32_t vendor; VkDriverId driver; VkPhysicalDeviceType type; const char* info; };
+    const D devices[] = {
+@@DEVICES@@
+    };
+    for (const D& d : devices) {
+        VendorFacts f;
+        f.vendor_id = d.vendor, f.driver_id = d.driver, f.device_type = d.type, f.driver_info = d.info;
+        VendorFixes x = vendor_fixes(f);
+        print(d.name, x);
+        vendor_fixes_env(x, get);   // (no switch set: as it was)
+        print(d.name, x);
+        const char* names[] = {"RX_VK_PCACHE_APART", "RX_VK_DYN_A2C"};
+        for (const char* n : names)
+            for (const char* v : {"0", "1", ""}) {
+                env.clear();
+                env[n] = v;
+                VendorFixes y = vendor_fixes(f);
+                vendor_fixes_env(y, get);
+                std::printf("%s=%s ", n, v);
+                print(d.name, y);
+            }
+        env.clear();
+    }
+    return 0;
+}
+"""
+
+
+def cut(text, marker):
+    at = text.index(marker)
+    end = text.index("{", at) + 1
+    depth = 1
+    while depth:
+        depth += (text[end] == "{") - (text[end] == "}")
+        end += 1
+    return text[at:end]
+
+
+def check_source():
+    main = (VK / "vk_main.cpp").read_text(encoding="utf-8")
+    at = main.index("dev.fixes = vendor_fixes(facts);")
+    for text in ("vendor_fixes_env(dev.fixes,", "if (dev.fixes.static_a2c) eds3.extendedDynamicState3AlphaToCoverageEnable = VK_FALSE;",
+                 "dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;"):
+        if main.find(text, at) < 0:
+            raise SystemExit("FAIL: vk_main.cpp: %s not after the fixes are made" % text)
+    if main.index("dev.fixes = vendor_fixes(facts);") > main.index("vkCreateDevice(dev.physical, &ci"):
+        raise SystemExit("FAIL: the fixes are made after the device")
+    for field in ("vendor_id = p2.properties.vendorID", "driver_id = drv.driverID", "device_type = p2.properties.deviceType",
+                  "driver_info = drv.driverInfo"):
+        if "facts." + field not in main:
+            raise SystemExit("FAIL: vk_main.cpp does not fill facts.%s" % field)
+    draw = (VK / "vk_draw.cpp").read_text(encoding="utf-8")
+    # (a build into a cache holds it: guarded_graphics / guarded_compute are called only from apart_graphics / apart_compute)
+    calls = [m.start() for m in re.finditer(r"[^_\w](guarded_graphics|guarded_compute)\(", draw)]
+    apart = [cut(draw, "VkResult apart_graphics("), cut(draw, "VkResult apart_compute(")]
+    defs = 0
+    for at in calls:
+        line = draw[draw.rfind("\n", 0, at) + 1:draw.find("\n", at)]
+        if line.startswith(("VkResult guarded_", "__declspec(noinline) VkResult guarded_")):
+            defs += 1
+            continue
+        if not any(line.strip() in a for a in apart):
+            raise SystemExit("FAIL: a build outside apart_graphics / apart_compute: " + line.strip())
+    if defs != 4:
+        raise SystemExit("FAIL: expected the four definitions of guarded_graphics / guarded_compute, found %d" % defs)
+    for text in ("return create_cached(apart_graphics, ci, pl);", "return create_cached(apart_compute, ci, pl);",
+                 ": apart_graphics(cache, ci, pl);"):
+        if text not in draw:
+            raise SystemExit("FAIL: vk_draw.cpp lacks " + text)
+    if "if (!cache || !dev.fixes.pcache_apart) return false;" not in cut(draw, "bool cache_use_begin("):
+        raise SystemExit("FAIL: a build takes the lock on a driver that does not need it")
+    if "if (!dev.fixes.pcache_apart) return true;" not in cut(draw, "bool cache_copy_begin("):
+        raise SystemExit("FAIL: a save takes the lock on a driver that does not need it")
+    # (the reads of pcache's data in play: the save's inside its gated block, which ends the gate on the way out; the size the
+    # warm pass compares against between cache_copy_begin and cache_copy_end)
+    save = cut(draw, "void pipeline_cache_save(bool force) {")
+    gated = cut(save, "if (cache_copy_begin(force)) {")
+    if "struct End { ~End() { cache_copy_end(); } } end;" not in gated or \
+            save.count("vkGetPipelineCacheData(") != 2 or gated.count("vkGetPipelineCacheData(") != 2:
+        raise SystemExit("FAIL: pipeline_cache_save reads the cache's data outside the gate")
+    saved_now = cut(draw, "bool pcache_saved_now() {")
+    begin, read, end = (saved_now.index(t) for t in ("cache_copy_begin(true)", "vkGetPipelineCacheData(", "cache_copy_end();"))
+    if not begin < read < end or saved_now.count("vkGetPipelineCacheData(") != 1:
+        raise SystemExit("FAIL: pcache_saved_now reads the cache's data outside the gate")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--headers", type=Path, required=True)
+    parser.add_argument("--cxx", default="g++")
+    args = parser.parse_args()
+    check_source()
+    rows = ",\n".join('        {"%s", 0x%X, VK_DRIVER_ID_%s, VK_PHYSICAL_DEVICE_TYPE_%s, "%s"}' % (n, v, d, t, i)
+                      for n, v, d, t, i, _ in DEVICES)
+    with tempfile.TemporaryDirectory(prefix="vendor-fixes-") as tmp:
+        tmp = Path(tmp)
+        cpp, exe = tmp / "fixture.cpp", tmp / "fixture"
+        cpp.write_text(FIXTURE.replace("@@DEVICES@@", rows), encoding="utf-8")
+        r = subprocess.run([args.cxx, "-std=c++20", "-O1", "-Wall", "-Werror", "-I" + str(VK), "-I" + str(args.headers),
+                            str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=300)
+        if r.returncode:
+            print(r.stdout + r.stderr)
+            raise SystemExit("the fixture did not build")
+        out = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, check=True).stdout.splitlines()
+    per_device = 2 + len(FIELDS) * 3
+    if len(out) != per_device * len(DEVICES):
+        raise SystemExit("FAIL: %d lines" % len(out))
+    failures = []
+    for k, (name, _, _, _, _, want) in enumerate(DEVICES):
+        lines = out[k * per_device:(k + 1) * per_device]
+        for line in lines[:2]:
+            if line.split()[-1] != want:
+                failures.append("%s: %s, expected %s" % (name, line.split()[-1], want))
+        for i, line in enumerate(lines[2:]):
+            switch, value = ["RX_VK_PCACHE_APART", "RX_VK_DYN_A2C"][i // 3], ["0", "1", ""][i % 3]
+            got = list(line.split()[-1])
+            expect = list(want)
+            if value:
+                field = i // 3
+                expect[field] = ("1" if value == "1" else "0") if FIELDS[field] != "static_a2c" else ("0" if value == "1" else "1")
+            if got != expect:
+                failures.append("%s with %s=%s: %s, expected %s" % (name, switch, value, "".join(got), "".join(expect)))
+    if failures:
+        raise SystemExit("FAIL:\n  " + "\n  ".join(failures))
+    print("ok: %d devices, each fix on only where it is for, none on NVIDIA's driver; every switch forces its fix both ways"
+          % len(DEVICES))
+
+
+if __name__ == "__main__":
+    main()

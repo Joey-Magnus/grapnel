@@ -68,8 +68,24 @@ void logf(const char* fmt, ...) {
     if (std::strstr(line, "could not start pipeline cache save:")) ++start_errors;
 }
 
+// The copy's gate (vk_draw.cpp cache_copy_begin: the copy held apart from pipeline builds on the drivers that need it, vk_vendor.h
+// pcache_apart). gate_open false: builds kept it for the save's whole try; a forced save waits, so it always gets it.
+std::atomic<bool> gate_open{true}, gate_held{false};
+std::atomic<int> gate_tries{0}, gate_waits{0}, gate_ends{0};
+bool cache_copy_begin(bool wait) {
+    ++(wait ? gate_waits : gate_tries);
+    if (!wait && !gate_open) return false;
+    if (gate_held.exchange(true)) std::abort();   // (two copies at once)
+    return true;
+}
+void cache_copy_end() {
+    if (!gate_held.exchange(false)) std::abort();
+    ++gate_ends;
+}
+
 VkResult vkGetPipelineCacheData(int device, int cache, std::size_t* n, void* data) {
     if (device != dev.device || cache != pcache) std::abort();
+    if (!gate_held) std::abort();   // (every read of the cache's data inside the gate)
     if (!data) {
         ++queries;
         if (fault == QUERY_FAIL) return VK_ERROR_UNKNOWN;
@@ -250,9 +266,26 @@ int run(const std::string& name) {
         pipeline_cache_save(true);
         CHECK(copies == 2 && writes == 2 && replacements == 2 && pcache_saved_size == 96 + (64u << 20));
         CHECK(save_errors == 0 && start_errors == 0);
+    } else if (name == "put-off") {
+        gate_open = false;   // Pipelines were being built into the cache for the whole try.
+        pcache_built_since_save = 32;
+        pipeline_cache_save(false);
+        CHECK(wait_until(play_saves, 1));  // The play part all the same: its generation has no builds.
+        CHECK(gate_tries == 1 && gate_ends == 0 && queries == 0 && copies == 0 && writes == 0 && old_file());
+        CHECK(save_errors == 0 && start_errors == 0);
+        pipeline_cache_save(true);  // At exit: it waits for the builds, then copies.
+        CHECK(gate_waits == 1 && gate_ends == 1 && !gate_held && new_file() && replacements == 1);
+        gate_open = true;
+        cache_size = 96;
+        pcache_built_since_save = 32;
+        pipeline_cache_save(false);
+        CHECK(wait_until(replacements, 2));
+        pipeline_cache_save(true);  // After the worker: nothing new.
+        CHECK(gate_tries == 2 && gate_waits == 2 && gate_ends == 3 && !gate_held && new_file());
     } else {
         CHECK(false);
     }
+    CHECK(!gate_held);  // Never left held, whatever failed in between.
     std::printf("PASS: %s\n", name.c_str());
     return 0;
 }
