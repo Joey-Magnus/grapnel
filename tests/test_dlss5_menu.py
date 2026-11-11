@@ -20,12 +20,26 @@ def main():
     names = [name.strip() for name in names.split(',') if name.strip()]
     assert len(specs) == len(names) == len(expected) == 19
     assert {key: (int(lo), int(hi)) for key, lo, hi, _ in specs} == expected
+    defaults_assignment = next(node for node in adapter.body if isinstance(node, ast.Assign)
+                               and any(isinstance(target, ast.Name) and target.id == 'DEFAULT_SETTINGS' for target in node.targets))
+    python_defaults = ast.literal_eval(defaults_assignment.value)
+    assert set(python_defaults) == set(expected)
+    native_defaults = [int(value) for value in re.search(r'defaults\{\{(.*?)\}\}', header, re.S).group(1).split(',')]
+    assert len(native_defaults) == len(specs)
+    kinds = {ast.literal_eval(key): value.elts[2].id for key, value in zip(assignment.value.keys, assignment.value.values)}
+    assert native_defaults == [round(python_defaults[key] * (100 if kinds[key] == 'float' else 1)) for key, *_ in specs]
+    assert 'preferences = dict(DEFAULT_SETTINGS)' in (ROOT / 'scripts/dlss5_api.py').read_text()
     rows = re.findall(r'\{TAB_GRAPHICS, "[^"]+", &dlss5_control.values\[d5::(\w+)\], (-?\d+), (\d+),.*?nullptr, false, true\}', menu, re.S)
     assert len(rows) == 19, 'All settings must be native rows, without restart or native preset ownership'
     actual = {name: (int(lo), int(hi)) for name, lo, hi in rows}
     assert actual == {name: (int(spec[1]), int(spec[2])) for name, spec in zip(names, specs)}
     assert '"DLSS5 enhancement", nullptr' in menu
     assert '"Advanced enhancement", &dlss5_control.advanced' in menu
+    assert '"Reset DLSS5 settings", nullptr, 0, 0, 0, nullptr' in menu
+    assert 'if (dlss5_reset_press(r, press[7], press[5], mine))' in menu
+    assert 'const bool ready = dlss5_control.can_reset();' in menu
+    assert 'choice_cell(c, va, vb, label, selected, false, false, !ready);' in menu
+
     assert 'dlss5_control.configured() && (setting<0 || !d5::specs[setting].advanced || dlss5_control.advanced)' in menu
     assert 'if(dlss5_control.setting(value)>=0)return !dlss5_control.available();' in menu
     save = menu[menu.index('void save() {'):menu.index('void set_row(')]

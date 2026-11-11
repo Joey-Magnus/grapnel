@@ -27,6 +27,10 @@ inline constexpr std::array<Spec, Count> specs{{
     {"localtone",0,400,true},{"localstructure",0,400,true},{"skinstructure",-100,400,true},
     {"automask",0,1,true},{"style",0,2,false},{"preset",0,15,false},{"workingscale",25,100,false},
     {"bypass",0,1,true},{"transfer",0,2,true},{"mvecquality",0,2,true},{"mvecpixels",0,3,true}}};
+// ShmInitDefaults plus the adapter's native-detail startup defaults, in UI
+// units. test_dlss5_menu.py checks every value against Python DEFAULT_SETTINGS.
+inline constexpr std::array<int, Count> defaults{{
+    1,1,0,50,100,100,0,100,100,100,-100,1,0,0,50,0,2,1,2}};
 struct State {
     std::array<int, Count> values{};
     uint64_t ack = 0;
@@ -76,13 +80,14 @@ inline State parse(std::string_view text) {
     state.valid=true;
     return state;
 }
-inline std::string request(uint64_t sequence, const std::array<int,Count>& values) {
-    if (!sequence) return {};
+inline std::string request(uint64_t sequence, const std::array<int,Count>& values, bool reset=false) {
+    if (!sequence || (reset && values!=defaults)) return {};
     std::string text="protocol=1\nsequence="+std::to_string(sequence)+"\n";
     for(int i=0;i<Count;++i) {
         if(values[i]<specs[i].lo || values[i]>specs[i].hi)return {};
         text+=std::string(specs[i].key)+"="+std::to_string(values[i])+"\n";
     }
+    if(reset)text+="reset=1\n";
     return text;
 }
 inline bool replace(const std::filesystem::path& path, const std::string& text) {
@@ -133,6 +138,13 @@ class Client {
             next=std::chrono::steady_clock::now()+std::chrono::milliseconds(500);
         }
     }
+    bool submit(const std::array<int,Count>& next, bool reset=false) {
+        if(!available() || sequence_==UINT64_MAX)return false;
+        const auto text=request(sequence_+1,next,reset);
+        if(text.empty())return false;
+        {std::lock_guard lock(mutex_);outgoing_=text;++sequence_;values=next;}
+        wake_.notify_one();return true;
+    }
 public:
     std::array<int,Count> values{};
     State state;
@@ -169,13 +181,12 @@ public:
         return true;
     }
     bool set(int index,int value) {
-        if(index<0 || index>=Count || !available() || sequence_==UINT64_MAX)return false;
+        if(index<0 || index>=Count)return false;
         auto next=values;next[index]=value;
-        const auto text=request(sequence_+1,next);
-        if(text.empty())return false;
-        {std::lock_guard lock(mutex_);outgoing_=text;++sequence_;values=next;}
-        wake_.notify_one();return true;
+        return submit(next);
     }
+    bool can_reset() const {return available() && !pending() && sequence_!=UINT64_MAX;}
+    bool reset() {return can_reset() && submit(defaults,true);}
     const char* status() const {
         if(!state.valid)return "Connecting...";
         if(!state.available)return "Unavailable";

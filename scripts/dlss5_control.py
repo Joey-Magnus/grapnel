@@ -51,8 +51,11 @@ def atomic_text(path, text):
 
 
 class ControlBridge:
-    def __init__(self, session, settings, validate, directory):
+    def __init__(self, session, settings, validate, directory, *, defaults):
         self.session, self.settings, self.validate = session, settings, validate
+        if set(defaults) != set(settings):
+            raise ValueError('Defaults must cover every external setting')
+        self.defaults = {key: validate(key, value) for key, value in defaults.items()}
         self.directory = Path(directory)
         self.directory.mkdir(mode=0o700)
         self.values = {key: int(bounds[0] * (100 if bounds[2] is float else 1))
@@ -111,17 +114,25 @@ class ControlBridge:
         # can revert to the published actual state instead of waiting forever.
         self.ack = sequence
         request = fields(text)
-        if set(request) != {'protocol', 'sequence', *self.settings} or request['protocol'] != 1:
+        reset = request.get('reset')
+        expected = {'protocol', 'sequence', *self.settings}
+        if reset is not None:
+            expected.add('reset')
+        if set(request) != expected or request['protocol'] != 1 or reset not in (None, 1):
             raise ValueError('Unsupported or incomplete control request')
         desired = {}
         for key, (_, _, kind) in self.settings.items():
             desired[key] = self.validate(key, request[key] / (100 if kind is float else 1))
+        if reset is not None and desired != self.defaults:
+            raise ValueError('Reset requires the complete factory settings snapshot')
         self._refresh()
         if not self.available:
             raise RuntimeError('External helper is unavailable')
         for key, value in desired.items():
             scale = 100 if self.settings[key][2] is float else 1
-            if round(value * scale) != self.values[key]:
+            # Reset is exact, including sub-cent values that the menu rounds
+            # for display. Ordinary edits still preserve untouched precision.
+            if reset is not None or round(value * scale) != self.values[key]:
                 self._call('set', key, str(value))
         # Read actual settings again; failed partial application is reported, not
         # mistaken for an atomic external-ABI update or persisted as complete.

@@ -50,7 +50,8 @@ class ControlTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.session = Session(self.root)
-        self.bridge = control.ControlBridge(self.session, api.SETTINGS, api.setting_value, self.root / 'control')
+        self.bridge = control.ControlBridge(self.session, api.SETTINGS, api.setting_value, self.root / 'control',
+                                            defaults=api.DEFAULT_SETTINGS)
         self.bridge._refresh(); self.bridge._publish()
         self.addCleanup(self.temp.cleanup)
 
@@ -75,6 +76,43 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.state()['error'], 0)
         self.assertEqual(len(self.state()), len(api.SETTINGS) + 6)
         self.assertEqual(sum(call[0] == 'set' for call in self.session.calls), 3)
+
+    def test_factory_reset_applies_all_settings_and_persists_one_request(self):
+        # Every setting starts away from its default, including model rebuild
+        # controls. The real bridge receives the complete native reset snapshot.
+        for key, (low, high, kind) in api.SETTINGS.items():
+            self.session.values[key] = kind(high if api.DEFAULT_SETTINGS[key] != high else low)
+        self.bridge._refresh()
+        defaults = {key: round(value * (100 if api.SETTINGS[key][2] is float else 1))
+                    for key, value in api.DEFAULT_SETTINGS.items()}
+        self.request(1, reset=1, **defaults)
+        self.bridge.process_once()
+        self.assertEqual(self.state()['ack'], 1)
+        self.assertEqual(self.state()['error'], 0)
+        self.assertEqual(self.session.values, api.DEFAULT_SETTINGS)
+        self.assertEqual(json.loads((self.root / 'preferences.json').read_text()), api.DEFAULT_SETTINGS)
+        self.assertEqual(sum(call[0] == 'set' for call in self.session.calls), len(api.SETTINGS))
+        # The saved reset is also a valid complete startup preference snapshot.
+        for key, value in json.loads((self.root / 'preferences.json').read_text()).items():
+            self.assertEqual(api.setting_value(key, value), api.DEFAULT_SETTINGS[key])
+
+    def test_factory_reset_discards_subcent_precision_and_rejects_other_snapshots(self):
+        self.session.values.update(api.DEFAULT_SETTINGS)
+        self.session.values['detail'] = 1.004  # displays the default 100%, but is not exactly 1.0
+        self.bridge._refresh()
+        defaults = {key: round(value * (100 if api.SETTINGS[key][2] is float else 1))
+                    for key, value in api.DEFAULT_SETTINGS.items()}
+        self.request(1, reset=1, **defaults); self.bridge.process_once()
+        self.assertEqual(self.session.values['detail'], 1.0)
+        self.assertEqual(json.loads((self.root / 'preferences.json').read_text()), api.DEFAULT_SETTINGS)
+        calls = list(self.session.calls)
+        for sequence, bad in enumerate((dict(defaults, detail=105, reset=1), dict(defaults, reset=0)), 2):
+            self.request(sequence, **bad); self.bridge.process_once()
+            self.assertEqual(self.state()['ack'], sequence)
+            self.assertEqual(self.state()['error'], 1)
+        self.assertEqual([call for call in self.session.calls if call[0] == 'set'],
+                         [call for call in calls if call[0] == 'set'])
+        self.assertEqual(json.loads((self.root / 'preferences.json').read_text()), api.DEFAULT_SETTINGS)
 
     def test_full_overwrite_preserves_rapid_changes_to_different_rows(self):
         self.request(1, detail=120)

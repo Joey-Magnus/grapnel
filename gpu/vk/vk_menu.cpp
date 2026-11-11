@@ -88,9 +88,17 @@ struct Row {
     signed char cheat = -1;   // (a debug tool, on the Debug tab with the tools on: its index in the cheat_ tables, -1 none)
     bool heading = false;     // (a section's title on its tab, not a row: the selection steps over it)
 };
+bool dlss5_reset_row(const Row& row) { return !row.value && !strcmp(row.name,"Reset DLSS5 settings"); }
+// Confirm includes Enter, the controller's confirm button and a row click.
+// Left/right never activate an action; unavailable/pending requests do nothing.
+bool dlss5_reset_press(const Row& row, bool confirm, bool back, bool focused) {
+    if(!dlss5_reset_row(row))return false;
+    if(confirm && !back && focused)dlss5_control.reset();
+    return true;
+}
 bool dlss5_row(const Row& row) {
     return dlss5_control.setting(row.value)>=0 || row.value==&dlss5_control.status_value ||
-           row.value==&dlss5_control.advanced || !strcmp(row.name,"DLSS5 enhancement");
+           row.value==&dlss5_control.advanced || dlss5_reset_row(row) || !strcmp(row.name,"DLSS5 enhancement");
 }
 /// A row's hints from a table, the value lo first (nullptr: none for that value)
 const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
@@ -814,6 +822,9 @@ Row rows[] = {
      "Compares the original picture with the enhanced result.", nullptr, false, true},
     {TAB_GRAPHICS, "Comparison split", &dlss5_control.values[d5::CompareSplit], 0, 100, 5, tx_percent,
      "Where the comparison divides the original and enhanced picture.", nullptr, false, true},
+    {TAB_GRAPHICS, "Reset DLSS5 settings", nullptr, 0, 0, 0, nullptr,
+     "Restores all 19 enhancement settings to their defaults and saves them. Other game settings stay as they are. "
+     "The model may briefly rebuild. Activate with Enter, the confirm button or a click.", nullptr, false, true},
     {TAB_GRAPHICS, "Advanced enhancement", &dlss5_control.advanced, 0, 1, 1, tx_onoff,
      "Shows model tone, masking, composition and motion-estimation controls.", nullptr, false, true},
     {TAB_GRAPHICS, "Apply model result", &dlss5_control.values[d5::ApplyModel], 0, 1, 1, tx_onoff,
@@ -1976,7 +1987,7 @@ void draw_options(ui::Ctx& c) {
     const bool confirms = &selr == &rows[kRestartRow] || &selr == &rows[kQuitRow];
     ui::Prompt prompt_list[5] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
     int prompts_n = cur_tab == TAB_MOTION ? 3 : 4;
-    if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
+    if (!selr.value) prompt_list[1] = {ui::kConfirm, dlss5_reset_row(selr) ? "Reset" : confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
     if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
     if (selr.cheat >= 0) {   // (a debug tool: Change when Left and Right do something, then what confirm does)
         prompts_n = 1;
@@ -2030,6 +2041,10 @@ void draw_options(ui::Ctx& c) {
             halves_cell(c, va, vb, "Off", "On", tool == "On", selected, false);
         } else if (r.cheat >= 0 && !tool.empty()) {   // (a debug tool with a value: arrows when Left and Right choose it)
             choice_cell(c, va, vb, tool, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat));
+        } else if (dlss5_reset_row(r)) {
+            const bool ready = dlss5_control.can_reset();
+            const char* label = ready ? "Reset" : dlss5_control.pending() ? "Applying..." : "Unavailable";
+            choice_cell(c, va, vb, label, selected, false, false, !ready);
         } else if (!r.value) {   // (a page, or Restart and Quit: Confirm until the second press)
             if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
             else {
@@ -3261,7 +3276,9 @@ void menu_tick() {
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
         const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
         if (pending && (pending != &r || !mine)) pending = nullptr, changed = true;
-        if (press[7] && confirm_selected) {
+        if (dlss5_reset_press(r, press[7], press[5], mine)) {
+            if (press[7]) changed = true;
+        } else if (press[7] && confirm_selected) {
             if (mine && !press[5]) {
                 if (pending != &r) {
                     pending = &r, changed = true;

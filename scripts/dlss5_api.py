@@ -41,6 +41,16 @@ SETTINGS = {'enabled': (0, 1, int), 'applymodel': (0, 1, int),
             'mvecquality': (0, 2, int), 'mvecpixels': (0, 3, int)}
 
 
+# External ShmInitDefaults, with this adapter's native-detail composition
+# defaults (50% model resolution, bypass off, native + edit transfer).
+# Keep gpu/vk/dlss5_controls.h synchronized; test_dlss5_menu.py compares them.
+DEFAULT_SETTINGS = {'enabled': 1, 'applymodel': 1, 'compare': 0, 'comparesplit': .5,
+                    'detail': 1., 'colour': 1., 'sharpness': 0., 'intensity': 1.,
+                    'localtone': 1., 'localstructure': 1., 'skinstructure': -1.,
+                    'automask': 1, 'style': 0, 'preset': 0, 'workingscale': .5,
+                    'bypass': 0, 'transfer': 2, 'mvecquality': 1, 'mvecpixels': 2}
+
+
 def filesystem_type(fd):
     # Linux statfs begins with a native long. Leave ample room for the complete
     # structure without depending on the host architecture's remaining fields.
@@ -228,7 +238,7 @@ def run(base, command, preferences_path=None):
             # Keep native detail when the model works below presentation resolution.
             # Upstream's raw-answer default otherwise replaces the frame with an
             # enlarged low-resolution image, even where the model changed nothing.
-            preferences = dict(workingscale=.5, bypass=0, transfer=2)
+            preferences = dict(DEFAULT_SETTINGS)
             path = Path(preferences_path).resolve() if preferences_path is not None else base / 'preferences.json'
             if preferences_path is not None and not path.is_file():
                 raise ValueError(f'The requested preferences file does not exist: {path}')
@@ -275,7 +285,8 @@ def run(base, command, preferences_path=None):
                 spec = importlib.util.spec_from_file_location('hookshot_dlss5_control', Path(__file__).with_name('dlss5_control.py'))
                 controls = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(controls)
-                bridge = controls.ControlBridge(session, SETTINGS, setting_value, run_dir / 'control').start()
+                bridge = controls.ControlBridge(session, SETTINGS, setting_value, run_dir / 'control',
+                                                defaults=DEFAULT_SETTINGS).start()
                 target = subprocess.Popen(command, env=layer_environment(os.environ, base, run_dir, shm))
                 info.update(target_pid=target.pid, target_start_ticks=process_stamp(target.pid))
                 temporary = session_path.with_suffix('.tmp')
