@@ -254,7 +254,7 @@ use and cause stalls when the card runs out of headroom. To undo it, remove that
 By default, press <kbd>Insert</kbd> or <kbd>F1</kbd> in game. On a controller, press Home or Select and Start together; on
 a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>.
 The same keys close it, and so does <kbd>Esc</kbd>. <kbd>F1</kbd> always works; **Controls → Menu shortcut** can leave
-<kbd>Insert</kbd> free for another overlay. The menu has four tabs, Graphics, Gameplay, Controls and Debug:
+<kbd>Insert</kbd> free for another overlay. The menu has six tabs, Graphics, Display, Audio, Gameplay, Controls and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
@@ -271,7 +271,7 @@ drawn. It is never copied anywhere, and Hookshot does not include it. Without it
 Libertinus, which Hookshot includes.
 
 The rows marked "after a restart" below are read when the game starts. While one is changed, it is tagged "After
-restart" and the help on the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
+restart" and the help on the Graphics, Display and Debug tabs lists it; closing the menu then asks whether to restart now. **Later** keeps
 the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your
 choices and starts the game again, so progress since your last save is lost.
 
@@ -279,8 +279,10 @@ A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-
 have them, the DLSS model where DLSS does not run. HDR paper white and
 HDR peak brightness show only while HDR is on.
 
-The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame generation and latency, Screen,
-HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The table lists them in that order.
+The Graphics tab is how the picture is made, its rows under section titles: Resolution and upscaling, Frame generation
+and latency, Detail, and GPU and memory (last: the rows to change when something is wrong). The Display tab is how the
+finished picture gets to the screen and what is drawn over it: Screen, HDR and Overlays. The table lists them in that
+order.
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
@@ -296,22 +298,22 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS, Uncapped (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
-| | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
+| | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
+| | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
+| | Robust buffers | Auto, Off, On (after a restart) | Auto |
+| Display | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
 | | V-Sync | Auto, On, Off | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Ultrawide | Off (16:9), Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | Off (16:9) |
 | | HDR | Off, Expanded, Native (the game's) | Off |
 | | HDR paper white | 80 to 400 nits (while HDR is on) | 200 nits |
 | | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
-| | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
-| | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
-| | Robust buffers | Auto, Off, On (after a restart) | Auto |
+| | FPS counter | Off, On | Off |
+| | Menu size | Small, Medium, Large | Medium |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
-| Gameplay | FPS counter | Off, On | Off |
-| | Menu size | Small, Medium, Large | Medium |
-| | Game speed | Per frame, Real time | Real time |
+| Gameplay | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
 | | Microphone | Off, Default, or each microphone by name | Default |
