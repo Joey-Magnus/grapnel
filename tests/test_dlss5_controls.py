@@ -1,5 +1,6 @@
 """Bounded native DLSS5 settings protocol, pending edits and worker-only I/O."""
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -28,7 +29,9 @@ template<class F>void wait_for(F action){
  while(!action()){CHECK(std::chrono::steady_clock::now()<until);std::this_thread::sleep_for(std::chrono::milliseconds(10));}
 }
 int main(int argc,char**argv){
- CHECK(argc==2);std::filesystem::path dir(reinterpret_cast<const char8_t*>(argv[1]));
+ CHECK(argc==2);std::string encoded=argv[1],directory;
+ for(size_t at=0;at<encoded.size();at+=2)directory+=char(std::stoi(encoded.substr(at,2),nullptr,16));
+ std::filesystem::path dir(reinterpret_cast<const char8_t*>(directory.c_str()));
  std::array<int,Count> values{};for(int i=0;i<Count;++i)values[i]=specs[i].lo;
  values[Detail]=100;values[WorkingScale]=50;
  auto text=state_text(7,values);auto parsed=parse(text);
@@ -41,7 +44,7 @@ int main(int argc,char**argv){
  CHECK(replace(dir/"state",text));
  Client absent;CHECK(!absent.configured() && !absent.tick(true));
  Client relative("relative/path");CHECK(!relative.configured());
- Client client(argv[1]);CHECK(client.configured());CHECK(!client.set(Enabled,1));
+ Client client(directory.c_str());CHECK(client.configured());CHECK(!client.set(Enabled,1));
  wait_for([&]{client.tick(true);return client.available();});
  CHECK(client.values==values && !client.pending());
  CHECK(client.set(Enabled,1));CHECK(client.set(Colour,123));CHECK(client.pending());
@@ -65,11 +68,18 @@ int main(int argc,char**argv){
 }
 '''
     with tempfile.TemporaryDirectory(prefix="dlss5 native ü ") as temporary:
-        path=Path(temporary);cpp=path/"fixture.cpp";exe=path/"fixture"
+        path=Path(temporary);cpp=path/"fixture.cpp";exe=path/("fixture.exe" if os.name=="nt" else "fixture")
         cpp.write_text(fixture)
-        subprocess.run([args.cxx,"-std=c++20","-O1","-pthread","-Wall","-Wextra","-Werror",
-                        "-I"+str(ROOT/"gpu/vk"),str(cpp),"-o",str(exe)],check=True)
-        subprocess.run([str(exe),str(path)],check=True,timeout=10)
+        if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
+            command=[args.cxx,"/nologo","/std:c++20","/EHsc","/I"+str(ROOT/"gpu/vk"),
+                     str(cpp),"/Fo"+str(path/"fixture.obj"),"/Fe"+str(exe)]
+        else:
+            command=[args.cxx,"-std=c++20","-O1","-pthread","-Wall","-Wextra","-Werror",
+                     "-I"+str(ROOT/"gpu/vk"),str(cpp),"-o",str(exe)]
+        subprocess.run(command,cwd=path,check=True)
+        # ASCII transport avoids the Windows CRT's narrow argv code page, while
+        # the production client still receives the original UTF-8 directory.
+        subprocess.run([str(exe),str(path).encode("utf-8").hex()],check=True,timeout=10)
 
 
 if __name__=="__main__":main()
