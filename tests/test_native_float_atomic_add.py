@@ -1,4 +1,5 @@
-"""A float add to a storage buffer is one OpAtomicFAddEXT where the GPU has it, and the compare-exchange loop elsewhere.
+"""A float add to a storage buffer is one OpAtomicFAddEXT where the GPU has it and it is wanted (by default with NVIDIA's
+driver only), and the compare-exchange loop elsewhere.
 
 The game's RED/ATOM.ADD.F32 were always a compare-exchange loop (f32_add_cas), and every such loop gives up after
 CAS_LOOP_MAX_TRIES attempts (issue 17's ceiling): when more invocations add to one word than that, the ones that give
@@ -9,9 +10,10 @@ DefineStorageBuffers' decision, the loop it builds otherwise, and EmitStorageAto
 of the back end into a Sirit fixture: a compute shader that adds 1.0 to a word, made with the device's float add, without
 it, and without descriptor aliasing (no f32 view to add through). Each must pass spirv-val; the first must be one
 OpAtomicFAddEXT and no compare-exchange, the others the loop and no float-add capability. The device's half (the
-extension asked for, only that feature on, RX_VK_NATIVE_FADD=0, the profile and the program cache's stamp) and the
-global-address fallback are checked in the source. The switch's values (native_fadd_wanted, vk_main.cpp) are compiled
-alone against a table: #2042's rule, so =on is on and =off, =false, =no and empty are off. Nothing runs on a GPU.
+extension asked for only when wanted, only that feature on, the profile and the program cache's stamp) and the
+global-address fallback are checked in the source. Whether it is wanted (native_fadd_wanted, vk_main.cpp) is compiled
+alone against a table: unset, NVIDIA's driver alone (not RADV, AMD's, Intel's or NVK); set, RX_VK_NATIVE_FADD by #2042's
+rule on any driver, so =on is on and =off, =false, =no and empty are off. Nothing runs on a GPU.
 
     python -I -B tests/test_native_float_atomic_add.py --headers <SPIRV-Headers/include> [--cxx g++] [--spirv-val spirv-val]
 """
@@ -182,11 +184,13 @@ def check_source():
     main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
     device = cut(main_cpp, "bool create_device() {", "vk_main.cpp")
     for piece, why in (
-        ("if (!fadd_off) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);",
-         "VK_EXT_shader_atomic_float is not asked for, or RX_VK_NATIVE_FADD=0 still enables it"),
+        ("if (fadd_wanted) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);",
+         "VK_EXT_shader_atomic_float is not asked for, or is asked for where the native add is not wanted"),
         ('getenv("RX_VK_NATIVE_FADD")', "RX_VK_NATIVE_FADD is not read"),
-        ("const bool fadd_off = !native_fadd_wanted(fadd_env);",
-         "RX_VK_NATIVE_FADD is not read through native_fadd_wanted (the switches' rule)"),
+        ("const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID);",
+         "the native add is not decided by native_fadd_wanted from the switch and the driver"),
+        ("vkGetPhysicalDeviceProperties2(dev.physical, &p2);\n    }\n    const bool fadd_wanted",
+         "the driver is not asked who it is before the native add is decided"),
         ("if (atomic_float) *tail = &afloat, tail = &afloat.pNext;", "the atomic float features are not queried"),
         ("dev.float_atomic_add = atomic_float && afloat.shaderBufferFloat32AtomicAdd;",
          "the native add does not follow shaderBufferFloat32AtomicAdd"),
@@ -213,20 +217,30 @@ def check_source():
         raise SystemExit("FAIL: programs made with OpAtomicFAddEXT stay in the program cache for a GPU without it")
 
 
-# RX_VK_NATIVE_FADD's value (None: unset) and whether the float add is then asked to be the GPU's own (#2042's rule:
-# hookshot_env.h env_value_off)
-SWITCH_CASES = [(None, 1), ("1", 1), ("on", 1), ("yes", 1), ("true", 1), ("2", 1), ("0", 0), (" 0 ", 0), ("off", 0),
-                ("OFF", 0), ("false", 0), ("no", 0), ("", 0)]
+# RX_VK_NATIVE_FADD's value (None: unset), the driver (VkDriverId: the Vulkan specification's numbers), and whether the
+# float add is then asked to be the GPU's own: unset, NVIDIA's driver alone; set, #2042's rule (hookshot_env.h
+# env_value_off) whatever the driver
+DRIVERS = {"AMD_PROPRIETARY": 1, "MESA_RADV": 3, "NVIDIA_PROPRIETARY": 4, "INTEL_PROPRIETARY_WINDOWS": 5,
+           "INTEL_OPEN_SOURCE_MESA": 6, "MESA_NVK": 24}
+SWITCH_CASES = ([(None, "NVIDIA_PROPRIETARY", 1)] +
+                [(None, d, 0) for d in DRIVERS if d != "NVIDIA_PROPRIETARY"] +
+                [(v, d, 1) for v in ("1", "on", "yes", "true", "2") for d in ("MESA_RADV", "NVIDIA_PROPRIETARY")] +
+                [(v, "AMD_PROPRIETARY", 1) for v in ("1", "on")] + [("1", "INTEL_OPEN_SOURCE_MESA", 1)] +
+                [(v, "NVIDIA_PROPRIETARY", 0) for v in ("0", " 0 ", "off", "OFF", "false", "no", "")] +
+                [("0", "MESA_RADV", 0), ("off", "AMD_PROPRIETARY", 0)])
 SWITCH_FIXTURE = r"""
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+enum VkDriverId { @@DRIVERS@@ };
 @@WANTED@@
 int main(int argc, char** argv) {
-    for (int i = 1; i + 1 < argc; i += 2) {   // (argv: value or -unset, then 1 native or 0 the loop, ...)
+    for (int i = 1; i + 2 < argc; i += 3) {   // (argv: value or -unset, the driver's number, 1 native or 0 the loop, ...)
         const char* v = strcmp(argv[i], "-unset") ? argv[i] : nullptr;
-        if (native_fadd_wanted(v) != (atoi(argv[i + 1]) != 0)) {
-            printf("FAIL: RX_VK_NATIVE_FADD=[%s]: %s\n", v ? v : "(unset)", native_fadd_wanted(v) ? "native" : "the loop");
+        const VkDriverId driver = static_cast<VkDriverId>(atoi(argv[i + 1]));
+        if (native_fadd_wanted(v, driver) != (atoi(argv[i + 2]) != 0)) {
+            printf("FAIL: RX_VK_NATIVE_FADD=[%s], driver %d: %s\n", v ? v : "(unset)", static_cast<int>(driver),
+                   native_fadd_wanted(v, driver) ? "native" : "the loop");
             return 1;
         }
     }
@@ -239,20 +253,23 @@ def check_switch(cxx, tmp):
     main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
     wanted = cut(main_cpp, "static bool native_fadd_wanted(", "vk_main.cpp")
     cpp, exe = tmp / "switch.cpp", tmp / "switch"
-    cpp.write_text(SWITCH_FIXTURE.replace("@@WANTED@@", wanted), encoding="utf-8")
+    drivers = ", ".join("VK_DRIVER_ID_%s = %d" % kv for kv in DRIVERS.items())
+    cpp.write_text(SWITCH_FIXTURE.replace("@@DRIVERS@@", drivers).replace("@@WANTED@@", wanted), encoding="utf-8")
     r = subprocess.run([cxx, "-std=c++20", "-include", str(VK / "compat" / "hookshot_env.h"), "-Wall", "-Wextra", "-Werror",
                         str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
     if r.returncode:
         print(r.stdout + r.stderr)
         raise SystemExit("FAIL: native_fadd_wanted did not build alone")
     argv = []
-    for value, want in SWITCH_CASES:
-        argv += ["-unset" if value is None else value, str(want)]
+    for value, driver, want in SWITCH_CASES:
+        argv += ["-unset" if value is None else value, str(DRIVERS[driver]), str(want)]
     r = subprocess.run([str(exe), *argv], capture_output=True, text=True, timeout=30)
     if r.returncode:
         print(r.stdout + r.stderr)
-        raise SystemExit("FAIL: RX_VK_NATIVE_FADD is not read by the switches' rule")
-    print("switch: %d values of RX_VK_NATIVE_FADD as the switches' rule reads them" % len(SWITCH_CASES))
+        raise SystemExit("FAIL: the native float add is not wanted as it should be (NVIDIA's driver by default, "
+                         "RX_VK_NATIVE_FADD by the switches' rule)")
+    print("switch: %d cases: unset, NVIDIA's driver alone; RX_VK_NATIVE_FADD by the switches' rule on any driver"
+          % len(SWITCH_CASES))
 
 
 def main():
