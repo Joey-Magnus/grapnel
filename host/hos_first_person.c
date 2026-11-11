@@ -25,8 +25,9 @@
 
    Known limits, on purpose for a first version: the view keeps the game's camera angles, so it inherits their downward
    tilt at rest and their swing when the boom shortens against a wall; and the eye is not checked against walls (the game
-   still collides its third-person one). The head is the actor's origin (+796, host/hos_main.c) plus HOS_FP_UP metres up
-   (1.5: adult Link's eyes; a child's are nearer 1) and HOS_FP_FORWARD metres along the view (0.15, past the face). */
+   still collides its third-person one). The head is the actor's origin (+796, host/hos_main.c) plus so many metres up
+   and so many along the view: the menu's First person height (0.5 to 2.5, 1.5: adult Link's eyes; a child's are nearer
+   1) and First person offset (0 to 1, 0.15: past the face), live; HOS_FP_UP and HOS_FP_FORWARD win for a run. */
 #include "hos.h"
 #include "../gpu/vk/vk_api.h"
 #include <math.h>
@@ -74,7 +75,7 @@ void hos_first_person_player(uint64_t actor, const float position[3]) {
     ReleaseSRWLockExclusive(&fp_lock);
 }
 
-/* the menu's row (option 46) or HOS_FIRST_PERSON, as the mouse camera's own switch */
+/* the menu's row (option 47) or HOS_FIRST_PERSON, as the mouse camera's own switch */
 static int fp_on(void) {
     static const char *env;
     static int looked;
@@ -82,25 +83,40 @@ static int fp_on(void) {
     return env ? atoi(env) != 0 : rx_option(HOS_OPT_FIRST_PERSON, 0);
 }
 
-/* the head's height over Link's origin and its offset along the view, in metres (HOS_FP_UP, HOS_FP_FORWARD) */
+/* the head's height over Link's origin and its offset along the view, in metres: the menu's rows (First person height
+   and First person offset, in hundredths of a metre), read at every view so a slider shows at once, as the Camera speed
+   row's own does at each present (host/nn_vi.c hos_camera_scale); HOS_FP_UP or HOS_FP_FORWARD, when set to a value,
+   wins for the run. A row out of its range, as without the renderer's menu, is its default */
 static double fp_up(void) {
-    static double v = -1;
-    if (v < 0) {
-        const char *e = getenv("HOS_FP_UP");
-        v = e ? atof(e) : 1.5;
-        if (!(v > 0.0 && v < 100.0)) v = 1.5;   /* (and NaN) */
+    static const char *env;
+    static double forced = -1.0;
+    static int looked;
+    if (!looked) {
+        looked = 1, env = getenv("HOS_FP_UP");
+        if (env && *env) {
+            forced = atof(env);
+            if (!(forced > 0.0 && forced < 100.0)) forced = -1.0;   /* (and NaN: not a value) */
+        }
     }
-    return v;
+    if (forced >= 0.0) return forced;
+    const int row = rx_option(HOS_OPT_FP_HEIGHT, 150);
+    return (row >= 50 && row <= 250 ? row : 150) / 100.0;
 }
 
 static double fp_forward(void) {
-    static double v = -1;
-    if (v < 0) {
-        const char *e = getenv("HOS_FP_FORWARD");
-        v = e ? atof(e) : 0.15;
-        if (!(v >= 0.0 && v < 10.0)) v = 0.15;
+    static const char *env;
+    static double forced = -1.0;
+    static int looked;
+    if (!looked) {
+        looked = 1, env = getenv("HOS_FP_FORWARD");
+        if (env && *env) {
+            forced = atof(env);
+            if (!(forced >= 0.0 && forced < 10.0)) forced = -1.0;
+        }
     }
-    return v;
+    if (forced >= 0.0) return forced;
+    const int row = rx_option(HOS_OPT_FP_OFFSET, 15);
+    return (row >= 0 && row <= 100 ? row : 15) / 100.0;
 }
 
 /* an event (a cutscene) playing: the EventMgr singleton's Main sequence, the expression the teleport check logs

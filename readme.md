@@ -330,6 +330,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Mouse camera | As the stick, Native | As the stick |
 | | Disable camera centering | Off, On | Off |
 | | First person | Off, On | Off |
+| | First person height | 0.50 m to 2.50 m, in steps of 0.05 | 1.50 m |
+| | First person offset | 0.00 m to 1.00 m, in steps of 0.05 | 0.15 m |
 | | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
 | | Invert mouse vertical | Off, On | Off |
 | | Invert camera X | Off, On | Off |
@@ -468,8 +470,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   Native) or the right stick as in third person. The game's own camera takes over for aiming, shops and cutscenes, and
   may for targeting, climbing and swimming — the view steps out to third person and back, and a camera recentering (the
   Z tap) holds the view briefly rather than pop. The view keeps the game's camera angles, so it looks down at rest as
-  the game's camera does, and the eye itself is not checked against walls. `HOS_FIRST_PERSON=1` turns it on for one run;
-  `HOS_FP_UP` (1.5 metres, adult Link's eyes; a child's are nearer 1) and `HOS_FP_FORWARD` (0.15) move the eye. Disable
+  the game's camera does, and the eye itself is not checked against walls. **First person height** places the eye over
+  Link's origin (1.50 m is about adult Link's eyes, 1.00 m a child's) and **First person offset** moves it along the
+  view (0.15 m, past the face); both apply at once while he walks, for trying variations in game. `HOS_FIRST_PERSON=1`
+  turns it on for one run; `HOS_FP_UP` and `HOS_FP_FORWARD` (in metres) move the eye for one run over the rows. Disable
   camera centering keeps the view where you turn it.
 - **Stick dead zone:** how far a stick moves before it counts, on each axis. Default is XInput's (about 24%); lower suits
   a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.

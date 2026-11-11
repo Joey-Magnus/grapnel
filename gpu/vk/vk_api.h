@@ -50,6 +50,11 @@ enum { HOS_OPT_FOV = 51 };
 /* (HOS_OPT_FIRST_PERSON, 47 at this commit: Controls' view at Link's eyes, host/hos_first_person.c: 0 the game's camera,
    1 his eyes; the Debug tab's free camera wins over it — renumbered off 47 by the next commit, main's HDR tonemap) */
 enum { HOS_OPT_FIRST_PERSON = 47 };
+/* (HOS_OPT_FP_HEIGHT, HOS_OPT_FP_OFFSET, 52 and 53: Controls' First person height and First person offset, the eye's
+   height over Link's origin (50 to 250) and its offset along the view (0 to 100), in hundredths of a metre, read at
+   every view by host/hos_first_person.c — live, as camera speed's row is; HOS_FP_UP and HOS_FP_FORWARD still win for
+   a run. 52 and 53: main has FOV's 51 and reserves 49 and 50 for Walk mode and Walk speed (#2345)) */
+enum { HOS_OPT_FP_HEIGHT = 52, HOS_OPT_FP_OFFSET };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:
@@ -233,6 +238,8 @@ typedef struct MkwVkRenderer {
                                 18 to 23: the Motion page (HOS_OPT_GYRO*: motion controls from a pad's gyroscope, host/pad_sdl.c;
                                 the horizontal and vertical sensitivity in percent, each turned around, the deadzone),
                                 27: the volume in percent, 28: no sound while another window has the focus (host/nn_audio.c),
+                                47: the view at Link's eyes (HOS_OPT_FIRST_PERSON), 52 its height over his origin and 53 its
+                                offset along the view, in hundredths of a metre (host/hos_first_person.c),
                                 48: the camera's turn speed in percent of the game's (host/nn_vi.c) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
