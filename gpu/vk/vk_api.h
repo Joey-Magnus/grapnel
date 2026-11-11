@@ -188,6 +188,9 @@ typedef struct MkwVkHost {
     /* (version 17, hookshot) what of the button prompts a change of face or controls reaches at once (host/prompts.c):
        HOS_PROMPTS_LIVE_* bits; 0 none (a mod's files, built without the prompts, or not loaded yet) */
     int (*prompts_live)(void);
+    /* (version 19) Base RomFS assets for native UI fonts, from folder or selected image.
+       NULL/zero buffer queries total length; nonzero reads must complete exactly. Host buffer, not guest memory. */
+    int (*romfs_read)(const char *rel, uint64_t offset, void *out, uint64_t size, uint64_t *length);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
