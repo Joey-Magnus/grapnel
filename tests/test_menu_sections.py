@@ -21,7 +21,7 @@ GRAPHICS = [
     ("Frame generation and latency", ["Frame generation", "Frame generation by", "Frame pacing", "Game frame rate cap",
                                       "NVIDIA Reflex", "AMD Anti-Lag 2"]),
     ("Detail", ["Anisotropic filtering"]),
-    ("GPU and memory", ["GPU device", "Mesh shaders"]),
+    ("GPU and memory", ["GPU device", "VRAM budget", "Mesh shaders"]),
 ]
 DISPLAY = [
     # (the shape row by its value: named Ultrawide, or Aspect ratio)
