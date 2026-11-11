@@ -709,6 +709,7 @@ ProgramPair* nvn_programs(const NvnState& s, const uint8_t out_types[8]);  // rx
 const std::vector<uint8_t>* nvn_c1(const NvnState& s, int stage);
 /// The bound program's compute code key (its RX_DUMP_WGSL name nvn_cs_<key>), 0 without one.
 uint64_t nvn_cs_key(const NvnState& s);
+bool nvn_cs_matrix(const NvnState& s);   // (macOS port) native matrix multiplies in the compute program
 ShaderModule* nvn_compute_module(const NvnState& s, const std::array<uint8_t, 64>* ssbo_alias = nullptr,
                                  const std::array<uint32_t, 64>* ssbo_alias_words = nullptr,
                                  const std::array<uint16_t, 16>* image_formats = nullptr);
