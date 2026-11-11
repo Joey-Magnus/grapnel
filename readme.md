@@ -565,9 +565,11 @@ command-line launcher, source and tools; `HookshotBuilder-macos-arm64.app.zip` c
   --out "$HOME/Games/Hookshot" --jobs 4
 ```
 
-For a direct source build, see [the macOS development guide](docs/development.md#macos-apple-silicon). The packaged
-Builder and CI artifact contain no game data. The app is ad hoc signed but not notarized; CI checks do not replace
-testing on a real Mac. Please report the chip, macOS version, build log, and steps when testing.
+For a direct source build, see [the macOS development guide](docs/development.md#macos-apple-silicon). Progress, thanks to
+contributors, and every related PR are in [docs/macos-port-status.md](docs/macos-port-status.md) (current work:
+[PR #1872](https://github.com/NotRexed/Hookshot/pull/1872)). The packaged Builder and CI artifact contain no game data.
+The app is ad hoc signed but not notarized; CI checks do not replace testing on a real Mac. Please report the chip,
+macOS version, build log, and steps when testing.
 
 </details>
 

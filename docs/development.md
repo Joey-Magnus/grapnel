@@ -337,16 +337,18 @@ the last published version.
 
 The `macOS platform` workflow checks the POSIX build, Builder dependencies, package architecture, signature, and
 startup command. It does not build or run a game. For actual game testing, report the Mac model/chip, macOS version,
-build command, and log; include an Xcode Metal GPU frame capture for rendering defects if possible. Current reports
-needing hardware investigation include a missing triangle in the title logo and occasional SDL focus loss. For
-lower-level development, `nx2/lift.py --standalone --write` followed by `nx2/build.py --standalone --jobs 4` writes
-the executable and libraries under `work/sa/build/`.
+build command, and log; include an Xcode Metal GPU frame capture for rendering defects if possible. Port progress,
+contributor thanks, and related PRs: [macos-port-status.md](macos-port-status.md). Hardware re-test is still wanted
+for 3D exposure/brightness after the writeback and Occluded/focus fixes. For lower-level development,
+`nx2/lift.py --standalone --write` followed by `nx2/build.py --standalone --jobs 4` writes the executable and
+libraries under `work/sa/build/`.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `docs/design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
+| `docs/macos-port-status.md` | Apple Silicon port progress, contributor thanks, and related PRs (#1872) |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the builders run |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux and macOS |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`, `hookshot_vk.so`), with Eden's shader recompiler and sirit |
