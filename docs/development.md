@@ -232,16 +232,24 @@ record it again, and make a new tour list. The folder's layout stays the same.
 python -I scripts/pipeline_tour.py tour --game <game folder> --out <tour dir> --name play --publish
 ```
 
-`tour` runs its parts (the opening; the child overworld; the dungeons at both ages; the adult overworld) at once, each in a
-reflinked copy of the game folder, on its share of `--cpus` at nice 5, and merges their lists; `--publish` then runs
-`nx2/pipeline_states.py tour` with the GPU, build, settings and route the runs logged (`merge` merges any lists). Each game
-holds 5-9 GB (its 9809 MB of guest memory is shared memory; less does not boot), so `--parts` takes fewer at once on a PC in
-use. Each part starts with no save, in a data folder of its own: the title, New Game and the opening (watched whole by the
+`tour` runs its parts (the opening; the child overworld; the dungeons at both ages; the adult overworld) one after another,
+one game at a time, in a reflinked copy of the game folder, on `--cpus` (default 6-11,18-23) at nice 19, in games of `--chunk`
+stops (8; a fresh game each, as one game's memory only grows), and merges their lists; `--publish` then runs
+`nx2/pipeline_states.py tour` with the GPU, build, settings and route the runs logged (`merge` merges any lists). One game
+holds 4-14 GB (its 9809 MB of guest memory is shared memory, touched as it goes), so each game runs under a memory guard (the
+script's `MEM`, `--mem key=value`): it starts only with 8 GB available and at most 16 GB of swap in use (else it waits, 30
+minutes at most, and the tour ends there with what it has); a game holding more than 9 GB after a stop ends there and a fresh
+one goes on from the next stop; past 12 GB, under 3 GB available or past 20 GB of swap it is stopped at once and a fresh game
+goes on from the stop it was at (a stop that does it twice is left out). On Linux the game also runs in a systemd scope of its
+own with `MemoryMax` (16 GB), so that should all of this fail the kernel ends the game, not the session. `--lock NAME` runs each
+game under `oot-status --lock NAME --priority low` where that is used. Each part starts with no save, in a data folder of its own: the title, New Game and the opening (watched whole by the
 opening part, skipped by the others), until the game's state says Link is in control (`!cheat 998`), then every item from the
 Debug tab's inventory but the story's (medallions, stones and songs start scenes that wait for the player), and each Teleport
 destination: the camera all around, at a few the sword, the shield and an item from the pause menu's Items page used, and on to
 the next once no new pipeline came for 2.5 s of game time. A few stops are left out: one starts a scene the tour cannot finish,
-others added almost nothing (the script's `LEFT_OUT`).
+others added almost nothing (the script's `LEFT_OUT`). `value <run dirs>` measures that: each step's pipelines that neither the
+players' lists (`contrib/`) nor any other step has, its seconds, and the steps under `--floor` (10) cut, the least worth a
+second first (`--sub`: a stop's arrival, look around, item use and settling apart).
 
 It is driven through `HOS_INPUT_LIVE` and its `!cheat` lines (the Debug tab's actions, `HOS_OOT_CHEATS=1`); no controller is
 opened (`HOS_NO_SDL`) and nothing reaches the desktop. Waits and presses count the game's frames (`RX_VK_FRAME_LOG`,

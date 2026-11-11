@@ -23,8 +23,14 @@ frame (HOS_FPS_MAX=240, HOS_FPS_STEP=0): fps / 60 times real time. Each step has
 --env and --ini run it under other settings (RX_VK_FORCE_MESH_FALLBACK=1, dlss=0, hdr=1, HOS_HANDHELD=1); the options file is
 restored. --window shows it on a Sway workspace instead.
 
-tour: the parts in parallel, each in its own reflinked copy of the game folder on its share of --cpus, merged; --publish writes
-the repository's tour list from them (nx2/pipeline_states.py tour, with the GPU, build, settings and route the runs logged).
+tour: the parts one after another, one game at a time, in a reflinked copy of the game folder, in games of --chunk stops (a
+fresh game each), at nice 19 on --cpus, each under the memory guard (MEM: it waits for memory before a game, and ends a game that
+holds too much or leaves the machine too little, the next game going on from there; on Linux the game runs in a systemd scope
+with a MemoryMax), --lock NAME: each game under oot-status's lock; merged; --publish writes the repository's tour list from
+them (nx2/pipeline_states.py tour, with the GPU, build, settings and route the runs logged).
+
+value: each step's pipelines over runs that the players' lists (the shipped list's contrib/ sources) and the other steps do not
+have, its seconds, and which steps add too little to keep.
 
 Each run writes <out>/<name>/: states.bin (its list), report.txt and report.json (the pipelines and programs after each step, the new
 ones each added, its frames and wall time), log.txt (the game's log) and steps.txt (what was sent, at which frame).
@@ -38,6 +44,7 @@ import os
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -68,6 +75,7 @@ BASE_ENV = {
     "HOOKSHOT_NO_UPDATE_CHECK": "1",
     "HOS_DISCORD": "0",
     "RX_VK_FRAMEGEN": "0",
+    "HOS_RT_POOL_MB": "320",     # (render target pool: 640x360 needs far less than the default 512 MB)
     "RX_VK_SHOT_EVERY": "600",   # (with RX_VK_SHOTS, set per run: a small picture every 600 frames, to see where a run got stuck)
     "RX_VK_SHOT_W": "320",
     "RX_VK_SHOT_H": "180",
@@ -136,7 +144,13 @@ QUEST_ITEMS = ("Item_Medal_", "Item_Stone_", "Item_Melody_")
 LEFT_OUT = {("adult", "Sacred Forest Meadow"): "Sheik's lesson starts on arrival and waits for the ocarina to be played",
             # (runs 2-4, ~/.cache/hookshot-work/tour/route-value.txt: what only these met, against everything else)
             ("child", "Lost Woods"): "20 pipelines no other stop met", ("adult", "Lost Woods"): "7",
-            ("child", "Sacred Forest Meadow"): "4"}
+            ("child", "Sacred Forest Meadow"): "4",
+            # (pipeline_tour.py value over runs 2-4 and the short runs: what each stop met that neither the players' lists in
+            # assets/pipeline_states/contrib nor any other kept stop has; under 10 is not worth the stop's 15-30 s)
+            ("adult", "Kokiri Forest"): "4 pipelines no other stop or player's list has", ("child", "Graveyard"): "4",
+            ("child", "Death Mountain Crater"): "4 (the gameover part still goes there)", ("adult", "Shadow Temple"): "2",
+            ("adult", "Dodongo's Cavern"): "6", ("adult", "Gerudo Training Ground"): "7", ("adult", "Haunted Wasteland"): "7",
+            ("child", "Ice Cavern"): "6", ("child", "Ganon's Castle"): "9", ("child", "Spirit Temple"): "4"}
 # Rooms no Teleport destination reaches, by the game's own map and start position names ("!teleport <map> <start>": host/hos_main.c):
 # the boss arenas and the sages' rooms, and the boss rush's rooms (DreamWorld). The "extras" part visits them, the child ones
 # first; it is not one of the tour's default parts. (label, map, start position, age)
@@ -164,7 +178,8 @@ EXTRAS = [
 # Game Over: the "gameover" part (its own run: hearts are not protected there) takes Link, a child, to the crater, whose heat
 # empties his hearts; A now and then chooses Continue on the Game Over screen
 GAME_OVER_AT = "Death Mountain Crater"
-GAME_OVER_FRAMES = 60 * 120
+GAME_OVER_FRAMES = 60 * 75     # (the heat takes a child's three hearts in ~45 s; Try Again, back in the crater by ~60 s)
+GAME_OVER_PRESS_FROM = 60 * 40
 # Stops the game does not teleport out of (the request is refused: "result 0"), visited last in their part
 LAST = {"Haunted Wasteland"}
 # Where Link uses his items and their effects (one picked from the pause menu, a different one each time): a few stops per age,
@@ -227,6 +242,7 @@ def pause_pick(k):
 PAUSE_TOUR = presses([(0, "PLUS"), (0.8, "ZR"), (1.5, "ZR"), (2.2, "ZR"), (2.9, "ZR"), (3.6, "ZL"), (4.3, "ZL"), (5, "ZL"),
                       (5.7, "ZL"), (6.4, "B"), (6.9, "B")])
 PAUSE_SPAN = 7.4
+PAUSE_PAGES = False   # (measured: 0 pipelines the item stops' own pause menu visits and the players' lists lack, for 8 s)
 
 # Water: at these stops Link arrives swimming; A held dives (the scales are given). As adult the pause menu's Equipment page then
 # puts on the iron boots and the Zora tunic (its cursor starts on the Echo Gem in a new game: up is the iron boots, right then down
@@ -280,7 +296,7 @@ def route(a, part="all", stops=None, first=None):
     """The steps of a run: ("newgame",), ("items",), ("press", text, span, label), ("age",), ("visit", age, index, k).
     The pause menu's pages once, in the opening part or a whole run"""
     steps = [("newgame",), ("items",)]
-    if part in ("all", "child", "opening"):
+    if PAUSE_PAGES and part in ("all", "child", "opening"):
         steps.append(("press", PAUSE_TOUR, PAUSE_SPAN, "pause menu pages"))
     age = "child"
     for k, (want, i) in enumerate(plan_stops(a, part, stops, first)):
@@ -328,14 +344,118 @@ def list_counts(tool, path):
 
 # ---- the game ----
 
+# ---- memory ----
+# One game holds 4 to 14 GB (the guest memory is shared memory, touched as the game goes, and not given back; the program cache's
+# file pages come on top and can be dropped). This PC-wide guard keeps a run from taking the machine down: before a game starts
+# there must be MIN_FREE_GB available and at most MAX_SWAP_GB of swap in use (else it waits, WAIT_S at most, then gives up); while
+# it runs, the game's own memory (anonymous + shared: what cannot be dropped) and the machine's are read once a second, and
+# - past SOFT_MB after a stop: the run ends there and the tour goes on in a fresh game (one game's memory only grows),
+# - past HARD_MB, under FLOOR_GB available or past MAX_SWAP_GB + 4 of swap: the game is stopped at once, its list kept, and the
+#   tour waits for memory and goes on from the stop it was at.
+# On Linux with systemd the game also runs in a scope of its own with MemoryMax (SCOPE_GB) and little swap: should all of that
+# fail, the kernel ends the game, not the desktop or the terminal it was started from.
+MEM = {"min_free_gb": 8.0, "max_swap_gb": 16.0, "floor_gb": 3.0, "soft_mb": 9000, "hard_mb": 12000, "wait_s": 1800, "scope_gb": 16}
+
+
+def meminfo(text=None):
+    """/proc/meminfo: (GB available, GB of swap in use); (None, None) where there is none"""
+    if text is None:
+        try:
+            with open("/proc/meminfo") as f:
+                text = f.read()
+        except OSError:
+            return None, None
+    kb = {}
+    for line in text.splitlines():
+        k, _, v = line.partition(":")
+        if v.strip():
+            kb[k] = int(v.split()[0])
+    if "MemAvailable" not in kb:
+        return None, None
+    return kb["MemAvailable"] / 1048576, (kb.get("SwapTotal", 0) - kb.get("SwapFree", 0)) / 1048576
+
+
+def held_mb(status_text):
+    """A process's memory that cannot be dropped, MB (/proc/<pid>/status: RssAnon + RssShmem)"""
+    kb = {}
+    for line in status_text.splitlines():
+        k, _, v = line.partition(":")
+        if k in ("RssAnon", "RssShmem", "VmRSS"):
+            kb[k] = int(v.split()[0])
+    return (kb.get("RssAnon", 0) + kb.get("RssShmem", 0)) // 1024
+
+
+def start_problem(mem, info):
+    """Why a game may not start now (None: it may)"""
+    free, swap = info
+    if free is None:
+        return None
+    if free < mem["min_free_gb"]:
+        return "%.1f GB available, a game wants %.0f" % (free, mem["min_free_gb"])
+    if swap > mem["max_swap_gb"]:
+        return "%.1f GB of swap in use, at most %.0f" % (swap, mem["max_swap_gb"])
+    return None
+
+
+def run_problem(mem, info, held):
+    """Why a running game must stop at once (None: it may go on)"""
+    free, swap = info
+    if held is not None and held > mem["hard_mb"]:
+        return "the game holds %d MB, at most %d" % (held, mem["hard_mb"])
+    if free is not None and free < mem["floor_gb"]:
+        return "%.1f GB available, under %.0f" % (free, mem["floor_gb"])
+    if swap is not None and swap > mem["max_swap_gb"] + 4:
+        return "%.1f GB of swap in use, over %.0f" % (swap, mem["max_swap_gb"] + 4)
+    return None
+
+
+def wait_memory(mem, read=meminfo, sleep=time.sleep, clock=time.monotonic, say=print):
+    """Until a game may start: None, or why it still may not after mem["wait_s"]"""
+    end, said = clock() + mem["wait_s"], None
+    while True:
+        why = start_problem(mem, read())
+        if why is None:
+            return None
+        if clock() >= end:
+            return why
+        if why != said:
+            say("pipeline tour: waits for memory: %s" % why, flush=True)
+            said = why
+        sleep(10)
+
+
+def scope_prefix(mem, run=subprocess.run):
+    """systemd-run's scope for the game (MemoryMax, a little swap), or [] where there is none"""
+    if not mem.get("scope_gb") or not shutil.which("systemd-run") or os.environ.get("OOT_NO_SCOPE"):
+        return []
+    pre = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=%dG" % mem["scope_gb"],
+           "-p", "MemorySwapMax=2G", "--"]
+    try:
+        if run(pre + ["true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20).returncode != 0:
+            return []
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return pre
+
+
+class MemoryStop(Exception):
+    """The game stopped for memory (not a failure of the route: the tour goes on from `at` in a fresh game)"""
+    def __init__(self, why, soft=False):
+        Exception.__init__(self, why)
+        self.soft = soft
+
+
 class Failed(Exception):
     pass
 
 
 class Game:
     """The game, its log and its frames: what was sent, at which frame"""
-    def __init__(self, game, data, run_dir, env, dry=False):
+    def __init__(self, game, data, run_dir, env, dry=False, mem=None, prefix=()):
         self.game, self.run_dir, self.dry = game, run_dir, dry
+        self.mem = mem
+        self.peak = 0           # (the most the game held, MB: anonymous + shared memory)
+        self.checked = 0.0
         self.live = os.path.join(run_dir, "live.txt")
         self.log_path = os.path.join(run_dir, "log.txt")
         self.frames_path = os.path.join(run_dir, "frames.csv")
@@ -349,6 +469,7 @@ class Game:
         self.speed = []         # (the game clock's speeds the log gave: 1.0 is real time)
         self.fps = []           # (the frame rates the same lines gave)
         self.map = None         # (the map the last teleport check named)
+        self.marks = []         # (the current step's parts: [(what, records so far)])
         self.proc = None
         if dry:
             return
@@ -362,7 +483,7 @@ class Game:
         if not os.path.exists(exe):
             exe = os.path.join(game, "hookshot")
         self.logf = open(self.log_path, "wb")
-        self.proc = subprocess.Popen([exe], cwd=game, env=full, stdout=self.logf, stderr=subprocess.STDOUT,
+        self.proc = subprocess.Popen(list(prefix) + [exe], cwd=game, env=full, stdout=self.logf, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, start_new_session=True)
 
     def now(self):
@@ -420,7 +541,22 @@ class Game:
         lines = self.poll()
         if not self.alive():
             raise Failed("the game ended")
+        if self.mem and time.monotonic() - self.checked >= 1:
+            self.checked = time.monotonic()
+            why = run_problem(self.mem, meminfo(), self.held())
+            if why:
+                raise MemoryStop(why)
         return lines
+
+    def held(self):
+        """The game's memory that cannot be dropped, MB (its most so far kept in peak); None where it cannot be read"""
+        try:
+            with open("/proc/%d/status" % self.proc.pid) as f:
+                mb = held_mb(f.read())
+        except (OSError, AttributeError, ValueError):
+            return None
+        self.peak = max(self.peak, mb)
+        return mb
 
     def frames(self, n, limit_s=300):
         """n frames of the game (the dry run: none)"""
@@ -445,6 +581,21 @@ class Game:
             pass
         return out
 
+    def list_len(self):
+        """The records in the list so far (its size: a 12-byte head, then records of the size it gives)"""
+        if self.dry:
+            return 0
+        try:
+            with open(self.list_path, "rb") as f:
+                head = f.read(12)
+            return (os.path.getsize(self.list_path) - 12) // max(1, struct.unpack_from("<I", head, 8)[0])
+        except (OSError, struct.error):
+            return 0
+
+    def mark(self, what):
+        """A step's part (arrived, looked, items used...): the list's length now, for `value --sub`"""
+        self.marks.append((what, self.list_len()))
+
     def list_size(self):
         try:
             return os.path.getsize(self.list_path)
@@ -464,12 +615,12 @@ class Game:
             elif self.frame - since >= quiet:
                 return
 
-    def stop(self):
+    def stop(self, grace=15):
         if self.dry or self.proc.poll() is not None:
             return
         try:
             os.killpg(self.proc.pid, signal.SIGTERM)
-            self.proc.wait(15)
+            self.proc.wait(grace)
         except (subprocess.TimeoutExpired, ProcessLookupError):
             try:
                 os.killpg(self.proc.pid, signal.SIGKILL)
@@ -686,9 +837,13 @@ def set_ini(path, pairs):
 def write_report(run_dir, rows, meta):
     total = rows[-1]["pipelines"] if rows else 0
     out = ["pipeline tour %s%s: %d pipelines, %d programs (the program cache holds %s), %.0f s, %s frames%s" % (
-        meta["name"], "" if meta.get("completed", True) else " (NOT COMPLETED: %s)" % meta.get("error"), total,
+        meta["name"], "" if meta.get("completed", True) else " (NOT COMPLETED: %s)" % (meta.get("error") or
+                                                                                    "memory, %d stops left" % len(meta.get("left") or [])), total,
         rows[-1]["programs"] if rows else 0, meta.get("program_cache") or "?", meta["seconds"], meta.get("frames", "?"),
         ", game speed %.1fx at %.0f fps (medians)" % (meta["speed"], meta.get("fps") or 0) if meta.get("speed") else "")]
+    if meta.get("peak_mb") or meta.get("memory_stop"):
+        out.append("memory: the game held %s MB at most%s" % (meta.get("peak_mb") or "?", "; stopped: %s; left: %s" % (
+            meta["memory_stop"], ", ".join(meta.get("left") or []) or "none") if meta.get("memory_stop") else ""))
     out.append("settings: %s" % " ".join("%s=%s" % kv for kv in sorted(meta["env"].items())))
     if meta.get("ini"):
         out.append("options: %s" % " ".join(meta["ini"]))
@@ -726,6 +881,17 @@ def run(args):
             env[k] = v
     game = os.path.abspath(args.game)
     tool = state_tool()
+    mem = mem_settings(args)
+    prefix = []
+    if not args.dry_run and mem:
+        why = wait_memory(mem)
+        if why:   # (nothing touched yet: the tour may try again later)
+            print("pipeline tour %s: not started, memory: %s" % (args.name, why), flush=True)
+            with open(os.path.join(run_dir, "report.json"), "w", encoding="utf-8") as f:
+                json.dump({"meta": {"name": args.name, "part": args.part, "completed": False, "error": "memory: " + why,
+                                    "memory_wait": why, "left": stop_labels(a, steps)}, "stops": []}, f, indent=1)
+            return 3
+        prefix = scope_prefix(mem)
     aside = os.path.join(game, ".pipeline_tour_aside")
     data = os.path.join(run_dir, "data")
     old_ini = None
@@ -750,7 +916,7 @@ def run(args):
         if args.cpus:
             os.sched_setaffinity(0, cpu_list(args.cpus))
         os.nice(max(0, args.nice - os.nice(0)))
-    g = Game(game, data, run_dir, env, args.dry_run)
+    g = Game(game, data, run_dir, env, args.dry_run, mem, prefix)
     g.actions = a
     watch = Watch(g, args.workspace, args.slot) if args.window and not args.dry_run else None
     error = None
@@ -762,14 +928,22 @@ def run(args):
         nonlocal seen
         n, progs, recs = list_counts(tool, g.list_path) if not args.dry_run else (0, 0, set())
         rows.append({"stop": label, "seconds": round(g.now(), 1), "took": round(g.now() - mark[0], 1), "frames": g.frame - mark[1],
-                     "pipelines": n, "programs": progs, "new": len(recs - seen), "memory": g.memory() if not g.dry else {}})
+                     "pipelines": n, "programs": progs, "new": len(recs - seen), "memory": g.memory() if not g.dry else {},
+                     "marks": g.marks})
+        g.marks = []
         seen |= recs
         g.note("%s: %d pipelines (+%d), %d programs" % (label, n, rows[-1]["new"], progs))
         mark[0], mark[1] = g.now(), g.frame
 
+    memory_stop, left, hard = None, [], False
     try:
-        for step in steps:
+        for at, step in enumerate(steps):
             kind = step[0]
+            if mem and not args.dry_run and kind in ("visit", "extra") and at and stop_labels(a, steps[:at]):
+                held = g.held()   # (between stops: a game past the soft limit ends here, a fresh one does the rest)
+                if held is not None and held > mem["soft_mb"]:
+                    raise MemoryStop("the game holds %d MB after a stop, a fresh game from here on (over %d)"
+                                     % (held, mem["soft_mb"]), soft=True)
             if kind == "newgame":
                 phases = new_game(g, skip=args.skip_opening)
                 count("new game: title, opening, Link's house")
@@ -796,7 +970,7 @@ def run(args):
                 end = g.frame + GAME_OVER_FRAMES
                 while g.frame < end and not g.dry:   # (the heat; then A: Continue)
                     g.frames(180)
-                    if g.frame > end - GAME_OVER_FRAMES // 2:
+                    if g.frame > end - GAME_OVER_FRAMES + GAME_OVER_PRESS_FROM:
                         g.send("0:A/100")
                 count("Game Over")
             elif kind == "extra":
@@ -833,11 +1007,13 @@ def run(args):
                     continue
                 misses = 0
                 g.note("arrived: %s" % where)
+                g.mark("arrive")
                 if name in DIVE_AT:
                     g.send(DIVE)
                     g.frames(int(DIVE_SPAN * FPS))
                 g.send(LOOK)
                 g.frames(int(LOOK_SPAN * FPS))
+                g.mark("look")
                 if name in DIVE_AT and age == "adult" and not dived:
                     dived = True
                     count("%s (%s)" % (name, age))
@@ -862,6 +1038,7 @@ def run(args):
                     g.frames(int(span * FPS))
                     g.send(ACT)
                     g.frames(int(ACT_SPAN * FPS))
+                    g.mark("items")
                 g.settle(150, 600)   # (on once no new pipeline came for 2.5 s of game time, 10 s at most)
                 count("%s (%s)" % (name, age))
                 if name in NIGHT_AT and i < dungeons_from(a):
@@ -873,13 +1050,20 @@ def run(args):
                     count("%s (%s) at night" % (name, age))
                     g.send("!cheat %d" % (TIME_ACTION + 12))
                     g.frames(60)
+    except MemoryStop as e:
+        memory_stop, hard = str(e), not e.soft
+        left = stop_labels(a, steps[at:])   # (the stop it was at, again: a hard stop cut it short)
+        g.note("MEMORY: %s; left: %s" % (memory_stop, left))
+        print("pipeline tour %s: memory: %s" % (args.name, memory_stop), flush=True)
+        if not left:
+            error = "memory: " + memory_stop
     except Failed as e:
         error = str(e)
         g.note("FAILED: " + error)
     finally:
         if watch:
             watch.stop()
-        g.stop()
+        g.stop(3 if hard else 15)
         if not args.dry_run:
             if os.path.exists(g.list_path):
                 shutil.copyfile(g.list_path, os.path.join(run_dir, "states.bin"))
@@ -895,10 +1079,35 @@ def run(args):
     speed = sorted(g.speed)[len(g.speed) // 2] if g.speed else None
     fps = sorted(g.fps)[len(g.fps) // 2] if g.fps else None
     meta = {"name": args.name, "part": args.part, "seconds": round(g.now(), 1), "frames": g.frame, "env": env, "ini": args.ini,
-            "completed": error is None, "error": error, "speed": speed, "fps": fps,
+            "completed": error is None and not left, "error": error, "speed": speed, "fps": fps,
+            "memory_stop": memory_stop, "memory_soft": memory_stop is not None and not hard, "left": left, "peak_mb": g.peak or None,
             "program_cache": program_cache_count(g.log_path) if not args.dry_run else None}
     print(write_report(run_dir, rows, meta), end="")
-    return 0 if error is None else 1
+    return 1 if error is not None else 4 if left else 0
+
+
+def stop_labels(a, steps):
+    """The stops of steps, as --first takes them: "<name> (<age>)", an extra stop by its label"""
+    out = []
+    for step in steps:
+        if step[0] == "visit":
+            out.append("%s (%s)" % (a["teleports"][step[2]][0], step[1]))
+        elif step[0] == "extra":
+            out.append(step[1])
+    return out
+
+
+def mem_settings(args):
+    """The memory guard's limits (MEM, --mem key=value over them), None with --no-mem-guard"""
+    if getattr(args, "no_mem_guard", False):
+        return None
+    mem = dict(MEM)
+    for kv in getattr(args, "mem", []) or []:
+        k, _, v = kv.partition("=")
+        if k not in mem:
+            raise SystemExit("pipeline_tour: --mem %s: one of %s" % (kv, ", ".join(sorted(MEM))))
+        mem[k] = type(MEM[k])(float(v))
+    return mem
 
 
 def cpu_list(text):
@@ -920,70 +1129,98 @@ def program_cache_count(log_path):
     return int(m[-1]) if m else None
 
 
-def chunks(a, part, size):
+def chunks(a, part, size, limit=None):
     """A part's stops in runs of `size` (a fresh game each: one game's memory grows by about 1 GB an area and is not given back):
     [(first stop's label or None, stops)]. The opening part, or size 0: one run"""
-    plan = plan_stops(a, part)
-    if not plan or not size:
+    plan = plan_stops(a, part, limit)
+    if not plan:
         return [(None, None)]
+    if not size:
+        size = len(plan)
     return [("%s (%s)" % (a["teleports"][plan[k][1]][0], plan[k][0]), min(size, len(plan) - k)) for k in range(0, len(plan), size)]
 
 
+def part_runs(a, part, size, start, say=print, limit=None):
+    """A part's games, one after another: its chunks of `size` stops, each a fresh game; a game the memory guard ended (start's
+    code 4, or 3: not started) goes on from the stops it left in another fresh game, and a stop the guard ended twice in a row is
+    left out. start(first, stops, k) runs game k and returns (code, its report's meta). Returns [(k, code)]; it ends early when
+    a game could not start for memory or failed"""
+    out, k = [], 0
+    for first, stops in chunks(a, part, size, limit):
+        stuck = None
+        while True:
+            code, meta = start(first, stops, k)
+            out.append((k, code))
+            k += 1
+            left = meta.get("left") or []
+            if code == 3:
+                say("tour: part %s ends: no memory to start a game (%s)" % (part, meta.get("memory_wait")), flush=True)
+                return out
+            if code != 4 or not left:
+                break
+            if left[0] == stuck:   # (the same stop ended by the guard twice: left out)
+                say("tour: %s left out: the game ran out of memory there twice" % left[0], flush=True)
+                left = left[1:]
+                if not left:
+                    break
+            stuck = left[0] if meta.get("memory_stop") and not meta.get("memory_soft") else None
+            first, stops = left[0], len(left)
+        if code not in (0, 4):
+            return out
+    return out
+
+
 def tour(args):
-    """The parts at once, each in a reflinked copy of the game folder and in runs of --chunk stops one after another, then merged"""
-    import threading
+    """The parts one after another (one game at a time: one game can hold 14 GB), each in a reflinked copy of the game folder
+    and in games of --chunk stops, under the memory guard; then merged"""
     a = actions()
     parts = args.parts.split(",")
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
     t0 = time.monotonic()
-    copies = {part: os.path.abspath(args.game).rstrip("/") + "-tour-" + part for part in parts}
-    for copy in copies.values():   # (all copies first: the parts start together)
-        if not os.path.exists(copy):
-            subprocess.run(["cp", "-a", "--reflink=always", os.path.abspath(args.game), copy], check=True)
-    print("tour %s: game folders copied in %.0f s" % (args.name, time.monotonic() - t0), flush=True)
-    results, running, lock = [], [], threading.Lock()
+    copy = os.path.abspath(args.game).rstrip("/") + "-tour"
+    if not os.path.exists(copy):
+        subprocess.run(["cp", "-a", "--reflink=always", os.path.abspath(args.game), copy], check=True)
+    results = []
+    lock = [args.oot_status, "--lock", args.lock, "--priority", "low"] + (["--shared"] if args.lock_shared else []) + ["--"] \
+        if args.lock else []
 
-    def part_runs(part):
-        for k, (first, stops) in enumerate(chunks(a, part, args.chunk)):
-            name = "%s-%s" % (args.name, part) + ("-%d" % k if first else "")
-            cmd = [sys.executable, "-I", os.path.abspath(__file__), "run", "--game", copies[part], "--out", out, "--name", name,
-                   "--part", part] + sum((["--env", e] for e in args.env), []) + sum((["--ini", i] for i in args.ini), [])
+    def start_for(part):
+        def start(first, stops, k):
+            name = "%s-%s" % (args.name, part) + ("-%d" % k if first or k else "")
+            cmd = lock + [sys.executable, "-I", os.path.abspath(__file__), "run", "--game", copy, "--out", out, "--name", name,
+                          "--part", part, "--nice", str(args.nice)] + sum((["--env", e] for e in args.env), []) + \
+                sum((["--ini", i] for i in args.ini), []) + sum((["--mem", m] for m in args.mem), [])
+            if args.no_mem_guard:
+                cmd.append("--no-mem-guard")
             if first:
                 cmd += ["--first", first, "--stops", str(stops)]
-            if part != "opening" and ("opening" in parts or (part != parts[0] and len(parts) > 1) or k):
+            if part != "opening" and ("opening" in parts or part != parts[0] or k):
                 cmd.append("--skip-opening")   # (the opening is watched whole once: by its own part, else by the first)
-            if args.cpus:   # (the tour's CPUs shared out between the parts)
-                cmd += ["--cpus", ",".join(map(str, sorted(cpu_list(args.cpus))[parts.index(part)::len(parts)]))]
-            if args.window:   # (each part in a window, one under the other)
-                cmd += ["--window", args.window, "--slot", str(parts.index(part))]
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            with lock:
-                running.append(p)
-            text = p.communicate()[0]
-            with lock:
-                running.remove(p)
-                print(text, end="", flush=True)
-                results.append((part, os.path.join(out, name), p.returncode))
+            if args.cpus:
+                cmd += ["--cpus", args.cpus]
+            if args.window:
+                cmd += ["--window", args.window]
+            print("tour: %s" % name, flush=True)
+            code = subprocess.run(cmd).returncode
+            results.append((part, os.path.join(out, name), code))
+            try:
+                with open(os.path.join(out, name, "report.json"), encoding="utf-8") as f:
+                    meta = json.load(f)["meta"]
+            except (OSError, ValueError, KeyError):
+                meta = {}
+            return code, meta
+        return start
 
-    threads = [threading.Thread(target=part_runs, args=(part,), daemon=True) for part in parts]
-    for t in threads:
-        t.start()
     try:
-        for t in threads:
-            while t.is_alive():
-                t.join(0.5)
-    except KeyboardInterrupt:   # (stopped: each run ends its game and puts its files back first)
-        with lock:
-            for q in running:
-                q.send_signal(signal.SIGINT)
-        for t in threads:
-            t.join()
-        raise
-    if not args.keep:
-        for copy in copies.values():
+        for part in parts:
+            runs = part_runs(a, part, args.chunk, start_for(part), limit=args.stops)
+            if runs and runs[-1][1] == 3:
+                break   # (no memory: the tour ends here, what it has merged)
+    finally:
+        if not args.keep:
             shutil.rmtree(copy, ignore_errors=True)
-    rc = 0 if all(code == 0 for _, _, code in results) else 1
+    rc = 0 if all(code in (0, 4) for _, _, code in results) else 1
     order = sorted(results, key=lambda r: (parts.index(r[0]), r[1]))
     have = [os.path.join(d, "states.bin") for _, d, _ in order if os.path.exists(os.path.join(d, "states.bin"))]
     merged = os.path.join(out, "%s.bin" % args.name)
@@ -1036,6 +1273,99 @@ def merge(args):
     return ran.returncode
 
 
+# ---- what each step is worth ----
+# Steps the route needs whatever they add: without them no later step happens
+NEEDED = ("new game:", "every item", "age switched")
+NEEDED_END = (" / arrive", ", hearts not protected")   # (a stop's arrival with --sub; the Game Over's way there)
+
+
+def run_steps(tool, run_dir, sub=False):
+    """A run's steps: [(label, seconds, {records})], the list sliced at each step's count (the game only appends to it). sub:
+    a step with marks (arrive, look, items) split at them, "<step> / <part>", the rest "<step> / settle" (seconds: the step's)"""
+    with open(os.path.join(run_dir, "report.json"), encoding="utf-8") as f:
+        rows = json.load(f)["stops"]
+    path = os.path.join(run_dir, "states.bin")
+    recs = tool.read(path) if os.path.exists(path) and os.path.getsize(path) else []
+    (recs,), _ = tool.as_v2([recs], force=True)   # (version 1 runs compared with version 2 lists; those that do not convert left out)
+    out, prev = [], 0
+    for r in rows:
+        n = min(r["pipelines"], len(recs))
+        if sub and r.get("marks"):
+            at = prev
+            for what, m in r["marks"] + [("settle", n)]:
+                m = max(at, min(m, n))
+                out.append(("%s / %s" % (r["stop"], what), r.get("took", 0), set(recs[at:m])))
+                at = m
+        else:
+            out.append((r["stop"], r.get("took", 0), set(recs[prev:n])))
+        prev = max(prev, n)
+    return out
+
+
+def worth(runs, against=(), floor=10):
+    """Each step's worth over runs: [{step, runs, seconds, met, beyond, only, kept}] in route order. met: the pipelines it met
+    (over all its runs), beyond: those not in the `against` records (the players' lists), only: of those, the ones no other kept step
+    met. Steps whose `only` is under `floor` are cut one at a time, the least worth a second first, the others then counted again
+    (two steps that meet the same pipelines: one is kept); the steps the route needs (NEEDED) are kept whatever they add"""
+    against = set(against)
+    met, secs, order = {}, {}, []
+    for steps in runs:
+        for label, took, recs in steps:
+            if label not in met:
+                met[label], secs[label] = set(), []
+                order.append(label)
+            met[label] |= recs
+            secs[label].append(took)
+    beyond = {k: v - against for k, v in met.items()}
+    kept = set(order)
+    holders = {}   # (a pipeline: how many kept steps met it)
+    for k in order:
+        for r in beyond[k]:
+            holders[r] = holders.get(r, 0) + 1
+    only = lambda k: sum(1 for r in beyond[k] if holders[r] == (1 if k in kept else 0))
+    median = lambda k: sorted(secs[k])[len(secs[k]) // 2]
+    while True:
+        weak = [(only(k) / max(1.0, median(k)), -median(k), k) for k in kept if not k.startswith(NEEDED) and not k.endswith(NEEDED_END)
+                and only(k) < floor]
+        if not weak:
+            break
+        k = min(weak)[2]   # (the least a second; of equals, the slowest)
+        kept.discard(k)
+        for r in beyond[k]:
+            holders[r] -= 1
+    return [{"step": k, "runs": len(secs[k]), "seconds": median(k), "met": len(met[k]), "beyond": len(beyond[k]), "only": only(k),
+             "kept": k in kept} for k in order]
+
+
+def value(args):
+    """The steps of runs, each with what it added that the players' lists (the shipped list's contrib/ sources) and the other
+    steps do not have, and whether it is worth keeping"""
+    tool = state_tool()
+    against = []
+    if not args.no_contrib:
+        for src in tool.sources(tool.sources_dir()):
+            if os.path.basename(src) != tool.TOUR:
+                against += tool.read(src)
+    for path in args.against:
+        against += tool.read(path)
+    (against,), _ = tool.as_v2([against], force=True)
+    runs = [run_steps(tool, d, args.sub) for d in args.runs]
+    rows = worth(runs, against, args.floor)
+    print("%d runs; against %d pipelines (%s)" % (len(runs), len(set(against)),
+                                                 "players' lists" if not args.no_contrib else "") + " ".join(args.against))
+    print("%6s %6s %6s %6s %4s  %-5s %s" % ("met", "beyond", "only", "secs", "runs", "", "step"))
+    for r in rows:
+        print("%6d %6d %6d %6.0f %4d  %-5s %s" % (r["met"], r["beyond"], r["only"], r["seconds"], r["runs"],
+                                                 "keep" if r["kept"] else "CUT", r["step"]))
+    cut = [r for r in rows if not r["kept"]]
+    print("cut %d of %d steps: %.0f s of %.0f (median seconds a run)" % (len(cut), len(rows), sum(r["seconds"] for r in cut),
+                                                                        sum(r["seconds"] for r in rows)))
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(rows, f, indent=1)
+    return 0
+
+
 def report(args):
     with open(os.path.join(args.run, "report.json"), encoding="utf-8") as f:
         r = json.load(f)
@@ -1067,18 +1397,28 @@ def main(argv=None):
     r.add_argument("--slot", type=int, default=0, help="with --window: the window's place on the workspace, one under the other")
     r.add_argument("--skip-opening", action="store_true", help="skip the opening's scenes once Link is there")
     r.add_argument("--dry-run", action="store_true", help="the steps, without the game")
+    r.add_argument("--mem", action="append", default=[], metavar="KEY=VALUE",
+                   help="the memory guard's limits over its defaults (%s)" % ", ".join("%s=%s" % kv for kv in sorted(MEM.items())))
+    r.add_argument("--no-mem-guard", action="store_true", help="no memory guard (no waiting, no limits, no scope)")
     t = sub.add_parser("tour")
     t.add_argument("--game", required=True)
     t.add_argument("--out", required=True)
     t.add_argument("--name", default="play")
     t.add_argument("--parts", default="opening,child-overworld,dungeons,adult-overworld")
-    t.add_argument("--cpus", default="0-3,12-15", help="the CPUs the tour may use, shared out between its parts")
+    t.add_argument("--cpus", default="6-11,18-23", help="the CPUs the game may use (default 6-11,18-23: off the desktop's)")
+    t.add_argument("--nice", type=int, default=19, help="the games' niceness (default 19)")
+    t.add_argument("--mem", action="append", default=[], metavar="KEY=VALUE", help="the memory guard's limits (run --help)")
+    t.add_argument("--no-mem-guard", action="store_true")
+    t.add_argument("--lock", metavar="NAME", help="each game under oot-status --lock NAME (low priority: others go first)")
+    t.add_argument("--lock-shared", action="store_true", help="with --lock: the shared mode")
+    t.add_argument("--oot-status", default="oot-status")
     t.add_argument("--env", action="append", default=[])
     t.add_argument("--ini", action="append", default=[])
-    t.add_argument("--keep", action="store_true", help="keep the parts' game folder copies")
+    t.add_argument("--keep", action="store_true", help="keep the parts' game folder copy")
+    t.add_argument("--stops", type=int, help="only each part's first N stops (a short test)")
     t.add_argument("--chunk", type=int, default=8, help="stops a game, then a fresh one (one game grows ~1 GB an area); 0: no limit")
     t.add_argument("--publish-partial", action="store_true", help="--publish even when a run failed")
-    t.add_argument("--window", metavar="WxH", help="each part in a window (on Sway workspace 10)")
+    t.add_argument("--window", metavar="WxH", help="the game in a window (on Sway workspace 10)")
     t.add_argument("--publish", action="store_true",
                    help="write the repository's tour list (assets/pipeline_states/tour.bin.xz and tour.md) from the parts' lists")
     m = sub.add_parser("merge")
@@ -1086,8 +1426,15 @@ def main(argv=None):
     m.add_argument("lists", nargs="+")
     s = sub.add_parser("report")
     s.add_argument("run")
+    v = sub.add_parser("value", help="each step's new pipelines and seconds over runs, and the steps worth cutting")
+    v.add_argument("runs", nargs="+", help="run folders (<out>/<name>: report.json and states.bin)")
+    v.add_argument("--against", action="append", default=[], help="a list whose pipelines count as had already")
+    v.add_argument("--no-contrib", action="store_true", help="not against the players' lists in assets/pipeline_states/contrib")
+    v.add_argument("--floor", type=int, default=10, help="a step that alone adds fewer pipelines than this is cut (default 10)")
+    v.add_argument("--sub", action="store_true", help="the stops' parts apart (arrive, look, items, settle), where runs marked them")
+    v.add_argument("--json")
     a = p.parse_args(argv)
-    return {"run": run, "tour": tour, "merge": merge, "report": report}[a.cmd](a)
+    return {"run": run, "tour": tour, "merge": merge, "report": report, "value": value}[a.cmd](a)
 
 
 if __name__ == "__main__":

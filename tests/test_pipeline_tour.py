@@ -87,12 +87,10 @@ def main():
         fail("the route does not start with a new game and the items")
     visits = [(s[1], s[2]) for s in steps if s[0] == "visit"]
     for i, (name, adult_only) in enumerate(a["teleports"]):
-        if ("adult", name) in tour.LEFT_OUT:
-            if ("adult", i) in visits:
-                fail("%s (adult) is visited though it is left out" % name)
-            continue
-        if ("adult", i) not in visits or (("child", i) in visits) == adult_only:
-            fail("%s is not in the route as it should be" % name)
+        for age in ("child", "adult"):
+            want = not (age == "child" and adult_only) and (age, name) not in tour.LEFT_OUT
+            if ((age, i) in visits) != want:
+                fail("%s (%s) is %s the route" % (name, age, "not in" if want else "in"))
     ages = [k for k, s in enumerate(steps) if s == ("age",)]
     if len(ages) != 1 or any(s[0] == "visit" and s[1] == "adult" for s in steps[:ages[0]]):
         fail("the age is not switched once, before the adult stops")
@@ -207,7 +205,130 @@ def main():
         for want in ("Some GPU 9000", "v9.9.9-1-gabc", "640x360", "parts child"):
             if want not in note:
                 fail("the tour's note lacks %r:\n%s" % (want, note))
-    print("pipeline tour: actions, route, presses, counts and merge ok")
+    memory_guard(tour, a)
+    worth(tour, states, rec)
+    print("pipeline tour: actions, route, presses, counts, merge, memory guard and worth ok")
+
+
+def memory_guard(tour, a):
+    """The memory guard: /proc's numbers read, a game not started without memory (waiting, then giving up), a running one
+    stopped past its limits, and the tour going on from where a stopped game was"""
+    info = "MemTotal: 31000000 kB\nMemAvailable: %d kB\nSwapTotal: 60000000 kB\nSwapFree: %d kB\n"
+    free, swap = tour.meminfo(info % (10 * 1048576, 60000000 - 2 * 1048576))
+    if abs(free - 10) > 1e-9 or abs(swap - 2) > 1e-9:
+        fail("meminfo: %s %s" % (free, swap))
+    if tour.meminfo("MemTotal: 1 kB\n") != (None, None):
+        fail("meminfo without MemAvailable")
+    if tour.held_mb("VmRSS:\t9000000 kB\nRssAnon:\t1048576 kB\nRssFile:\t5000000 kB\nRssShmem:\t2097152 kB\n") != 3072:
+        fail("held_mb is not anonymous + shared memory (the file pages can be dropped)")
+    mem = dict(tour.MEM)
+    if tour.start_problem(mem, (mem["min_free_gb"] + 1, 0)) is not None or tour.start_problem(mem, (None, None)) is not None:
+        fail("a game may not start with memory free")
+    if not tour.start_problem(mem, (mem["min_free_gb"] - 1, 0)) or not tour.start_problem(mem, (20, mem["max_swap_gb"] + 1)):
+        fail("a game starts without memory or with swap full")
+    if tour.run_problem(mem, (10, 1), mem["hard_mb"] - 1) is not None:
+        fail("a game within its limits stopped")
+    for info, held in (((10, 1), mem["hard_mb"] + 1), ((mem["floor_gb"] - 0.5, 1), 1000), ((10, mem["max_swap_gb"] + 5), 1000)):
+        if not tour.run_problem(mem, info, held):
+            fail("a game past a limit not stopped: %s, %s MB" % (info, held))
+    if not mem["soft_mb"] < mem["hard_mb"] < mem["scope_gb"] * 1024 or mem["min_free_gb"] <= mem["floor_gb"]:
+        fail("the limits are out of order: %s" % mem)
+    # waiting: the memory comes after two looks; never: it gives up after wait_s
+    now, looks = [0.0], iter([(2, 0), (2, 0), (12, 0)])
+    sleep = lambda s: now.__setitem__(0, now[0] + s)
+    if tour.wait_memory(dict(mem, wait_s=100), read=lambda: next(looks), sleep=sleep, clock=lambda: now[0], say=lambda *x, **k: 0):
+        fail("wait_memory gave up though the memory came")
+    now[0] = 0.0
+    why = tour.wait_memory(dict(mem, wait_s=100), read=lambda: (1, 0), sleep=sleep, clock=lambda: now[0], say=lambda *x, **k: 0)
+    if not why or now[0] < 100 or now[0] > 120:
+        fail("wait_memory did not give up after its wait (%s, %s s)" % (why, now[0]))
+    # the scope: systemd-run's when it works, none when it does not
+    if tour.scope_prefix(dict(mem, scope_gb=0)) != []:
+        fail("a scope though scope_gb is 0")
+    ok = type("R", (), {"returncode": 0})
+    bad = type("R", (), {"returncode": 1})
+    if tour.shutil.which("systemd-run") and not os.environ.get("OOT_NO_SCOPE"):
+        pre = tour.scope_prefix(mem, run=lambda *x, **k: ok)
+        if pre[:3] != ["systemd-run", "--user", "--scope"] or "MemoryMax=%dG" % mem["scope_gb"] not in pre or pre[-1] != "--":
+            fail("the scope: %s" % pre)
+        if tour.scope_prefix(mem, run=lambda *x, **k: bad) != []:
+            fail("a scope that does not start is used")
+    # the tour after a game the guard ended: on from the stops it left, a stop ended twice left out, no memory: the part ends
+    plan = ["%s (%s)" % (a["teleports"][i][0], age) for age, i in tour.plan_stops(a, "child-overworld")]
+    calls = []
+
+    def start(script):
+        def run(first, stops, k):
+            calls.append((first, stops))
+            return script[k]
+        return run
+    first_chunk = tour.chunks(a, "child-overworld", 4)
+    calls.clear()
+    tour.part_runs(a, "child-overworld", 4, start([(4, {"memory_stop": "x", "memory_soft": True, "left": plan[2:4]})] +
+                                                  [(0, {})] * 20), say=lambda *x, **k: 0)
+    if calls[:3] != [first_chunk[0], (plan[2], 2), first_chunk[1]] or len(calls) != len(first_chunk) + 1:
+        fail("the tour does not go on from where the guard ended a game: %s" % calls[:4])
+    calls.clear()
+    hard = (4, {"memory_stop": "x", "memory_soft": False, "left": plan[1:4]})
+    tour.part_runs(a, "child-overworld", 4, start([hard, hard] + [(0, {})] * 20), say=lambda *x, **k: 0)
+    if calls[:3] != [first_chunk[0], (plan[1], 3), (plan[2], 2)]:
+        fail("a stop the guard ended twice is not left out: %s" % calls[:3])
+    calls.clear()
+    out = tour.part_runs(a, "child-overworld", 4, start([(0, {}), (3, {"memory_wait": "x", "left": plan[4:8]})] + [(0, {})] * 20),
+                         say=lambda *x, **k: 0)
+    if out[-1] != (1, 3) or len(calls) != 2:
+        fail("a part goes on after a game could not start for memory: %s" % out)
+    calls.clear()
+    tour.part_runs(a, "child-overworld", 4, start([(1, {})] + [(0, {})] * 20), say=lambda *x, **k: 0)
+    if len(calls) != 1:
+        fail("a part goes on after a failed game")
+    # --mem: the limits, a wrong key refused; --no-mem-guard: none
+    args = type("A", (), {"mem": ["soft_mb=5000", "floor_gb=2.5"], "no_mem_guard": False})()
+    m = tour.mem_settings(args)
+    if m["soft_mb"] != 5000 or m["floor_gb"] != 2.5 or m["hard_mb"] != tour.MEM["hard_mb"]:
+        fail("--mem: %s" % m)
+    if tour.mem_settings(type("A", (), {"mem": [], "no_mem_guard": True})()) is not None:
+        fail("--no-mem-guard still guards")
+    try:
+        tour.mem_settings(type("A", (), {"mem": ["nope=1"], "no_mem_guard": False})())
+        fail("--mem with an unknown key taken")
+    except SystemExit as e:
+        if "nope" not in str(e):
+            raise
+    # the guard is on in a run and in the tour by default, and the tour runs one game at a time
+    src = (ROOT / "scripts" / "pipeline_tour.py").read_text(encoding="utf-8")
+    if "threading" in src:
+        fail("the tour runs games at once (one game can hold 14 GB)")
+    if "raise MemoryStop(why)" not in src or "wait_memory(mem)" not in src:
+        fail("the run does not check memory")
+
+
+def worth(tour, states, rec):
+    """value: the steps a run's list was sliced into, what each alone adds, and the cut of those adding too little"""
+    with tempfile.TemporaryDirectory() as d:
+        r = [rec(i, 0, 3) for i in range(1, 40)]
+        open(os.path.join(d, "states.bin"), "wb").write(states.MAGIC + struct.pack("<I", states.SIZE) + b"".join(r[:30]))
+        rows = [{"stop": "new game: x", "took": 50, "pipelines": 10}, {"stop": "A", "took": 20, "pipelines": 22,
+                 "marks": [["arrive", 15], ["look", 20]]}, {"stop": "B", "took": 30, "pipelines": 30}]
+        json.dump({"meta": {}, "stops": rows}, open(os.path.join(d, "report.json"), "w"))
+        steps = tour.run_steps(states, d)
+        (r2,), _ = states.as_v2([r], force=True)
+        if [(k, len(v)) for k, _, v in steps] != [("new game: x", 10), ("A", 12), ("B", 8)] or steps[1][2] != set(r2[10:22]):
+            fail("run_steps: %s" % [(k, len(v)) for k, _, v in steps])
+        sub = tour.run_steps(states, d, sub=True)
+        if [(k, len(v)) for k, _, v in sub] != [("new game: x", 10), ("A / arrive", 5), ("A / look", 5), ("A / settle", 2), ("B", 8)]:
+            fail("run_steps --sub: %s" % [(k, len(v)) for k, _, v in sub])
+    s = lambda *ids: {i for i in ids}
+    # a second run where C meets what B met, and D meets nothing new: B or C goes (one is kept), D goes, the needed stays
+    runs = [[("new game: x", 50, s(1)), ("B", 20, s(2, 3, 4)), ("D", 10, s(1, 2))],
+            [("new game: x", 50, s(1)), ("C", 40, s(2, 3, 4)), ("E", 10, s(*range(10, 30)))]]
+    rows = {r["step"]: r for r in tour.worth(runs, against=s(4), floor=2)}
+    if not rows["new game: x"]["kept"] or rows["D"]["kept"] or not rows["E"]["kept"] or rows["E"]["only"] != 20:
+        fail("worth: %s" % rows)
+    if rows["B"]["kept"] == rows["C"]["kept"] or not rows["B"]["kept"]:   # (the slower of two equal steps goes)
+        fail("worth: of two steps meeting the same pipelines not the faster kept: %s" % rows)
+    if rows["B"]["beyond"] != 2 or rows["B"]["only"] != 2:
+        fail("worth: the players' lists not taken away: %s" % rows["B"])
 
 
 if __name__ == "__main__":
