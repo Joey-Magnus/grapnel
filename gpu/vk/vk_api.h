@@ -17,7 +17,7 @@ extern "C" {
 
 #define MKWVK_API_VERSION 17
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
-/* Local Ocarina of Time achievements. Setting BASE + index to 1 records an unlock on this PC. */
+/* Local achievements. Setting BASE + index to 1 records an unlock on this PC. */
 enum { HOS_OPT_ACHIEVEMENT_BASE = 8192 };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };

@@ -1,42 +1,33 @@
-# Hookshot-local Ocarina of Time achievements
+# Hookshot-local achievements
 
-Hookshot stores achievement progress on this PC, separately from the game's save slots. Progress is written beside
-`hookshot_options.ini` as `hookshot_options.ini.achievements`; the versioned file keeps existing IDs when entries are added.
-The menu is Insert → Gameplay → Achievements. It contains the 97 achievements in the Ocarina of Time N64 base set and
-one Hookshot original, “Hey, Listen me!”. The list scrolls with Up/Down, Page Up/Page Down, Home, and End.
+Hookshot can store achievement progress on this PC, separately from game saves. Progress is written beside
+`hookshot_options.ini` as `hookshot_options.ini.achievements`. The menu page is Insert → Gameplay → Achievements.
+Existing local IDs 0–97 are retained so progress files keep their indexes.
 
-New unlocks show a four-second on-screen notification. If several unlock together, Hookshot displays them one at a time
-in the order they were earned. They are also written to `hookshot_log.txt`.
+New unlocks appear as four-second notifications. If several arrive together, Hookshot shows them one at a time in the
+order received, and writes each unlock to `hookshot_log.txt`.
 
-The game-side polling currently unlocks achievements whose conditions are supported by observed pouch contents,
-collectible counts, known songs, or the child/adult GameData flag. This covers the original slice and direct item or
-count milestones. Entries that require boss damage/timing rules, minigame results, interaction history, a full run, or
-other event-specific evidence are in the catalog but remain locked until Hookshot can observe those events. They are
-not unlocked from a boss reward alone, since that would incorrectly award no-hit and restricted-equipment challenges.
+The entries currently use numbered placeholder names and descriptions. Automatic unlock triggers are disabled until
+their game events are identified and verified in play; loading an existing save therefore cannot unlock entries or
+queue a burst of notifications. The icon is drawn from Hookshot's own UI primitives: locked entries are grayscale, and
+unlocked entries use color. No downloaded badge artwork or third-party achievement text is included.
 
-Achievement IDs are the indexes in `gpu/vk/oot_achievements.h`. Keep existing IDs stable when adding or changing entries.
+## Trigger work
 
-The 97 base-set achievements use their original RetroAchievements badge artwork. The source IDs and achievement mapping are
-recorded in `assets/oot-achievement-badges.json`, and the PNGs are bundled with Hookshot so the menu works offline. Locked
-badges are rendered in grayscale; unlocked badges and unlock notifications use the original colors. Hookshot's local-only
-“Hey, Listen me!” entry has a small custom fairy badge because it has no RetroAchievements badge.
+Implement each unlock only after confirming its signal in a running game:
 
-## Remaining trigger work
+1. Identify reliable signals for item acquisition, boss and minigame results, damage, current hearts, healing, equipment
+   use, falls, scores, and game completion. Use the existing GameData and bank-name readers in `host/hos_main.c` and
+   validate each signal against play.
+2. Track temporary boss or minigame state per player and update it from `oot_update_player_cheats` each game frame. Start
+   only on a confirmed entry event and evaluate only on a confirmed result event.
+3. Track session-only conditions in session state. Keep full-run state separate per game save slot and clear it only
+   when that save is replaced or a new run begins.
+4. Call `rx_option_set(HOS_OPT_ACHIEVEMENT_BASE + id, 1)` only when the exact condition passes. Keep progress local and
+   route unlocks through the existing save and notification path.
+5. Check positive and negative cases for every trigger, including that a save load does not award an achievement and
+   that another save slot does not inherit run progress.
 
-The catalog entries marked `OOT_ACH_MANUAL` need game-event tracking. Implement them in these layers:
-
-1. Identify reliable signals in the running game for boss/minigame start and completion, damage, current hearts, fairy or
-   healing use, item/equipment use, falls, score, and results. Use the existing GameData and bank-name readers in
-   `host/hos_main.c`; verify each signal against gameplay before relying on it.
-2. Add a per-player achievement tracker and tick it from `oot_update_player_cheats` every game frame. Start a boss or
-   minigame record only on a confirmed entry signal, update its timer and constraint flags while it runs, and evaluate it
-   only after a confirmed win/result signal. Reset the temporary record when the encounter ends or Link leaves.
-3. Track session-only conditions, such as Gossip Stone visits, in session state. Persist full-run conditions separately
-   per game save slot so they survive closing Hookshot without leaking between slots; clear them only when that save is
-   replaced or a new run begins.
-4. Give each manual catalog entry a specific trigger and parameters, then call
-   `rx_option_set(HOS_OPT_ACHIEVEMENT_BASE + id, 1)` only after its exact condition passes. Keep item-only polling in
-   `oot_inventory_refresh` and route all unlocks through the existing notification and local-save path.
-5. Verify positive and negative cases for every tracker: for example, a clean boss win unlocks the no-hit entry, while
-   taking a hit, healing, using a prohibited item, running out of time, or failing the minigame does not. Check that a
-   save/load preserves run progress and that a different slot does not inherit it.
+Any future achievement names, descriptions, or artwork must be original or have a compatible license and a
+`PROVENANCE.md` record. The removed community-authored catalog should be used only if the maintainers confirm that its
+text can be included.

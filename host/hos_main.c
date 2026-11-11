@@ -16,7 +16,6 @@
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
-#include "../gpu/vk/oot_achievements.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -608,39 +607,6 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
     {   /* Link's age for the Debug tab's Switch age row: 0 child, 1 adult, -1 no save loaded (Sequence_IsChildhood) */
         int child = 1;
         rx_option_set(OOT_CHEAT_AGE_ID, loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? 0 : 1) : -1);
-    }
-#define OOT_ACH_CHECK(id, title, description, trigger, threshold, item1, item2, item3) \
-    if (loaded && trigger == OOT_ACH_ANY_ITEM && \
-        ((*item1 && oot_item_count(c, item1) > 0) || (*item2 && oot_item_count(c, item2) > 0) || \
-         (*item3 && oot_item_count(c, item3) > 0))) rx_option_set(HOS_OPT_ACHIEVEMENT_BASE + id, 1); \
-    else if (loaded && trigger == OOT_ACH_ITEM_COUNT) { \
-        int have = 0; \
-        if (*item1) have = oot_item_count(c, item1); \
-        if (*item2) { const int n = oot_item_count(c, item2); if (n > have) have = n; } \
-        if (*item3) { const int n = oot_item_count(c, item3); if (n > have) have = n; } \
-        if (have >= threshold) rx_option_set(HOS_OPT_ACHIEVEMENT_BASE + id, 1); \
-    }
-    OOT_LOCAL_ACHIEVEMENTS(OOT_ACH_CHECK)
-#undef OOT_ACH_CHECK
-    /* These conditions are represented directly by the remake's live GameData/pouch state. */
-    int child = 1;
-    if (loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) && !child)
-        rx_option_set(HOS_OPT_ACHIEVEMENT_BASE + 43, 1);  /* Hero of Time */
-    if (loaded) {
-        static const char *const oot_song_items[] = {
-            "Item_Melody_ZeldaLullaby", "Item_Melody_SariaSong", "Item_Melody_EponaSong", "Item_Melody_SunSong",
-            "Item_Melody_TimeSong", "Item_Melody_StormSong", "Item_Melody_ForestMinuet", "Item_Melody_FireBolero",
-            "Item_Melody_WaterSerenade", "Item_Melody_ShadowNocturne", "Item_Melody_SpiritRequiem", "Item_Melody_LightPrelude"};
-        int all_songs = 1;
-        for (unsigned i = 0; i < sizeof oot_song_items / sizeof oot_song_items[0]; i++)
-            if (oot_item_count(c, oot_song_items[i]) <= 0) { all_songs = 0; break; }
-        if (all_songs) rx_option_set(HOS_OPT_ACHIEVEMENT_BASE + 64, 1);  /* Musician */
-        /* The opening wake-up cutscene ends as the new game enters child Kokiri Forest. This is
-           also true for a save resumed there, where the wake-up has already happened. */
-        char current_banc[80];
-        if (oot_gamedata_string(c, 0x1d6189dau, current_banc, sizeof current_banc) &&
-            !strcmp(current_banc, "KokiriForest_Child"))
-            rx_option_set(HOS_OPT_ACHIEVEMENT_BASE + 5, 1);
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {
         probed = 1;   /* (one line naming every count, both spellings: which names the pouch knows) */

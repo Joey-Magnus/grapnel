@@ -35,7 +35,6 @@
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
 #include "oot_achievements.h"
-#include "hookshot_achievement_icons.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
@@ -1107,22 +1106,16 @@ int inventory_columns = 1, inventory_capacity = 1;   // (as last drawn: the card
 int inventory_filter = 0;   // (All, then the item sections)
 int inventory_page = 0;     // (the page shown: the choice's, or another the wheel turned to)
 bool inventory_amount = false;   // (Left and Right change the chosen item's amount)
-struct LocalAchievement { const char* title; const char* description; };
-#define OOT_ACH_ROW(id, title, description, trigger, threshold, item1, item2, item3) {title, description},
-const LocalAchievement local_achievements[] = {OOT_LOCAL_ACHIEVEMENTS(OOT_ACH_ROW)};
-#undef OOT_ACH_ROW
-/* Keep IDs stable while showing the Ocarina base set in game progression order, with Hookshot's Navi original first. */
-const int achievement_display_order[OOT_LOCAL_ACHIEVEMENT_COUNT] = {
-    5, 6, 7, 2, 8, 9, 3, 10, 4, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-    30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 0, 1, 47, 48, 49, 50, 51, 52, 53, 54,
-    55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
-    81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97};
+constexpr const char* kAchievementDescription = "Unlock condition pending verified game-event support.";
+void achievement_title(int id, char* text, size_t size) {
+    snprintf(text, size, "Local Achievement %02d", id + 1);
+}
 std::atomic<bool> achievement_unlocked[OOT_LOCAL_ACHIEVEMENT_COUNT]{};
 std::once_flag achievement_load_once;
 std::mutex achievement_file_mu, achievement_toast_mu;
 std::deque<int> achievement_toast_queue;
 std::atomic<bool> achievement_toast_visible{false};
-int achievement_toast_id = -1;
+std::atomic<int> achievement_toast_id{-1};
 std::chrono::steady_clock::time_point achievement_toast_deadline{};
 int achievement_selected = 0, achievement_scroll = 0, achievement_lines = 9;
 std::string ini_path();
@@ -1362,7 +1355,11 @@ void achievement_unlock(int id) {
             std::lock_guard lock(achievement_toast_mu);
             achievement_toast_queue.push_back(id);
         }
-        if (host && host->log) host->log((std::string("Local achievement unlocked: ") + local_achievements[id].title).c_str());
+        if (host && host->log) {
+            char title[32];
+            achievement_title(id, title, sizeof title);
+            host->log((std::string("Local achievement unlocked: ") + title).c_str());
+        }
     }
 }
 const char* ini_key(const Row& r) {
@@ -2432,37 +2429,22 @@ float card_tag(ui::Ctx& c, float x, float y, const char* tag, bool draw = true) 
     return tw;
 }
 
-ImTextureData* achievement_icon_atlas() {
-    static ImTextureData* texture = nullptr;
-    if (texture) return texture;
-    constexpr int icon = (int)hookshot_achievement_icon_size;
-    constexpr int width = icon * 2, height = icon * OOT_LOCAL_ACHIEVEMENT_COUNT;
-    std::vector<unsigned char> pixels((size_t)width * height * 4, 0);
-    for (int id = 0; id < OOT_LOCAL_ACHIEVEMENT_COUNT; id++) {
-        const unsigned char* src = hookshot_achievement_icons[id];
-        for (int y = 0; y < icon; y++) for (int x = 0; x < icon; x++) {
-            const size_t si = ((size_t)y * icon + x) * 4;
-            const size_t gray = ((size_t)(id * icon + y) * width + x) * 4;
-            const size_t color = gray + icon * 4;
-            const unsigned char lum = (unsigned char)((54u * src[si] + 183u * src[si + 1] + 19u * src[si + 2]) / 256u);
-            pixels[gray] = pixels[gray + 1] = pixels[gray + 2] = lum;
-            pixels[gray + 3] = src[si + 3];
-            memcpy(pixels.data() + color, src + si, 4);
-        }
-    }
-    texture = ui::rgba_texture(width, height, pixels.data());
-    return texture;
-}
-
 void draw_achievement_icon(ui::Ctx& c, int id, bool unlocked, ImVec2 a, float size) {
     if ((unsigned)id >= OOT_LOCAL_ACHIEVEMENT_COUNT) return;
-    ImTextureData* tex = achievement_icon_atlas();
-    if (!tex) return;
-    constexpr float icon = (float)hookshot_achievement_icon_size;
-    const float x0 = unlocked ? icon : 0.0f, y0 = (float)id * icon;
-    const ImVec2 uv0((x0 + 0.5f) / (icon * 2.0f), (y0 + 0.5f) / (icon * OOT_LOCAL_ACHIEVEMENT_COUNT));
-    const ImVec2 uv1((x0 + icon - 0.5f) / (icon * 2.0f), (y0 + icon - 0.5f) / (icon * OOT_LOCAL_ACHIEVEMENT_COUNT));
-    c.d->AddImage(tex->GetTexRef(), a, a + ImVec2(size, size), uv0, uv1);
+    const float s = size / 40.0f;
+    const ImVec2 center = a + ImVec2(size * 0.5f, size * 0.5f);
+    const ImU32 edge = unlocked ? ui::rgba(236, 194, 89) : ui::rgba(119, 124, 125);
+    const ImU32 face = unlocked ? ui::rgba(44, 111, 89) : ui::rgba(71, 75, 76);
+    const ImU32 mark = unlocked ? ui::rgba(255, 226, 151) : ui::rgba(166, 170, 170);
+    c.d->AddCircleFilled(center, size * 0.47f, face, 32);
+    c.d->AddCircle(center, size * 0.43f, edge, 32, std::max(1.0f, s * 1.6f));
+    c.d->AddCircleFilled(center, size * 0.29f, unlocked ? ui::rgba(38, 83, 70) : ui::rgba(58, 62, 63), 24);
+    if (unlocked) {
+        c.d->AddLine(center + ImVec2(-7 * s, 0), center + ImVec2(-2 * s, 5 * s), mark, std::max(1.5f, 2.3f * s));
+        c.d->AddLine(center + ImVec2(-2 * s, 5 * s), center + ImVec2(8 * s, -6 * s), mark, std::max(1.5f, 2.3f * s));
+    } else {
+        c.d->AddCircleFilled(center, size * 0.07f, mark, 16);
+    }
 }
 
 void draw_inventory(ui::Ctx& c) {
@@ -2628,7 +2610,7 @@ void draw_achievements(ui::Ctx& c) {
                (float)achievement_scroll);
     c.d->PushClipRect(ImVec2(left - 12 * s, top - 8 * s), ImVec2(right + 12 * s, bottom + 8 * s), true);
     for (int row = achievement_scroll; row < std::min(OOT_LOCAL_ACHIEVEMENT_COUNT, achievement_scroll + visible); row++) {
-        const int id = achievement_display_order[row];
+        const int id = row;
         const bool unlocked = achievement_unlocked[id].load(std::memory_order_relaxed), selected = row == achievement_selected;
         const ImVec2 a(left, top + (row - achievement_scroll) * pitch), b(right, a.y + row_h);
         c.d->AddRectFilled(a, b, selected ? ui::kCellNameSel : ui::kCellName, 4 * s);
@@ -2639,11 +2621,13 @@ void draw_achievements(ui::Ctx& c) {
         draw_achievement_icon(c, id, unlocked, ImVec2(a.x + 9 * s, (a.y + b.y - icon_size) * 0.5f), icon_size);
         const float status_room = unlocked ? 104 * s : 78 * s;
         const float text_right = b.x - status_room;
+        char title[32];
+        achievement_title(id, title, sizeof title);
         c.d->PushClipRect(ImVec2(a.x + 58 * s, a.y), ImVec2(text_right - 6 * s, b.y), true);
         ui::text_mid(c, c.f.strong, 16.5f * s, a.x + 60 * s, a.y + 19 * s,
-                     selected ? ui::kInkBright : ui::kInk, local_achievements[id].title);
+                     selected ? ui::kInkBright : ui::kInk, title);
         ui::text_mid(c, c.f.body, 13.5f * s, a.x + 60 * s, a.y + 39 * s,
-                     unlocked ? ui::kSoft : ui::kDim, local_achievements[id].description);
+                     unlocked ? ui::kSoft : ui::kDim, kAchievementDescription);
         c.d->PopClipRect();
         if (unlocked) card_tag(c, b.x - 10 * s, (a.y + b.y) * 0.5f, "UNLOCKED");
         else ui::text_mid_right(c, c.f.body, 12 * s, b.x - 12 * s, (a.y + b.y) * 0.5f, ui::kDim, "LOCKED");
@@ -2657,9 +2641,9 @@ void draw_achievements(ui::Ctx& c) {
 }
 
 void draw_achievement_toast(ui::Ctx& c) {
-    if (!achievement_toast_visible.load(std::memory_order_relaxed) ||
-        (unsigned)achievement_toast_id >= OOT_LOCAL_ACHIEVEMENT_COUNT)
-        return;
+    if (!achievement_toast_visible.load(std::memory_order_acquire)) return;
+    const int id = achievement_toast_id.load(std::memory_order_relaxed);
+    if ((unsigned)id >= OOT_LOCAL_ACHIEVEMENT_COUNT) return;
     const float s = c.s, w = std::max(1.0f, std::min(500 * s, c.w - 2 * c.safe)), h = 86 * s;
     const ImVec2 a((c.w - w) * 0.5f, c.safe + (open_now.load(std::memory_order_relaxed) ? banner_h(c) + 8 * s : 8 * s));
     const ImVec2 b = a + ImVec2(w, h);
@@ -2667,14 +2651,16 @@ void draw_achievement_toast(ui::Ctx& c) {
     c.d->AddRectFilled(a, b, ui::rgba(24, 34, 28, 250), 8 * s);
     c.d->AddRect(a, b, ui::rgba(108, 136, 97, 230), 8 * s, std::max(1.0f, s));
     c.d->AddRectFilled(a + ImVec2(3 * s, 10 * s), ImVec2(a.x + 7 * s, b.y - 10 * s), ui::rgba(224, 190, 88));
-    draw_achievement_icon(c, achievement_toast_id, true, a + ImVec2(17 * s, 20 * s), 46 * s);
+    draw_achievement_icon(c, id, true, a + ImVec2(17 * s, 20 * s), 46 * s);
     const float text_x = a.x + 78 * s, text_right = b.x - 14 * s;
     ui::text_mid(c, c.f.strong, 12 * s, text_x, a.y + 20 * s, ui::rgba(232, 199, 105), "ACHIEVEMENT UNLOCKED");
+    char title[32];
+    achievement_title(id, title, sizeof title);
     c.d->PushClipRect(ImVec2(text_x, a.y + 24 * s), ImVec2(text_right, a.y + 55 * s), true);
-    ui::text_mid(c, c.f.strong, 17 * s, text_x, a.y + 42 * s, ui::kInkBright, local_achievements[achievement_toast_id].title);
+    ui::text_mid(c, c.f.strong, 17 * s, text_x, a.y + 42 * s, ui::kInkBright, title);
     c.d->PopClipRect();
     c.d->PushClipRect(ImVec2(text_x, a.y + 55 * s), ImVec2(text_right, b.y - 4 * s), true);
-    ui::text_mid(c, c.f.body, 12.5f * s, text_x, a.y + 69 * s, ui::kSoft, local_achievements[achievement_toast_id].description);
+    ui::text_mid(c, c.f.body, 12.5f * s, text_x, a.y + 69 * s, ui::kSoft, kAchievementDescription);
     c.d->PopClipRect();
 }
 
@@ -3605,10 +3591,10 @@ void achievement_toast_tick() {
     if (!achievement_toast_visible.load(std::memory_order_relaxed)) {
         std::lock_guard lock(achievement_toast_mu);
         if (!achievement_toast_queue.empty()) {
-            achievement_toast_id = achievement_toast_queue.front();
+            achievement_toast_id.store(achievement_toast_queue.front(), std::memory_order_relaxed);
             achievement_toast_queue.pop_front();
             achievement_toast_deadline = now + std::chrono::seconds(4);
-            achievement_toast_visible.store(true, std::memory_order_relaxed);
+            achievement_toast_visible.store(true, std::memory_order_release);
         }
     }
 }
