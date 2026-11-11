@@ -25,7 +25,7 @@ GRAPHICS = [
 DISPLAY = [
     # (the shape row by its value: named Ultrawide, or Aspect ratio)
     ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter", "&opts.ultrawide", "Ultrawide menus"]),
-    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness"]),
+    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast"]),
     ("Overlays", ["FPS counter", "FPS counter position", "Menu size"]),
 ]
 
