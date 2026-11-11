@@ -1,5 +1,13 @@
 # Local validation — November 11, 2026
 
+## Readability and hero follow-up
+
+Increased document body text to 1.0625rem and enlarged the smaller navigation, button and homepage text.
+Added “Progress & updates” beside “Install Hookshot” in the hero and moved its summary above the setup content.
+The fork preview build and all four website test files passed; generated HTML confirms the hero link targets
+`/Hookshot/progress/`. Browser access was attempted again but the host remains unavailable, so rendered layout,
+keyboard and light/dark review remain outstanding.
+
 ## Search-button follow-up
 
 Added a shared-header “Search for your problem” link, including a full-width mobile row. It targets the search

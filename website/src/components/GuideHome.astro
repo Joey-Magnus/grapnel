@@ -12,6 +12,7 @@ const paths = {
 };
 ---
 <div class="home-content not-content">
+  <section class="community-strip"><div><p class="eyebrow">PROJECT PROGRESS</p><h2>What’s being worked on?</h2><p>Search reported problems, feature requests, proposed changes and recent releases.</p></div><a class="button-secondary" href={`${base}progress/`}>Progress & updates <span aria-hidden="true">→</span></a></section>
   <aside class="own-copy-note" aria-label="Game files notice"><span aria-hidden="true">◇</span><p><strong>We do not host, store, or distribute any game files.</strong> This site and repository contain no ROMs, game dumps, or decryption keys. You must supply your own supported copy of the game; Hookshot builds it locally on your computer.</p></aside>
   <section class="community-strip"><div><p class="eyebrow">BEFORE YOU BUILD</p><h2>Check your build compatibility</h2><p>Compare your game version and PC with Hookshot’s requirements.</p></div><a class="button-secondary" href={`${base}compatibility/`}>Check compatibility <span aria-hidden="true">→</span></a></section>
   <section class="antivirus-feature" aria-labelledby="antivirus-title"><p class="eyebrow">WINDOWS DEFENDER</p><h2 id="antivirus-title">Is Hookshot a virus?</h2><p>The maintainer identifies the reported Defender alerts as false positives. Read the evidence, code-signing status, and options for reviewing and building the open-source project yourself.</p><a href={`${base}antivirus/`}>Read about antivirus alerts <span aria-hidden="true">→</span></a></section>
@@ -22,7 +23,6 @@ const paths = {
       <h3>{g.title}</h3><p>{g.text}</p><div class="quest-link">{g.footer}<span aria-hidden="true">↗</span></div>
     </a>)}
   </div>
-  <section class="community-strip"><div><p class="eyebrow">PROJECT PROGRESS</p><h2>What’s being worked on?</h2><p>Search reported problems, feature requests, proposed changes and recent releases.</p></div><a class="button-secondary" href={`${base}progress/`}>Progress & updates <span aria-hidden="true">→</span></a></section>
   <section class="help-board" aria-labelledby="help-title">
     <div class="help-board-intro"><p class="eyebrow">TROUBLESHOOTING</p><h2 id="help-title">Common issues</h2><p>Answers from GitHub issue responses, with links to the original reports. The linked trackers have the current status and advice.</p><a href={`${base}guides/common-issues/`}>View all 11 answers <span aria-hidden="true">→</span></a></div>
     <div class="help-questions">
