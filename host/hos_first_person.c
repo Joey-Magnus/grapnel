@@ -18,6 +18,16 @@
      takes. State 2 (an explicit recenter, the Z tap) and state 5 (state 4's sibling) hold the last view at Link's moving
      head for a third of a second rather than pop out and back; state 0 (the aim and shop park: another camera draws,
      traced at Hyrule Castle), 6 (scripted) and the rest are the game's;
+
+   The aim handover (the slingshot, the bow, the hookshot: the game's own first person camera) is the same routine's
+   other callers. That camera's view passes this hook too and is not camera zero's, so the gameplay-view check below
+   stands it down before anything is written: the game's aim view passes through untouched, every frame of the aim. The
+   view this file writes is camera zero's alone, and the moments around the aim are where it must let go:
+   - a state not the view's (0 and the rest) drops any held view, so the recenter as the aim lets go (state 2) cannot
+     flash where the player looked before he raised it;
+   - while another camera's view ran the routine within the hold's third of a second, the hold is dropped too, not
+     applied: it would fight the aim's first frames with the view from before it (and a view another camera draws every
+     frame keeps it down for good, as an aim does);
    - Link himself updated this frame: his update's hook (f_82c415e0, host/hos_main.c oot_update_player_cheats) hands his
      actor and position here, already validated as his. The view reads the snapshot, never the actor, so a map change that
      frees the old one is a new pointer here, never a dangling read — and a new pointer is held one frame before it is
@@ -48,6 +58,7 @@ enum { STATE_AT = 0x204 };               /* the player camera's state (mouse_nat
 #define HEAD_FAR 10.0                    /* (m: a head farther than this from the game's target is not his position) */
 
 static volatile LONG64 camera, camera_ran;   /* (the f_80644c80 hook's camera, and that it ran since the view last looked) */
+static volatile LONG64 other_view_ns;        /* (another camera's view ran the matrix routine at: the aim's own, a shop's) */
 
 /* f_80644c80's first line (mouse_native.c hos_mouse_camera) hands the camera here too, whatever turns it: the pointer this
    view reads, and the fact it is alive. In its own atomics, beside the hook's own, so the mouse's 150 ms liveness there is
@@ -133,8 +144,13 @@ void hos_first_person(Ctx *c, uint64_t view) {
     static uint64_t held_actor;
     static long long applied;
     if (!view || recomp_load64(c, view) != VT_VIEW) return;
-    /* camera zero supplies the gameplay view; the same matrix routine also serves other cameras (the free camera's check) */
-    if (oot_gameplay_view(c) != view) return;
+    /* camera zero supplies the gameplay view; the same matrix routine also serves other cameras (the free camera's
+       check). One of those is the aim (the slingshot's, the bow's own first person camera): its view is not this one,
+       and nothing of ours touches it — only remembered, so the hold below stands down while an aim is around */
+    if (oot_gameplay_view(c) != view) {
+        InterlockedExchange64(&other_view_ns, hos_now_ns());
+        return;
+    }
     if (rx_option(HOS_OPT_CHEAT_CAMERA, 0)) return;   /* (the free camera owns the view: its read of the option and this
                                                           one can straddle a mid-frame toggle by a frame) */
     if (!fp_on()) return;
@@ -157,6 +173,11 @@ void hos_first_person(Ctx *c, uint64_t view) {
             said[nsaid++] = state;
             hos_log("first person: camera state %u: the game's camera draws", state);
         }
+        /* the aim and shop park, a scripted camera: any held view ends here, so the recenter after it (state 2) cannot
+           flash where the player looked before the aim began — the game's camera draws until he walks again */
+        AcquireSRWLockExclusive(&fp_lock);
+        held_at = 0;
+        ReleaseSRWLockExclusive(&fp_lock);
         return;
     }
     /* the game's geometry for this frame (the free camera seeds its own angles from the same two points) */
@@ -168,8 +189,12 @@ void hos_first_person(Ctx *c, uint64_t view) {
     double yaw, pitch;
     if (state == 2 || state == 5) {
         /* an explicit recenter (the Z tap) or state 4's sibling: hold the last view at the moving head rather than pop out
-           and back, and give the game its camera back if the state stays */
-        if (now - held_at >= HOLD_NS) {
+           and back, and give the game its camera back if the state stays. Not across another camera: while one drew
+           within the hold's span (the aim's own view, passing the same routine above), the held view is from before it
+           and would fight the aim's first frames — it is dropped, and a view another camera draws every frame keeps it
+           down for as long as the aim lasts */
+        if (now - (int64_t)InterlockedCompareExchange64(&other_view_ns, 0, 0) < HOLD_NS || now - held_at >= HOLD_NS) {
+            held_at = 0;
             ReleaseSRWLockExclusive(&fp_lock);
             return;
         }
