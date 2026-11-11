@@ -38,9 +38,11 @@ jobs:
           - os: windows-2022
             shard: 2/2
           - os: macos-latest
-            shard: 1/1
+            shard: 1/2
+          - os: macos-latest
+            shard: 2/2
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
