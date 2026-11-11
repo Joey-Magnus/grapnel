@@ -706,8 +706,8 @@ def main():
     total = med([sum(r["c"]["owner_fn"].values()) for r in runs]) or 1
     cps, csecs = hle_calls(a.calls) if a.calls else ({}, None)
     if a.calls and not cps:
-        raise SystemExit("--calls %s: no 'hle:' summaries in its game.log (HOS_HLE_STATS=1 needs a build with the HLE call "
-                         "counters, see docs/cpu-profile.md)" % a.calls)
+        raise SystemExit("--calls %s: no 'hle:' summaries in its game.log (a run with HOS_HLE_STATS=1, on a build that has the "
+                         "HLE call counters: see docs/cpu-profile.md)" % a.calls)
     cfps = window_of(a.calls)[0] if a.calls else None
     if cps:
         w("Call counts come from `%s`, a run of the same scene with the HLE call counters on (`HOS_HLE_STATS=1`), %d s of "
