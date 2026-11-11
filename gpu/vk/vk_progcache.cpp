@@ -430,6 +430,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
             }
             st.module = make_module(spirv);
             st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());
+            st.subgroups = spirv_uses_subgroups(spirv);
             ok = ok && st.module;
         }
         ok = ok && answers_fit(*p, p->answers);   // (hookshot: an answer past the stages or their slots: not this record)

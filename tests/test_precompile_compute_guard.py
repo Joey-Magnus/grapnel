@@ -54,6 +54,8 @@ int faults_noted=0; void note_driver_fault(){++faults_noted;}
 #define CHECK(c) do {if(!(c)){std::fprintf(stderr,"CHECK failed line %d: %s\n",__LINE__,#c);std::exit(7);}}while(0)
 const VkComputePipelineCreateInfo* expected_ci=nullptr; VkPipeline* expected_out=nullptr;
 void pin_subgroup(decltype(VkComputePipelineCreateInfo::stage)&stage,unsigned x){CHECK(x==32);CHECK(stage.stage==12);}
+// (which programs are pinned: tests/test_compute_pin.py. Here, the arm passes its stage and program through)
+void pin_compute(decltype(VkComputePipelineCreateInfo::stage)&stage,const Program&p){pin_subgroup(stage,p.workgroup[0]);}
 VkResult vkCreateComputePipelines(uintptr_t device,VkPipelineCache cache,unsigned count,const VkComputePipelineCreateInfo*ci,const void*allocator,VkPipeline*out){
  CHECK(device==dev.device&&cache==pcache&&count==1&&allocator==nullptr&&out);
  CHECK(ci&&ci->sType==10&&ci->stage.sType==11&&ci->stage.stage==12&&ci->stage.module==0x2468&&ci->layout==0x1357);
