@@ -43,6 +43,8 @@
 #include "vk_dump.h"
 #include "vk_gprof.h"
 #include "vk_jobs.h"
+#include "vk_prepare_play.h"   // (the shaders prepared behind the game: Compile shaders on Most or Later)
+#include "prepare_play.h"
 #include "vk_shader.h"
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
@@ -656,6 +658,11 @@ constexpr uint32_t kPushSize = Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END;
 
 void ensure_layout(Program& p) {
     if (p.layout) return;
+    // (one at a time: the preparation behind the game (vk_prepare_play.cpp) makes layouts of programs play may make at the same
+    // moment; the check above stays the fast way out)
+    static std::mutex layout_mu;
+    std::lock_guard layout_lk(layout_mu);
+    if (p.layout) return;
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     uint64_t total = 0;   // (64-bit: a sum of 32-bit counts)
     auto add = [&](VkDescriptorType type, VkShaderStageFlags stage, const auto& descriptors) {
@@ -881,7 +888,7 @@ void play_cache_save() {
 template <class CI>
 VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline*), const CI* ci, VkPipeline* pl) {
     PlayCache* g = play_cache.load();
-    if (!g) return create(pcache, ci, pl);
+    if (!g || prep_direct_cache()) return create(pcache, ci, pl);   // (the preparation behind the game: into the start's cache)
     const bool ask_only = (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) != 0;
     // (counted in before it is used: a save takes the generation away only once its count is back to 0)
     for (;;) {
@@ -1661,8 +1668,9 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
     std::atomic<size_t> next{0}, made{0}, missing{0};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off; the pipeline state list's builds raced the replay's updates)
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        prep_thread_begin(THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
+            prep_gate();
             const size_t i = next++;
             if (i >= want.size()) return;
             const StateRec& r = *want[i].r;
@@ -1680,14 +1688,16 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         }
     };
     std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < prep_threads(std::clamp(half_cpus(), 1u, 32u)); i++) threads.emplace_back(worker);
     for (std::thread& t : threads) t.join();
     // then each pipeline, noted as a draw would note it
     std::unordered_set<uint64_t> keys;
     for (const Want& w : want)
         if (w.key) keys.insert(w.key);
     // (these keys only: the kept compute programs stay on disk for precompile_run, which builds their pipelines)
-    program_cache_load_some(keys, [](Program& p) { ensure_layout(p); }, false);
+    // (behind the game the layouts are made below, one program at a time: here they were made under the programs' lock, which play's
+    // draws take for every new program)
+    program_cache_load_some(keys, [](Program& p) { if (!prepare_play_running()) ensure_layout(p); }, false);
     // the variants made by other textures (the seed's are for nothing bound): translated with the answers the game's gave
     std::vector<size_t> variant_of;   // (a record of each variant the cache lacks)
     {
@@ -1704,8 +1714,9 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
     std::atomic<size_t> variants_made{0};
     next = 0;
     const auto variant_worker = [&] {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        prep_thread_begin(THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
+            prep_gate();
             const size_t i = next++;
             if (i >= variant_of.size()) return;
             const StateRec& r = recs[variant_of[i]];
@@ -1722,7 +1733,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         }
     };
     threads.clear();
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(variant_worker);
+    for (unsigned i = 0; i < prep_threads(std::clamp(half_cpus(), 1u, 32u)); i++) threads.emplace_back(variant_worker);
     for (std::thread& t : threads) t.join();
     size_t noted_n = 0, no_variant = 0, noted_mesh = 0, noted_fallback = 0;
     auto s = std::make_unique<NvnState>();
@@ -1953,6 +1964,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     pcache_init();
     PipeEntry* e = pipelines.emplace(key, std::make_unique<PipeEntry>()).first->second.get();
     pipeline_note(key, p, s, at, topo, color_types);
+    prep_pipeline_met(key);   // (behind the game: what this area needs, learned)
     static const bool sync = env_on("RX_VK_SYNC_PIPELINES");
     if (sync) {
         e->pipeline = build_graphics(p, s, at, topo);
@@ -6377,6 +6389,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         st_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     };
     if (!cp->ready.load(std::memory_order_acquire)) {
+        prep_note_miss();   // (an area's first frames are held while they lack something: vk_prepare_play.cpp)
         if (legacy_translation_skip && targets_persistent(at)) return void(st_pending_skips++);
         wait_for(cp->ready);
     }
@@ -6408,6 +6421,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         pe = graphics_pipeline(p, s, at, topo, types);
     }
     if (!pe->ready.load(std::memory_order_acquire)) {
+        prep_note_miss();
         bool may_skip = !always_wait && targets_persistent(at);
         if (may_skip)
             for (const Stage& st : p.stages) {
@@ -6421,8 +6435,21 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                     break;
                 }
             }
-        if (may_skip) return void(st_pending_skips++);
-        wait_for(pe->ready);
+        // (hookshot) When a shader isn't ready (the Insert menu's row, prepare_play.h decide): Wait, Wait briefly then skip (out of the
+        // frame's budget, a share of the capped frame time), Skip. What may not be left out waits whatever the choice: a draw into
+        // targets made this frame, or one that writes memory
+        const prepare_play::Act act = prep_miss_act(may_skip);
+        if (act == prepare_play::Act::LeaveOut) return void(st_pending_skips++);
+        if (act == prepare_play::Act::Bounded) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool got = jobs_wait_for(pe->ready, prep_miss_budget_left());
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            prep_miss_spend((int64_t)(ms * 1000));
+            st_waits++, st_wait_ms += ms;
+            if (!got) return void(st_pending_skips++);
+        } else {
+            wait_for(pe->ready);
+        }
     }
     const VkPipeline pl = pe->pipeline;
     if (!pl) SKIP_HERE();
@@ -7660,9 +7687,10 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
     };
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's, and half the CPUs)
+        prep_thread_begin(THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's, and half the CPUs)
         for (;;) {
             if (prepare_stopped()) return;
+            prep_gate();
             const size_t i = next++;
             if (i >= total) return;
             if (i < loaded.size()) warm(*loaded[i]);
@@ -7674,7 +7702,7 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
         }
     };
     std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < prep_threads(std::clamp(half_cpus(), 1u, 32u)); i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load(), total);
         Sleep(100);
@@ -7699,6 +7727,7 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
     }
     return true;
 }
+bool warm_compute_one(Program& p);   // (below)
 /// Every shader of the game, before its first start (vk_shader.cpp, the seed): translated once for this translator, and the
 /// driver's part made once for this driver (see PreparedFor). True: prepared now, either of them.
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
@@ -7742,7 +7771,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
             remove(warming.c_str());
         }
         prepared_for.warmed = warmed;
-        prepared_write(path, prepared_for);
+        prepared_write(path + prep_record_suffix(), prepared_for);
         return true;
     }
     // (the translator is the same: what the program cache keeps stays, and seed_translate and seed_compute leave it out. The
@@ -7785,39 +7814,41 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // (hookshot) compute pipelines too, for the driver's own cache: built in play they stopped the game while the driver compiled
     // them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang
     const auto warm_compute = [&](Program& p) {
-        if (!warm_cs || taau_key(p.key)) return;
-        ensure_layout(p);
-        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        ci.stage.module = p.stages[0].module;
-        ci.stage.pName = "main";
-        pin_subgroup(ci.stage, p.workgroup[0]);
-        ci.layout = p.layout;
-        if (env_on("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
-        VkPipeline pl = VK_NULL_HANDLE;
-        // (into the app's pipeline cache, saved to mkw_vk_pipelines.bin: without it the next start compiled them again in play
-        // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
-        if (guarded_compute(pcache, &ci, &pl) == VK_SUCCESS && pl) {
-            vkDestroyPipeline(dev.device, pl, nullptr);
-            libs++;
-            pcache_built_since_save++;
-        }
-        if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr), p.layout = VK_NULL_HANDLE;
-        if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr), p.set_layout = VK_NULL_HANDLE;
+        if (warm_cs && warm_compute_one(p)) libs++;
     };
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
         // (below normal, and half the CPUs, below: on all of them at High the driver's compiles froze the whole PC)
-        SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
+        prep_thread_begin(background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
             if (prepare_stopped()) return;
+            prep_gate();   // (behind the game: the frame's own work first, vk_prepare_play.cpp)
             const size_t i = next++;
             if (i >= total) return;
+            if (prep_item_skip(prepare_play::kPrograms, i)) {   // (behind the game: done by an earlier start)
+                done++;
+                continue;
+            }
+            struct ItemDone {
+                size_t i;
+                ~ItemDone() { if (!prepare_stopped()) prep_item_done(prepare_play::kPrograms, i); }   // (one cut short: again)
+            } item_done{i};
             const size_t k = order[i / 3];
             if (seed_is_compute(k)) {   // (hookshot) a compute program with each of its texture variants, each warmed
                 if (i % 3 == 0) {
-                    const SeedVariants v = seed_compute(k, 64, warm_compute);
+                    // (Compile shaders on Most or Later: every variant only for the programs play is known to dispatch (the shipped
+                    // list and this folder's own), the base variant for the rest; their other variants are built behind the game,
+                    // compute_rest_run. Its key is the base variant's: a program kept already is not given to the callback, and
+                    // stays at its base variant here too)
+                    const bool every = prep_compute_every(0);
+                    uint64_t key = 0;
+                    SeedVariants v = seed_compute(k, every ? 64 : 1, [&](Program& p) { key = p.key, warm_compute(p); });
+                    if (!every && key && prep_compute_every(key)) {
+                        const SeedVariants more = seed_compute(k, 64, warm_compute);
+                        v.variants += more.variants, v.capped = more.capped;
+                    } else if (!every) {
+                        v.capped = false;   // (its base variant only, by choice: not at the limit)
+                    }
                     made += v.variants != 0, variants += v.variants, asking += v.variants > 1, capped += v.capped && v.variants;
                 }
                 done++;
@@ -7848,7 +7879,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     const unsigned cpus = usable_cpus();
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
-    const unsigned workers = background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
+    const unsigned workers = background ? std::min(quarter, cpus) : prep_threads(std::clamp(half_cpus(), 1u, 32u));
+    prep_phase_items(prepare_play::kPrograms, total);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
@@ -7872,7 +7904,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     if (warm) {
         // (translated, whatever becomes of the libraries: a start that is closed in them goes on with them alone)
         prepared_for.warmed = 0;
-        prepared_write(path, prepared_for);
+        prepared_write(path + prep_record_suffix(), prepared_for);
         if (!warm_libraries(progress)) {
             remove(warming.c_str());
             return false;
@@ -7881,7 +7913,9 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     if (!background) remove(warming.c_str());
     // (the driver's part left out, by a start that ended in it or in play, is not tried again for this driver: as before)
     prepared_for.warmed = warmed;
-    prepared_write(path, prepared_for);
+    // (behind the game with Compile shaders on Later: beside it until everything is done, vk_prepare_play.cpp moves it over the record)
+    prepared_write(path + prep_record_suffix(), prepared_for);
+    prep_programs_prepared();   // (Most and Later: the other compute variants and the predicted pipelines are what is left)
     return true;
 }
 /// (hookshot) An update (prepare_is_update): the seed is prepared in play, behind the game, too late for the precompile; the pipelines
@@ -8169,6 +8203,9 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     pre->notes = std::move(notes), pre->predicted = std::move(predicted);
     for (const auto& n : pre->predicted) pre->by_program[n->prog].push_back(n.get());
     for (const auto& kv : pre->by_program) pre->keys.push_back(kv.first);
+    // (behind the game, in a fixed order: a start that stopped goes on from where it got to, vk_prepare_play.cpp)
+    if (prepare_play_running()) std::sort(pre->keys.begin(), pre->keys.end());
+    prep_phase_items(prepare_play::kPredicted, pre->keys.size());
     auto& next = pre->next;
     auto& done = pre->done;
     auto& made = pre->made;
@@ -8182,6 +8219,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     static const int budget_s = getenv("RX_VK_PREDICT_S") ? atoi(getenv("RX_VK_PREDICT_S")) : 0;
     const auto worker = [pre, t0] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
+        prep_thread_begin(THREAD_PRIORITY_NORMAL);
         driver_cache_only = true;
         for (;;) {
             if (prepare_stopped() || pre->abandoned.load()) return;
@@ -8189,9 +8227,18 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
                 pre->out_of_time = true;
                 return;
             }
+            prep_gate();
             const size_t i = pre->next++;
             if (i >= pre->keys.size()) return;
             const auto& list = pre->by_program[pre->keys[i]];
+            if (prep_item_skip(prepare_play::kPredicted, i)) {   // (behind the game: built by an earlier start)
+                pre->done += list.size();
+                continue;
+            }
+            struct ItemDone {
+                size_t i;
+                ~ItemDone() { if (!prepare_stopped()) prep_item_done(prepare_play::kPredicted, i); }
+            } item_done{i};
             size_t counted = 0;
             // (each pipeline once, by the key play looks it up by (pipeline_key): the prediction's vertex classes tell apart the
             // exact topology and each stream's stride, which a pipeline takes as dynamic state, and a mesh program takes no vertex
@@ -8231,7 +8278,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     const int faults_before = driver_faults();
     std::vector<std::thread> threads;
     const unsigned cpus = usable_cpus();
-    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < prep_threads(std::min(cpus, 64u)); i++) threads.emplace_back(worker);
     // (hookshot) Nothing finished for this long, on any worker (each pipeline counts as it finishes): the run goes on, the stuck
     // workers left in the driver, the rest of the predicted pipelines built in play when first drawn. When:
     // - the driver faulted in this run (driver_faults: caught, and a driver can stop answering after one): wherever the run is;
@@ -8283,6 +8330,228 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     else if (FILE* f = fopen(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began), fclose(f);   // (closed: not counted)
     driver_cache_log("after the prediction");
     if (!gone_on) delete pre;
+}
+
+/// (hookshot) A compute program's pipeline built into the start's cache (pcache) and let go, for the driver's own cache and ours (into
+/// the app's pipeline cache, saved to mkw_vk_pipelines.bin: without it the next start compiled them again in play where the driver's
+/// own cache missed them, AMD's 15 s culling compiles each time). prepare_run's warm pass and compute_rest_run. False: not made
+bool warm_compute_one(Program& p) {
+    if (taau_key(p.key) || p.stages.empty()) return false;
+    ensure_layout(p);
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = p.stages[0].module;
+    ci.stage.pName = "main";
+    pin_subgroup(ci.stage, p.workgroup[0]);
+    ci.layout = p.layout;
+    if (env_on("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    VkPipeline pl = VK_NULL_HANDLE;
+    bool made = false;
+    if (guarded_compute(pcache, &ci, &pl) == VK_SUCCESS && pl) {
+        vkDestroyPipeline(dev.device, pl, nullptr);
+        pcache_built_since_save++;
+        made = true;
+    }
+    if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr), p.layout = VK_NULL_HANDLE;
+    if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr), p.set_layout = VK_NULL_HANDLE;
+    return made;
+}
+/// (hookshot, Compile shaders on Most or Later: vk_prepare_play.cpp) The compute programs' other texture variants, which the programs'
+/// part left at their base variant for the programs play is not known to dispatch: each program with every variant (seed_compute
+/// keeps those it has and makes the rest), their pipelines built into the start's cache as prepare_run's are. The seed opened and
+/// closed here. False: stopped, or no seed
+bool compute_rest_run(void (*progress)(size_t done, size_t total)) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const size_t programs = seed_open();
+    if (!programs) return false;
+    std::vector<uint32_t> computes;
+    for (size_t k = 0; k < programs; k++)
+        if (seed_is_compute(k)) computes.push_back((uint32_t)k);
+    pcache_init();
+    // (the driver's part, as prepare_run guards it: a driver that crashed in it at the last start is left out of it)
+    const std::string warming = prepared_path() + ".warming";
+    bool warm = !env_on("RX_VK_NO_WARM");
+    if (FILE* f = fopen(warming.c_str(), "rb")) {
+        fclose(f);
+        warm = false;
+        logf("vk: the last start did not finish the driver's part of the shaders: the compute variants' pipelines are left out");
+    } else if (warm) {
+        if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
+    }
+    prep_phase_items(prepare_play::kComputeRest, computes.size());
+    std::atomic<size_t> next{0}, done{0}, variants{0}, pipelines{0};
+    const auto worker = [&] {
+        ub_thread_off();   // (a background thread: see ub_thread_off)
+        prep_thread_begin(THREAD_PRIORITY_BELOW_NORMAL);
+        for (;;) {
+            if (prepare_stopped()) return;
+            prep_gate();
+            const size_t i = next++;
+            if (i >= computes.size()) return;
+            if (prep_item_skip(prepare_play::kComputeRest, i)) {
+                done++;
+                continue;
+            }
+            const SeedVariants v = seed_compute(computes[i], 64, [&](Program& p) {
+                if (warm && warm_compute_one(p)) pipelines++;
+            });
+            variants += v.variants;
+            if (!prepare_stopped()) prep_item_done(prepare_play::kComputeRest, i);
+            done++;
+        }
+    };
+    std::vector<std::thread> threads;
+    for (unsigned i = 0; i < prep_threads(std::clamp(half_cpus(), 1u, 32u)); i++) threads.emplace_back(worker);
+    while (done.load() < computes.size() && !prepare_stopped()) {
+        if (progress) progress(done.load(), computes.size());
+        Sleep(100);
+        if (next.load() >= computes.size() + threads.size()) break;
+    }
+    for (std::thread& t : threads) t.join();
+    if (progress) progress(done.load(), computes.size());
+    if (!env_on("RX_VK_SEED_CHECK")) seed_close();
+    remove(warming.c_str());   // (the end, or a close: what was made is kept)
+    logf("vk: the compute programs' other variants: %zu programs, %zu variants made, %zu compute pipelines, in %.1f s%s", computes.size(),
+         variants.load(), pipelines.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+         prepare_stopped() ? " (stopped: the next start goes on)" : "");
+    return !prepare_stopped();
+}
+/// (hookshot, Compile shaders on Later: vk_prepare_play.cpp) What precompile_run builds before the game, built behind it into the start's
+/// pipeline cache (pcache) and let go: the noted pipelines, the compute pipelines play dispatched, the mesh fallback's compute
+/// pipelines. Before the game precompile_run also keeps them, ready, in play's own tables; behind it those tables are play's alone (the
+/// replay thread's, with no lock when it records alone), so they are made for the cache only, and a draw that first needs one has it
+/// from the cache in about a millisecond, on a worker. Each program is borrowed from hookshot_programs.bin for its pipelines, or taken
+/// as play has it in memory. only: those pipeline keys alone (an area's, built first), with no resume record and no progress
+void precompile_into_cache(void (*progress)(size_t done, size_t total), const std::unordered_set<uint64_t>* only) {
+    const auto t0 = std::chrono::steady_clock::now();
+    pcache_init();
+    std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
+    std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
+    for (const auto& n : notes)
+        if (!only || only->count(n->key)) by_program[n->prog].push_back(n.get());
+    // (the items, in a fixed order: the computes play dispatched and the fallback programs first, as precompile_run takes them,
+    // then the notes' programs)
+    struct Item { uint64_t key; int kind; };   // (kind: 0 a compute program, 1 a fallback program, 2 a noted graphics program)
+    std::vector<Item> items;
+    if (!only) {
+        std::vector<uint64_t> cs;
+        for (const uint64_t k : computes_read()) cs.push_back(k);
+        std::sort(cs.begin(), cs.end());
+        for (const uint64_t k : cs) items.push_back({k, 0});
+        for (const uint64_t k : program_cache_kind_keys(4)) items.push_back({k, 1});
+    }
+    {
+        std::vector<uint64_t> gs;
+        for (const auto& kv : by_program) gs.push_back(kv.first);
+        std::sort(gs.begin(), gs.end());
+        for (const uint64_t k : gs) items.push_back({k, 2});
+    }
+    if (!only) prep_phase_items(prepare_play::kNoted, items.size());
+    std::atomic<size_t> next{0}, done{0}, made{0};
+    const auto build_notes = [&](const Program& p, const std::vector<const PipeNote*>& list) {
+        if (!p.layout) return;
+        for (const PipeNote* n : list)
+            if (n->variant == p.variant)
+                if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), pipeline_topology(p, (VkPrimitiveTopology)n->topo)))
+                    vkDestroyPipeline(dev.device, pl, nullptr), made++;
+    };
+    const auto worker = [&] {
+        ub_thread_off();   // (a background thread: see ub_thread_off)
+        prep_thread_begin(THREAD_PRIORITY_NORMAL);
+        for (;;) {
+            if (prepare_stopped()) return;
+            prep_gate();
+            const size_t i = next++;
+            if (i >= items.size()) return;
+            if (!only && prep_item_skip(prepare_play::kNoted, i)) {
+                done++;
+                continue;
+            }
+            const Item it = items[i];
+            if (it.kind == 0) {
+                program_cache_borrow(it.key, [&](Program& p) {
+                    if (p.compute && warm_compute_one(p)) made++;
+                });
+            } else if (it.kind == 1) {
+                program_cache_borrow(it.key, [&](Program& p) {
+                    if (!p.fallback) return;
+                    ensure_layout(p);
+                    if (fallback_compute_pipelines(p))
+                        for (VkPipeline& pl : p.fallback_compute)
+                            if (pl) vkDestroyPipeline(dev.device, pl, nullptr), pl = VK_NULL_HANDLE, made++;
+                });
+            } else {
+                const auto& list = by_program[it.key];
+                bool borrowed = false;
+                program_cache_borrow(it.key, [&](Program& p) {
+                    borrowed = true;
+                    ensure_layout(p);
+                    build_notes(p, list);
+                });
+                if (!borrowed)   // (play has read it in: its variants as play has them)
+                    for (const PipeNote* n : list)
+                        if (const Program* p = program_find(n->prog, n->variant)) {
+                            ensure_layout(const_cast<Program&>(*p));
+                            build_notes(*p, {n});
+                        }
+            }
+            if (!only && !prepare_stopped()) prep_item_done(prepare_play::kNoted, i);
+            done++;
+        }
+    };
+    std::vector<std::thread> threads;
+    for (unsigned i = 0; i < (only ? 1u : prep_threads(std::min(usable_cpus(), 64u))); i++) threads.emplace_back(worker);
+    while (next.load() < items.size() + threads.size() && !prepare_stopped()) {
+        if (progress) progress(done.load(), items.size());
+        Sleep(100);
+    }
+    for (std::thread& t : threads) t.join();
+    if (progress) progress(done.load(), items.size());
+    if (!only)
+        logf("vk: the noted pipelines behind the game: %zu programs, %zu pipelines made into the pipeline cache in %.1f s%s", items.size(),
+             made.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+             prepare_stopped() ? " (stopped)" : "");
+}
+/// (hookshot, vk_prepare_play.cpp) The compute programs play is known to dispatch: the shipped list (hookshot_computes_shipped.bin, made
+/// by make_game.py from assets/computes_dispatched.bin: program hashes only, as hookshot_computes.bin keeps them) and this folder's own
+/// (computes_read). On Compile shaders Most and Later these get all their texture variants before play, the others their base variant
+std::unordered_set<uint64_t> computes_listed() {
+    std::unordered_set<uint64_t> keys = computes_read();
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);
+    std::string dir(exe, n);
+    dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+    if (FILE* f = fopen((dir + "hookshot_computes_shipped.bin").c_str(), "rb")) {
+        char magic[8] = {};
+        if (fread(magic, 1, 8, f) == 8 && !memcmp(magic, kComputesMagic, 8))
+            for (uint64_t k = 0; fread(&k, 8, 1, f) == 1;) keys.insert(k);
+        fclose(f);
+    }
+    return keys;
+}
+/// (hookshot, vk_prepare_play.cpp) The start's pipeline cache read in now, before play: play's own first use would read it on the
+/// replay thread while the preparation reads it on its own
+void prep_pcache_init() { pcache_init(); }
+/// (hookshot, vk_prepare_play.cpp) Whether this folder's programs still need preparing: a new translator or seed, none prepared, or
+/// their driver's part made for another driver
+bool prepare_needed() {
+    PreparedFor now;
+    double hash_ms = 0;
+    const PrepareWhy why = prepare_check(prepared_path(), seed_path(), program_cache_stamp(), &now, &hash_ms);
+    if (why != PrepareWhy::None) return true;
+    const bool libraries = gpl_wanted() && !env_on("RX_VK_NO_WARM");
+    return now.warmed != warmed_stamp(libraries);
+}
+/// (hookshot, vk_prepare_play.cpp) What the work behind the game is for: this program cache (translator and format) and this seed (its
+/// size and write time); a record of another starts again
+uint64_t prepare_play_seed_id() {
+    uint64_t size = 0;
+    int64_t time = 0;
+    seed_file_id(seed_path(), &size, &time);
+    uint64_t h = program_cache_stamp();
+    for (const uint64_t w : {size, (uint64_t)time}) h = (h ^ w) * 1099511628211ull;
+    return h;
 }
 
 // ---- (hookshot) Whether the driver kept the predicted pipelines. predict_run builds them for the driver's own disk cache alone and
@@ -8560,12 +8829,16 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         // (only the dispatch that started the build waits: later ones while it still compiles are left out at once, not 50 ms
         // each, which stalled every frame by 50 ms per compute program still building)
         const auto t0 = std::chrono::steady_clock::now();
-        while (fresh && p.compute_state.load(std::memory_order_acquire) != 2 &&
-               std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(50))
+        // (while the shaders are prepared behind the game (Compile shaders on Most or Later, vk_prepare_play.cpp): up to a second.
+        // More compute variants are not built yet there, and a dispatch left out is work no later frame does again; NVIDIA's come
+        // in milliseconds)
+        const auto limit = std::chrono::milliseconds(prepare_play_running() ? 1000 : 50);
+        while (fresh && p.compute_state.load(std::memory_order_acquire) != 2 && std::chrono::steady_clock::now() - t0 < limit)
             std::this_thread::sleep_for(std::chrono::microseconds(200));
         if (p.compute_state.load(std::memory_order_acquire) != 2) {
             static std::atomic<int> told{0};
             if (told++ < 40) logf("vk: dispatch of %016llx left out: its compute pipeline is still compiling", (unsigned long long)p.key);
+            prep_note_miss();   // (an area's first frames: held while their pipelines are built, vk_prepare_play.cpp)
             st_pending_skips++;
             return;
         }
@@ -8947,7 +9220,10 @@ void pipeline_cache_save(bool force) {
             // so a folder prepared before the warm pass keeps its libraries through a crash. The window's close does not write it
             // (pipeline_cache_close saves the generation only); a forced save does: Restart now, the prepare. RX_VK_PLAY_SAVE_START_MB=<n>: the growth it is written at in play (64; 0: any, as before))
             static const size_t play_grown = (size_t)(getenv("RX_VK_PLAY_SAVE_START_MB") ? std::max<long long>(0, atoll(getenv("RX_VK_PLAY_SAVE_START_MB"))) : 64) << 20;
-            bool write = vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size;
+            // (not while the preparation behind the game builds into it (vk_prepare_play.cpp): read while pipelines were made into it,
+            // Intel's driver crashed. It saves it itself between its builds)
+            bool write = !prep_building() && vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n &&
+                         n != pcache_saved_size;
             if (write && !force && play_grown && play_cache_in_use() && n < pcache_saved_size + play_grown) {
                 write = false;
                 static std::atomic<int> told{0};

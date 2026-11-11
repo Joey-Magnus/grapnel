@@ -29,6 +29,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "vk_prepare_play.h"   // (experimental: the shaders prepared while playing)
 #include "vk_temporal.h"
 #include "vk_fsr3_inputs.h"   // (the camera jitter while AMD FSR 3.1 upscales)
 #include "status_line.h"
@@ -3057,6 +3058,21 @@ void frame_info(int64_t* replayed, int64_t* draws, int* width, int* height) {
     if (height) *height = (int)dev.swap_extent.height;
 }
 
+/// (RX_VK_FRAME_LOG=<file>: one CSV line a present: frame, seconds since the first, frame time in ms. Frame pacing on the Steam
+/// Deck, where MangoHud's log stays empty under gamescope; and of a run without a window (HOS_HEADLESS), its frames as they are made)
+void frame_log_note() {
+    static FILE* fl = getenv("RX_VK_FRAME_LOG") ? std::fopen(getenv("RX_VK_FRAME_LOG"), "w") : nullptr;
+    static std::chrono::steady_clock::time_point first, prev;
+    static uint64_t frames;
+    if (fl) {
+        const auto t = std::chrono::steady_clock::now();
+        if (!frames) first = prev = t, std::fputs("frame,time_s,frametime_ms\n", fl);
+        std::fprintf(fl, "%llu,%.4f,%.3f\n", (unsigned long long)frames, std::chrono::duration<double>(t - first).count(),
+                     std::chrono::duration<double, std::milli>(t - prev).count());
+        prev = t;
+        if (++frames % 60 == 0) std::fflush(fl);
+    }
+}
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 struct PendingShot {
     bool on = false;
@@ -3090,7 +3106,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
     VkImage src = VK_NULL_HANDLE;
     VkImageView direct_view = VK_NULL_HANDLE;
     uint32_t sw = 0, sh = 0;
-    bool shot = false, interpolated = false;
+    bool shot = false, interpolated = false, hidden = false;
     VkImage made_src = VK_NULL_HANDLE;
     {
         std::lock_guard lk(replay_mu);
@@ -3153,6 +3169,13 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;
+        // (hookshot, experimental: preparing in play, vk_prepare_play.cpp: an area's first frames after its load are rendered but not
+        // shown until the pipelines they ask for are built; the last picture stays. Not with frame generation, whose thread shows them)
+        if (prepare_play_running()) {
+            int64_t d = 0, sk = 0, di = 0, pl = 0;
+            draw_stats(&d, &sk, &di, &pl);
+            hidden = prep_present_hidden(d, framegen_on());
+        }
         wide_sides_tick();
         if (presents == 1) hang_watch_start();
         {   // (EvilBoyce, diagnostics) RX_VK_WATCH_CPU=<present>:<gpu address>[,...] (hex addresses): from that present on, the
@@ -3181,10 +3204,10 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             // (RX_VK_SHOT_FROM / _TO: every present in that range too)
             static const int64_t shot_from = getenv("RX_VK_SHOT_FROM") ? atoll(getenv("RX_VK_SHOT_FROM")) : -1;
             static const int64_t shot_to = getenv("RX_VK_SHOT_TO") ? atoll(getenv("RX_VK_SHOT_TO")) : -1;
-            shot = shots && (presents % shot_every == 0 || (presents >= shot_from && presents <= shot_to));
+            shot = shots && !hidden && (presents % shot_every == 0 || (presents >= shot_from && presents <= shot_to));
             // (RX_VK_SHOT_GO=<file>: every present while that file is there too, a test's run of frames)
             static const char* shot_go = getenv("RX_VK_SHOT_GO");
-            if (shots && shot_go && !shot) {
+            if (shots && shot_go && !shot && !hidden) {
                 struct stat sb;
                 shot = stat(shot_go, &sb) == 0;
             }
@@ -3459,7 +3482,8 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         }
         log_frame_stats();
     }
-    if (dev.offscreen || interpolated) return;
+    if (dev.offscreen) frame_log_note();   // (no window: the frame made is the one there is)
+    if (dev.offscreen || interpolated || hidden) return;
     present_image(src, sw, sh, crop, direct_view);
 }
 
@@ -3929,20 +3953,7 @@ static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
         static int logged;
         if (logged++ < 8) logf("vk: present failed (VkResult %d%s)", (int)res, dev.present_queue_supported ? ", on the presents' own queue" : "");
     }
-    {   // (RX_VK_FRAME_LOG=<file>: one CSV line a present: frame, seconds since the first, frame time in ms. Frame
-        // pacing on the Steam Deck, where MangoHud's log stays empty under gamescope)
-        static FILE* fl = getenv("RX_VK_FRAME_LOG") ? std::fopen(getenv("RX_VK_FRAME_LOG"), "w") : nullptr;
-        static std::chrono::steady_clock::time_point first, prev;
-        static uint64_t frames;
-        if (fl) {
-            const auto t = std::chrono::steady_clock::now();
-            if (!frames) first = prev = t, std::fputs("frame,time_s,frametime_ms\n", fl);
-            std::fprintf(fl, "%llu,%.4f,%.3f\n", (unsigned long long)frames, std::chrono::duration<double>(t - first).count(),
-                         std::chrono::duration<double, std::milli>(t - prev).count());
-            prev = t;
-            if (++frames % 60 == 0) std::fflush(fl);
-        }
-    }
+    frame_log_note();
     if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
         if (!qk.owns_lock()) qk.lock();
         create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
