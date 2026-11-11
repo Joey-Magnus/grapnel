@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="104" viewBox="0 0 420 104" role="img" aria-labelledby="title"><title id="title">Hookshot field guide — light background wordmark</title><g transform="translate(53 52) scale(0.49)"><g fill="none" stroke="#947339" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="0" cy="0" r="70"/><circle cx="0" cy="0" r="61" opacity=".35"/>
+<path d="M0 -85V-65M0 65V85M-85 0H-65M65 0H85"/>
+<path d="M-24 29L21 -16C35 -30 27 -46 14 -43C6 -41 1 -33 3 -26L13 -31L12 -17L-30 25Z" fill="#947339" stroke-width="1"/>
+<path d="M-34 34L-43 43M-30 38L-39 47M-38 30L-47 39"/>
+<path d="M-43 -24Q-27 -40 -10 -45M24 43Q42 29 47 10" opacity=".7"/>
+<path d="M-37 -29L-46 -39M-25 -38L-29 -49M31 36L42 43M40 25L53 27" opacity=".7"/>
+</g></g><text x="114" y="53" font-family="serif" font-size="38" letter-spacing="2" fill="#102D26">HOOKSHOT</text><text x="117" y="78" font-family="sans-serif" font-size="11" letter-spacing="4" fill="#102D26">FIELD GUIDE</text></svg>
