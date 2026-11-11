@@ -137,6 +137,8 @@ LEFT_OUT = {("adult", "Sacred Forest Meadow"): "Sheik's lesson starts on arrival
             # (runs 2-4, ~/.cache/hookshot-work/tour/route-value.txt: what only these met, against everything else)
             ("child", "Lost Woods"): "20 pipelines no other stop met", ("adult", "Lost Woods"): "7",
             ("child", "Sacred Forest Meadow"): "4"}
+# Stops the game does not teleport out of (the request is refused: "result 0"), visited last in their part
+LAST = {"Haunted Wasteland"}
 # Where Link uses his items and their effects (one picked from the pause menu, a different one each time): a few stops per age,
 # not every one. The rest only look around
 # Overworld stops seen at night too (the Debug tab's clock: !cheat 100 + hour), then back to noon. Measured on a short run: Hyrule
@@ -215,6 +217,9 @@ def plan_stops(a, part="all", stops=None, first=None):
             "dungeons": under(child) + under(adult), "adult-overworld": over(adult), "child-dungeons": under(child),
             "adult-dungeons": under(adult)}[part]
     plan = [(age, i) for age, i in plan if (age, a["teleports"][i][0]) not in LEFT_OUT]
+    # (a stop the game will not teleport out of goes last: the next map change after it is the next run's)
+    ages = [age for age, _ in plan]
+    plan = sorted(plan, key=lambda x: (ages.index(x[0]), a["teleports"][x[1]][0] in LAST))   # (last within its age)
     if first:   # (a run that starts again at a stop: "<name>" or "<name> (<age>)", as the report names them)
         labels = ["%s (%s)" % (a["teleports"][i][0], age) for age, i in plan]
         at = [k for k, (lab, (age, i)) in enumerate(zip(labels, plan)) if first in (lab, a["teleports"][i][0])]
@@ -454,7 +459,7 @@ def teleport(g, action, want, limit_frames=60 * 60 * 3, limit_s=300):
     start, end = g.frame, time.monotonic() + limit_s
     poll = Poll(g)
     state, again_at = "send", 0
-    busy_since, unstick_at, unstick = None, 0, 0
+    busy_since, unstick_at, unstick, refused = None, 0, 0, 0
     while True:
         if state == "send" and g.frame >= again_at:
             g.send("!cheat %d" % action)
@@ -473,6 +478,11 @@ def teleport(g, action, want, limit_frames=60 * 60 * 3, limit_s=300):
                         unstick, unstick_at = unstick + 1, g.frame + 60
             elif "has no " in said or "age toggle undone" in said or "request not built" in said:
                 raise Failed("the game refused: " + said)
+            elif said.startswith("teleport ") and "request sent" in said and said.rstrip().endswith("result 0"):
+                refused += 1   # (the event manager did not take it: in the Haunted Wasteland it never does)
+                if refused >= 5:
+                    raise Failed("the game did not take map change %d five times" % action)
+                state, again_at = "send", g.frame + 120
             elif said.startswith("teleport ") and "request sent" in said:
                 state, again_at = "sent", g.frame + 900
         if state == "sent":
