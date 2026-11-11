@@ -28,7 +28,7 @@ inline uint32_t mma_staged_shared_limit = 0;   // (bytes: the device's maxComput
 inline bool mma_staged_native = false;
 // (amd-fix) float colour outputs carry no NaN or infinity to their target (EmitSetFragColor): one NaN texel spreads
 // through bloom/blur/downsample averages into glowing blocks (OoT's flowers on AMD, Hookshot issue 606). On for every
-// card but NVIDIA (vk_coopmat.cpp coopmat_init); RX_VK_NO_NAN_GUARD=1 turns it off. Idea from NX2navi patch 0027.
+// card since v2.0.6 (vk_coopmat.cpp coopmat_init); RX_VK_NAN_GUARD=0 turns it off. Idea from NX2navi patch 0027.
 inline bool frag_nan_guard = false;
 // (amd-fix) gl_Position decorated Invariant (vertex and mesh outputs): the game draws a depth pre-pass, then the colour
 // pass again with depth EQUAL; Maxwell computes the same position in both, AMD's compiler may not without Invariant, and

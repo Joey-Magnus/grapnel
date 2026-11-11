@@ -63,6 +63,7 @@ void save() { saves++; }
 void apply_pad_layout(int) {}
 void apply_preset(int) { presets++; }
 void sync_preset_budgets(int) {}
+void env_release(const int*) {}   // (the environment's hold on a row: none here)
 /* (stand-ins for the rest of set_row, which the Rumble strength row never reaches: the Upscaler's rows, the restart offer) */
 bool row_fixed(const int*) { return false; }
 int upscaler() { return 0; }
@@ -70,6 +71,9 @@ namespace ur {
 int step_upscaler(int, int, bool) { return 0; }
 int step(int, int v, int dir) { return v + dir; }
 int snap(int, int v) { return v; }
+int snap_render(int, int v) { return v; }   // (the slider)
+int step_engine(int, int, unsigned) { return 0; }   // (the Upscaler by engine)
+void step_render(int up, int v, int dir, int* u, int* r) { *u = up, *r = v + dir; }
 }
 namespace mr { constexpr int kMax = 8; }
 void restart_values(int*) {}
