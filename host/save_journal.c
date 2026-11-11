@@ -91,10 +91,21 @@ static const wchar_t *wide(const char *p, wchar_t *w, size_t cap) {
     return w;
 }
 #define W(p) wide((p), (wchar_t[SJ_PATH + 8]){0}, SJ_PATH + 8)
+/* A reparse point is a link only when it is one (a symbolic link or a junction): OneDrive's cloud files and other
+   placeholders are reparse points too, and taken for links every file of a synced save was left out of a copy */
+static int link_tag(DWORD tag) { return tag == IO_REPARSE_TAG_SYMLINK || tag == IO_REPARSE_TAG_MOUNT_POINT; }
 static int kind(const char *p) {
-    const DWORD a = GetFileAttributesW(W(p));
+    const wchar_t *w = W(p);
+    const DWORD a = GetFileAttributesW(w);
     if (a == INVALID_FILE_ATTRIBUTES) return K_NONE;
-    return (a & FILE_ATTRIBUTE_REPARSE_POINT) ? K_LINK : (a & FILE_ATTRIBUTE_DIRECTORY) ? K_DIR : K_FILE;
+    if (a & FILE_ATTRIBUTE_REPARSE_POINT) {
+        WIN32_FIND_DATAW fd;
+        const HANDLE f = FindFirstFileW(w, &fd);
+        const int link = f == INVALID_HANDLE_VALUE || link_tag(fd.dwReserved0);
+        if (f != INVALID_HANDLE_VALUE) FindClose(f);
+        if (link) return K_LINK;
+    }
+    return (a & FILE_ATTRIBUTE_DIRECTORY) ? K_DIR : K_FILE;
 }
 static int make_dir(const char *p) { return CreateDirectoryW(W(p), NULL) || GetLastError() == ERROR_ALREADY_EXISTS ? 0 : -1; }
 static int remove_file(const char *p) {
@@ -137,7 +148,11 @@ static int rename_once(const char *from, const char *to, int durable) {
 }
 /* A file over another, in one step (the in-place fallback's per-file replace) */
 static int replace_file(const char *from, const char *to) {
-    return MoveFileExW(W(from), W(to), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+    if (!MoveFileExW(W(from), W(to), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return -1;
+    char b[SJ_PATH];
+    parent_of(to, b);
+    sync_dir(b);
+    return 0;
 }
 /* The session lock: an exclusive lock on <tx>/lock, held while the process runs. 0 taken, 1 another process holds it */
 typedef HANDLE LockH;
@@ -203,7 +218,7 @@ static int list_dir(const char *p, Entry **out) {
             FindClose(f);   /* (a name too long in UTF-8: the listing would be incomplete, so it fails) */
             return -1;
         }
-        e->kind = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? K_LINK
+        e->kind = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && link_tag(fd.dwReserved0) ? K_LINK
                   : (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? K_DIR : K_FILE;
         n++;
     } while (FindNextFileW(f, &fd));
@@ -327,8 +342,13 @@ static int list_dir(const char *p, Entry **out) {
 }
 #endif
 
-static int join(char *out, const char *dir, const char *name) {
-    return (size_t)snprintf(out, SJ_PATH, "%s%c%s", dir, SEP, name) < SJ_PATH ? 0 : -1;
+static int join(char *out, const char *dir, const char *name) {   /* (no snprintf: gcc -O2 warned of its truncation) */
+    const size_t a = strlen(dir), b = strlen(name);
+    if (a + 1 + b >= SJ_PATH) return -1;
+    memcpy(out, dir, a);
+    out[a] = SEP;
+    memcpy(out + a + 1, name, b + 1);
+    return 0;
 }
 static int exists(const char *p) { return kind(p) != K_NONE; }
 
@@ -475,6 +495,12 @@ static int name_cmp(const void *a, const void *b) { return strcmp((const char *)
 /* The backups' folder names (a digit first), oldest first: n, at most 64 */
 /* A backup's name as rotate_backup makes them: YYYYMMDD-HHMMSS-mmm, then -NNN... for more in one millisecond. Other
    folders there (a player's own, "unsaved-...", "unapplied-...") are never pruned */
+static int empty_dir(const char *p) {
+    Entry *e;
+    const int n = list_dir(p, &e);
+    if (n > 0) free(e);
+    return n == 0;
+}
 static int backup_name(const char *s) {
     static const char form[] = "dddddddd-dddddd-ddd";
     for (int i = 0; form[i]; i++)
@@ -485,13 +511,14 @@ static int backup_name(const char *s) {
     }
     return 1;
 }
+/* The newest 256 backups' names, oldest first (sorted before they are counted: the newest is never one left out) */
 static int backup_names(SaveJournal *j, char (*names)[48]) {
     Entry *e;
     const int n = list_dir(j->backups, &e);
+    if (n > 0) qsort(e, (size_t)n, sizeof *e, entry_cmp);
     int k = 0;
-    for (int i = 0; i < n; i++)
-        if (e[i].kind == K_DIR && backup_name(e[i].name) && strlen(e[i].name) < 48 && k < 64)
-            strcpy(names[k++], e[i].name);
+    for (int i = n - 1; i >= 0 && k < 256; i--)
+        if (e[i].kind == K_DIR && backup_name(e[i].name) && strlen(e[i].name) < 48) strcpy(names[k++], e[i].name);
     free(e);
     qsort(names, (size_t)k, sizeof *names, name_cmp);
     return k;
@@ -501,7 +528,7 @@ static int backup_names(SaveJournal *j, char (*names)[48]) {
    lower, which would be pruned first and lose the backup just made */
 static void rotate_backup(SaveJournal *j) {
     if (!exists(j->old)) return;
-    static char names[64][48];
+    static char names[256][48];
     make_dirs(j->backups);
     int n = backup_names(j, names);
     struct tm t;
@@ -589,6 +616,53 @@ static void base_path(const char *ready, char *out) {   /* (tx is at most SJ_PAT
     if ((size_t)snprintf(out, SJ_PATH, "%s.base", ready) >= SJ_PATH) *out = 0;
 }
 
+/* ---- unsaved changes. A working copy holding changes no Commit could save is never deleted. Marking it must work on
+   a full disk, where that is likely: <tx>/unsaved.armed, made while there is room (at each working copy), is renamed to
+   <tx>/unsaved, which needs no space; j->unsaved holds it for the session either way, and a stray unsaved.tmp (a marker
+   whose rename failed) counts too ---- */
+static void marker_paths(SaveJournal *j, char *armed, char *marked, char *tmp) {
+    join(armed, j->tx, "unsaved.armed"), join(marked, j->tx, "unsaved"), join(tmp, j->tx, "unsaved.tmp");
+}
+static int marked(SaveJournal *j) {
+    char armed[SJ_PATH], m[SJ_PATH], tmp[SJ_PATH];
+    marker_paths(j, armed, m, tmp);
+    return j->unsaved || exists(m) || exists(tmp);
+}
+static void unmark(SaveJournal *j) {   /* (saved: the marker gone, a new one armed) */
+    char armed[SJ_PATH], m[SJ_PATH], tmp[SJ_PATH];
+    marker_paths(j, armed, m, tmp);
+    remove_file(m), remove_file(tmp);
+    j->unsaved = 0;
+    if (!exists(armed)) {
+        const FileH h = open_new(armed);
+        if (h != NO_FILE) close_file(h);
+    }
+}
+void sj_mark_unsaved(SaveJournal *j) {
+    char armed[SJ_PATH], m[SJ_PATH], tmp[SJ_PATH];
+    marker_paths(j, armed, m, tmp);
+    j->unsaved = 1;
+    if (exists(m) || !rename_once(armed, m, 1)) return;
+    if (write_text(m, "a Commit failed: the next start commits or keeps the working copy\n"))
+        LOG("save: the working copy %s could not be marked as unsaved (disk full?): this run keeps it, and the next start "
+            "keeps any working copy that differs from the save", j->work);
+}
+/* The newest folders of save-backup named <prefix>-..., all but the newest n deleted */
+static void prune_prefixed(SaveJournal *j, const char *prefix, int keep) {
+    Entry *e;
+    const int n = list_dir(j->backups, &e);
+    if (n <= 0) return;
+    qsort(e, (size_t)n, sizeof *e, entry_cmp);
+    const size_t len = strlen(prefix);
+    int seen = 0;
+    for (int i = n - 1; i >= 0; i--) {
+        char p[SJ_PATH];
+        if (e[i].kind != K_DIR || strncmp(e[i].name, prefix, len) || e[i].name[len] != '-') continue;
+        if (++seen > keep && !join(p, j->backups, e[i].name)) remove_tree(p);
+    }
+    free(e);
+}
+
 /* ---- the journal ------------------------------------------------------------------------------------------------- */
 int sj_paths(SaveJournal *j, const char *user, const char *uid) {
     memset(j, 0, sizeof *j);
@@ -615,10 +689,9 @@ static int swap_in(SaveJournal *j) {
             LOG("save: a commit waiting in %s was made over an older save than %s, which something replaced since (another "
                 "Hookshot, HOS_SAVE_JOURNAL=0, a copied-in save): the newer save is kept, the waiting commit %s", j->ready, j->save,
                 kept ? "moved to save-backup (unapplied-...)" : "COULD NOT be moved aside and stays in save-tx");
-            if (!kept) return -1;
             remove_file(base);
-            *j->ready = 0;
-            return 0;
+            *j->ready = 0;   /* (moved aside or not, it is not the newest save: the game loads the newer one) */
+            return kept ? 0 : -1;
         }
     }
     if (exists(j->save) && move(j->save, j->old, SWAP_TRIES)) {
@@ -684,28 +757,50 @@ static const char *recover(SaveJournal *j) {
         if (!move(j->old, j->save, MOVE_TRIES)) has_save = 1;
         did = has_save ? "rolled back an interrupted commit (the save before it is back)"
                        : "COULD NOT roll back an interrupted commit: the save is in save-tx/old";
+    } else if (has_save && !*j->ready && kind(j->old) == K_DIR && empty_dir(j->save) && !empty_dir(j->old)) {
+        /* (a rollback that failed, then a run without the journal made an empty save in its place: the old one is back) */
+        if (!remove_dir(j->save) && !move(j->old, j->save, MOVE_TRIES))
+            did = "rolled back an interrupted commit (the save before it is back over an empty one made since)";
+        else
+            did = "COULD NOT roll back an interrupted commit: the save is in save-tx/old";
     } else if (exists(j->old) && (has_save || *j->ready)) {
         did = "moved the save an interrupted commit replaced to save-backup";
         rotate_backup(j);
     }
     if (*j->ready)
         did = swap_in(j) ? "a finished commit waits in save-tx: the game loads it from there" : "completed a finished commit";
-    char unsaved[SJ_PATH];
-    join(unsaved, j->tx, "unsaved");
-    if (exists(j->work) && exists(unsaved)) {   /* (a run whose Commit failed and whose changes could not be written at all) */
-        if (!keep_aside(j, j->work, "unsaved")) {
-            did = "KEPT the last run's working copy, whose Commit failed, in save-backup (unsaved-...): copy it over the save "
-                  "to have its progress";
-            remove_file(unsaved);
-        } else
-            did = "the last run's working copy, whose Commit failed, stays in save-tx/work";
-        return did;
-    }
-    remove_file(unsaved);
-    if (exists(j->work)) {
+    const int was_marked = marked(j);
+    if (kind(j->work) == K_DIR && kind(sj_newest(j)) == K_DIR && same_tree(j->work, sj_newest(j))) {
         if (remove_tree_retry(j->work)) LOG("save: the last run's working copy %s could not be deleted", j->work);
-        if (!strcmp(did, "nothing to recover")) did = "dropped the last run's working copy (changes after its last Commit)";
+        if (!strcmp(did, "nothing to recover")) did = "dropped the last run's working copy (it held the save)";
+    } else if (kind(j->work) == K_DIR && was_marked) {   /* (a run whose Commit failed: its changes are saved now) */
+        int changed = 0;
+        char what[512];
+        if (!sj_commit(j, &changed, what, sizeof what) || !sj_commit_in_place(j, what, sizeof what)) {
+            remove_tree_retry(j->work);
+            unmark(j);
+            did = "SAVED the last run's changes, whose Commit had failed";
+        } else if (!keep_aside(j, j->work, "unsaved")) {
+            unmark(j);
+            did = "could not save the last run's changes, whose Commit had failed: they are KEPT in save-backup (unsaved-...); "
+                  "copy them over the save to have that progress";
+        } else {
+            j->unsaved = 1;
+            did = "could not save or move the last run's changes, whose Commit had failed: they stay in save-tx/work";
+        }
+        return did;
+    } else if (kind(j->work) == K_DIR) {   /* (changes after the last Commit, which the game never asked to keep) */
+        if (!keep_aside(j, j->work, "uncommitted")) {
+            prune_prefixed(j, "uncommitted", SJ_BACKUPS);
+            if (!strcmp(did, "nothing to recover"))
+                did = "set the last run's working copy (changes after its last Commit, not loaded) aside in save-backup "
+                      "(uncommitted-...)";
+        } else {
+            j->unsaved = 1;
+            LOG("save: the last run's working copy %s could not be set aside: it is kept", j->work);
+        }
     }
+    if (!j->unsaved) unmark(j);
     return did;
 }
 
@@ -717,11 +812,9 @@ int sj_work_open(SaveJournal *j) {
         LOG("save: %s is missing and the save before it is still in %s: no save is mounted", j->save, j->old);
         return -2;
     }
-    char unsaved[SJ_PATH];
-    join(unsaved, j->tx, "unsaved");
-    if (exists(unsaved) && exists(j->work)) {
-        LOG("save: %s holds a run's changes that were never saved: it is not replaced", j->work);
-        return -2;
+    if (marked(j) && kind(j->work) == K_DIR) {   /* (changes not saved yet: mounted again as they are, never replaced) */
+        LOG("save: %s holds changes no Commit could save yet: it is mounted again as it is", j->work);
+        return 0;
     }
     if (!*j->ready && !exists(j->save)) make_dirs(j->save);   /* (no save yet: the game makes one, empty, as on a console) */
     if (remove_tree_retry(j->work) || copy_tree(j, sj_newest(j), j->work, 0, &files, &bytes)) {
@@ -729,6 +822,7 @@ int sj_work_open(SaveJournal *j) {
         return -1;
     }
     LOG("save: working copy of %s: %d files, %llu KB", sj_newest(j), files, (unsigned long long)(bytes >> 10));
+    unmark(j);   /* (arms the marker while there is room) */
     return 0;
 }
 
@@ -742,8 +836,6 @@ int sj_commit(SaveJournal *j, int *changed, char *what, size_t cap) {
     j->step = j->dead = 0;
     *changed = 0;
     snprintf(what, cap, "?");
-    char unsaved[SJ_PATH];
-    join(unsaved, j->tx, "unsaved");
     if (kind(j->work) != K_DIR) {   /* (never an empty or partial save from a working copy that is gone) */
         snprintf(what, cap, "the working copy %s is missing: nothing was committed", j->work);
         return -1;
@@ -752,6 +844,7 @@ int sj_commit(SaveJournal *j, int *changed, char *what, size_t cap) {
     if (kind(base) == K_DIR && same_tree(j->work, base)) {   /* (the game wrote what the save holds: no commit, no backup) */
         const int waits = swap_in(j);
         snprintf(what, cap, "nothing changed%s", waits ? "; the newest save still waits in save-tx" : "");
+        if (!j->dead) unmark(j);
         return j->dead ? -1 : 0;
     }
     if (remove_tree_retry(j->fresh) || copy_tree(j, j->work, j->fresh, 1, &files, &bytes)) {
@@ -777,7 +870,7 @@ int sj_commit(SaveJournal *j, int *changed, char *what, size_t cap) {
         base_path(j->ready, old_base);
         remove_tree(j->ready), remove_file(old_base);
     }
-    remove_file(unsaved);
+    unmark(j);
     snprintf(j->ready, SJ_PATH, "%s", ready);
     *changed = 1;
     if (crashed(j)) return -1;
@@ -819,56 +912,91 @@ const char *sj_unsuitable(SaveJournal *j) {
     return NULL;
 }
 
-static int copy_over(const char *src, const char *dst, uint64_t *bytes, int *files) {
-    if (make_dir(dst) || kind(dst) != K_DIR) return -1;
-    Entry *e, *d;
+/* The in-place fallback in two phases, so that a failure (a full disk) leaves the save whole, never part old and part
+   new: (1) every file of src copied beside its place in dst as <name>.hs-new and flushed, and the folders made; any
+   failure removes them all and the save is as it was; (2) each renamed over its file, which needs no space; then what
+   the game deleted goes */
+typedef struct { char from[SJ_PATH], to[SJ_PATH]; } Pending;
+typedef struct { Pending *p; int n, cap; char (*dirs)[SJ_PATH]; int ndirs, capdirs; } Plan;
+static int plan_copy(Plan *pl, const char *src, const char *dst, uint64_t *bytes) {
+    if (kind(dst) != K_DIR) {
+        if (make_dir(dst) || kind(dst) != K_DIR) return -1;
+        if (pl->ndirs == pl->capdirs) {
+            void *m = realloc(pl->dirs, sizeof *pl->dirs * (size_t)(pl->capdirs = pl->capdirs ? pl->capdirs * 2 : 8));
+            if (!m) return -1;
+            pl->dirs = (char (*)[SJ_PATH])m;
+        }
+        snprintf(pl->dirs[pl->ndirs++], SJ_PATH, "%s", dst);
+    }
+    Entry *e;
     const int n = list_dir(src, &e);
     if (n < 0) return -1;
     int bad = 0;
     for (int i = 0; i < n && !bad; i++) {
-        char s[SJ_PATH], t[SJ_PATH], tmp[SJ_PATH];
+        char s[SJ_PATH], t[SJ_PATH];
         if (e[i].kind == K_LINK) continue;
         if (join(s, src, e[i].name) || join(t, dst, e[i].name)) { bad = 1; break; }
-        if (e[i].kind == K_DIR) { bad = copy_over(s, t, bytes, files); continue; }
-        if ((size_t)snprintf(tmp, sizeof tmp, "%s.hs-new", t) >= sizeof tmp) { bad = 1; break; }
-        remove_file(tmp);
-        bad = copy_file(s, tmp, 1, bytes) || replace_file(tmp, t);   /* (each file replaced whole, as before the journal) */
-        if (bad) remove_file(tmp);
-        else ++*files;
+        if (e[i].kind == K_DIR) { bad = plan_copy(pl, s, t, bytes); continue; }
+        if (pl->n == pl->cap) {
+            void *m = realloc(pl->p, sizeof *pl->p * (size_t)(pl->cap = pl->cap ? pl->cap * 2 : 16));
+            if (!m) { bad = 1; break; }
+            pl->p = (Pending *)m;
+        }
+        Pending *q = &pl->p[pl->n];
+        if (strlen(t) + 8 >= SJ_PATH) { bad = 1; break; }
+        snprintf(q->to, SJ_PATH, "%s", t);
+        memcpy(q->from, t, strlen(t)), memcpy(q->from + strlen(t), ".hs-new", 8);
+        remove_file(q->from);
+        if (copy_file(s, q->from, 1, bytes)) { remove_file(q->from); bad = 1; break; }
+        pl->n++;
     }
-    const int m = bad ? 0 : list_dir(dst, &d);   /* (what the game deleted goes too) */
+    free(e);
+    return bad ? -1 : 0;
+}
+static void prune_deleted(const char *src, const char *dst) {   /* (in dst, what src no longer has) */
+    Entry *d;
+    const int m = list_dir(dst, &d);
     for (int i = 0; i < m; i++) {
         char s[SJ_PATH], t[SJ_PATH];
         if (d[i].kind == K_LINK || join(s, src, d[i].name) || join(t, dst, d[i].name)) continue;
         if (!exists(s)) remove_tree(t);
+        else if (d[i].kind == K_DIR) prune_deleted(s, t);
     }
     if (m > 0) free(d);
-    free(e);
+}
+static int copy_over(const char *src, const char *dst, uint64_t *bytes, int *files) {
+    Plan pl = {0};
+    int bad = plan_copy(&pl, src, dst, bytes);
+    if (bad) {   /* (phase 1 failed: nothing of the save was touched; what it made goes) */
+        for (int i = 0; i < pl.n; i++) remove_file(pl.p[i].from);
+        for (int i = pl.ndirs - 1; i >= 0; i--) remove_tree(pl.dirs[i]);
+    } else {
+        for (int i = 0; i < pl.n; i++)
+            if (replace_file(pl.p[i].from, pl.p[i].to)) bad = 1;   /* (a rename: no space needed) */
+            else ++*files;
+        if (!bad) prune_deleted(src, dst);
+    }
+    free(pl.p);
+    free(pl.dirs);
     return bad ? -1 : 0;
 }
 
 int sj_commit_in_place(SaveJournal *j, char *what, size_t cap) {
     int files = 0;
     uint64_t bytes = 0;
-    char unsaved[SJ_PATH];
-    join(unsaved, j->tx, "unsaved");
     if (kind(j->work) != K_DIR) {
         snprintf(what, cap, "the working copy is missing");
         return -1;
     }
     if (copy_over(j->work, sj_newest(j), &bytes, &files)) {
-        write_text(unsaved, "the last Commit failed and its changes could not be written: the next start keeps work\n");
-        snprintf(what, cap, "could not be written in place either: the changes stay in %s, and the next start keeps them in "
-                 "save-backup", j->work);
+        sj_mark_unsaved(j);
+        snprintf(what, cap, "could not be written in place either (the save is as it was): the changes stay in %s, and the "
+                 "next start saves them or keeps them in save-backup", j->work);
         return -1;
     }
-    remove_file(unsaved);
+    unmark(j);
     snprintf(what, cap, "written in place over %s instead, file by file, as before the journal (%d files, %llu KB)",
              sj_newest(j), files, (unsigned long long)(bytes >> 10));
     return 0;
 }
 
-void sj_mark_unsaved(SaveJournal *j) {
-    char unsaved[SJ_PATH];
-    if (!join(unsaved, j->tx, "unsaved")) write_text(unsaved, "a Commit failed: the next start keeps the working copy\n");
-}

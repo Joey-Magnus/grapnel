@@ -21,6 +21,7 @@ typedef struct {
     void (*crash)(int step);    /* (and calls this there, when set: HOS_SAVE_CRASH_AT ends the process) */
     intptr_t lock;              /* (the session lock's file, while locked) */
     int locked;
+    int unsaved;                /* (the working copy holds changes no Commit could save: never deleted or replaced) */
 } SaveJournal;
 
 /* Where messages go (hos_log in the game; NULL: nowhere) */
