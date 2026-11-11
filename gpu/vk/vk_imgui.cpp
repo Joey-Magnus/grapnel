@@ -387,6 +387,16 @@ ImTextureData* logo(float* aspect) {
     return logo_;
 }
 
+ImTextureData* rgba_texture(int w, int h, const unsigned char* pixels) {
+    if (!ready || w <= 0 || h <= 0 || !pixels) return nullptr;
+    ImTextureData* tex = IM_NEW(ImTextureData)();
+    tex->Create(ImTextureFormat_RGBA32, w, h);
+    memcpy(tex->GetPixels(), pixels, (size_t)w * h * 4);
+    tex->UseColors = true;
+    ImGui::RegisterUserTexture(tex);
+    return tex;
+}
+
 void idle() {
     if (!ready) return;
     presents++;
