@@ -1,4 +1,4 @@
-# Every game-free check, on every pull request to main and every push to it: tests/run_all.py runs each
+# Every game-free check, on PRs to main or the macOS stack and pushes to main/the MetalFX branch: tests/run_all.py runs
 # tests/test_*.py and nx2/test_*.py (all of them, even after a failure), the C++ unit tests under gpu/vk/tests and a
 # byte-compile of every tracked Python file, and writes a table of them to the run's summary. A check that needs a GPU,
 # the game or MSVC says so, and why, in its own file (RUN_ALL_SKIP). No game data is involved.
@@ -6,9 +6,9 @@ name: Game-free source regressions
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/macos-metalfx-explore]
   pull_request:
-    branches: [main]
+    branches: [main, codex/macos-rebased-release]
   workflow_dispatch:
 
 permissions:
@@ -24,9 +24,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022]
+        os: [ubuntu-24.04, windows-2022, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,6 +57,9 @@ jobs:
       - name: Compilers and the SPIR-V validator
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++ clang spirv-tools
+      - name: SPIR-V tools for macOS source checks
+        if: runner.os == 'macOS'
+        run: brew install spirv-tools glslang
       - name: Pinned glslang for generated shader comparisons
         if: runner.os == 'Linux'
         shell: bash
@@ -102,8 +105,8 @@ jobs:
           if errorlevel 1 exit /b 1
           python -I -B tests/test_invalidate_vcore.py --cxx cl
           if errorlevel 1 exit /b 1
-      - name: Set up .NET for Windows Builder checks
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
+      - name: Set up .NET for Builder fixtures
+        if: ${{ !cancelled() && (runner.os == 'Windows' || runner.os == 'macOS') }}
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: '8.0.x'
@@ -120,7 +123,7 @@ jobs:
       - name: Every test
         if: ${{ !cancelled() }}
         env:
-          CXX: ${{ runner.os == 'Linux' && 'g++' || '' }}
+          CXX: ${{ runner.os == 'Linux' && 'g++' || runner.os == 'macOS' && 'clang++' || '' }}
           HOOKSHOT_SPIRV_HEADERS: ${{ github.workspace }}/_deps/spirv-headers/include
           HOOKSHOT_VULKAN_HEADERS: ${{ github.workspace }}/_deps/vulkan-headers/include
         run: python -I -B tests/run_all.py --strict
