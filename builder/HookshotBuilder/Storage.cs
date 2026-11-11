@@ -11,7 +11,10 @@ namespace HookshotBuilder;
 /// game uses, and its copy of the game files (.hookshot_exefs) is what updates build from
 static class Storage
 {
-    public static string Base => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder");
+    /// (HOOKSHOT_SETUP_BASE=<folder>: that folder instead, as the setup has it (builder/setup/setup.c): installs, updates and the
+    /// launcher tried without touching the real one)
+    public static string Base => Environment.GetEnvironmentVariable("HOOKSHOT_SETUP_BASE") is { Length: > 0 } tried ? tried
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder");
 
     /// About what a build leaves in the build files folder (the translated code and its compiled objects): said before the build
     public const long BuildFilesBytes = 4L << 30;

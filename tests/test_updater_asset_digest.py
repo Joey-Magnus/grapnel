@@ -29,6 +29,8 @@ using AppContext = DigestFixture.FakeAppContext;
         root = Path(folder)
         (root / "Updater.cs").write_text(aliases + source, encoding="utf-8")
         (root / "Program.cs").write_text(fixture, encoding="utf-8")
+        # (ReleaseList keeps the tags that are versions by the launcher's own rule: no window, disk or network in it)
+        shutil.copyfile(args.source / "builder/HookshotBuilder/LaunchList.cs", root / "LaunchList.cs")
         (root / "NuGet.Config").write_text("<configuration><packageSources><clear/></packageSources></configuration>", encoding="utf-8")
         (root / "Fixture.csproj").write_text("""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
 <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings>

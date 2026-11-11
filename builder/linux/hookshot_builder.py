@@ -370,12 +370,22 @@ class Builder(tk.Tk):
         self.time_text = tk.StringVar()
         self.page = None
         self.build_button = None
+        self.launcher = None
+        # The launcher's one screen (hookshot_launcher.py) is the window whenever it can be drawn: a game folder's launcher,
+        # an update of one, and the build itself. The pages below are what is left without it (a Python with no numpy), and
+        # the builder's own update, which has no game folder.
         if update is not None:
-            self.after(200, self.begin_update)
+            if update and self.open_launcher(update):
+                self.after(200, lambda: self.launcher.start_update(tag, fetched))
+            else:
+                self.after(200, self.begin_update)
         elif launch:
             self.show_launch(launch)
         else:
-            self.show_form()
+            # (the launcher of the game built last, or the build's choices on its screen when there is none yet)
+            last = self.cfg.get("out", "")
+            if not self.open_launcher(last if game_ready(last) else ""):
+                self.show_form()
             self.after(200, self.lookup_latest)
         self.after(100, self.pump)
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -804,8 +814,11 @@ class Builder(tk.Tk):
         args = ["--nup", self.nup.get()] if self.kind.get() == "nup" else ["--exefs", self.exefs.get()]
         self.check_text.set("Checking the game version...")
 
+        # (development) HOOKSHOT_MAKE_GAME=<script>: that instead of make_game.py, as the launcher's build takes it
+        make = os.environ.get("HOOKSHOT_MAKE_GAME") or os.path.join(ROOT, "nx2", "make_game.py")
+
         def run():
-            r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--check"] + args,
+            r = subprocess.run([sys.executable, "-I", make, "--check"] + args,
                                capture_output=True, text=True, cwd=ROOT)
             said = []
             for l in r.stdout.splitlines():
@@ -889,7 +902,28 @@ class Builder(tk.Tk):
         if hasattr(self, "launch_update"):
             self.launch_update.pack(side="right", padx=self.px(4)) if show else self.launch_update.pack_forget()
 
+    def open_launcher(self, folder):
+        """The launcher's screen (hookshot_launcher.py: the Windows launcher's, drawn with numpy) on that game folder; with no
+        folder, or none that holds a game, on the build's choices. False: it cannot be drawn here (a checkout run by a
+        Python that has no numpy)."""
+        try:
+            import hookshot_launcher
+        except ImportError:
+            return False
+        if self.page:
+            self.page.destroy()
+        self.title("Hookshot")
+        self.build_button = None
+        self.launch_folder = folder
+        self.launcher = hookshot_launcher.Launcher(self, folder)
+        self.page = self.launcher.canvas
+        return True
+
     def show_launch(self, folder):
+        if not self.open_launcher(folder):
+            self.show_launch_plain(folder)
+
+    def show_launch_plain(self, folder):
         if self.page:
             self.page.destroy()
         self.title("Hookshot")
@@ -1127,6 +1161,9 @@ class Builder(tk.Tk):
                 elif kind == "latest":
                     self.latest = v or None
                     self.apply_mode()
+                elif kind == "launcher":   # (GitHub's releases, for the launcher's screen)
+                    if self.launcher is not None:
+                        self.launcher.message(v)
                 elif kind == "note":
                     if hasattr(self, "stage_text"):
                         self.stage_text.set(v)

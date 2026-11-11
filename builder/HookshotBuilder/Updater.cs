@@ -124,6 +124,49 @@ static class Updater
     /// The API address of the release a target is on: the latest release for a release (as before), else that tag's
     static string ReleaseApi(string? tag) => tag == null || TrackOf(tag) == Release ? Latest : Releases + "/tags/" + ReleaseOf(tag);
 
+    /// (the launcher's bar of versions) Every published release, newest first (its tag, whether it is a pre-release, whether it
+    /// holds a builder to download), and the latest one's tag (not a pre-release); empty and null when GitHub did not answer. One
+    /// try: the launcher already shows what is on this PC
+    public static async Task<(List<ReleaseInfo> Releases, string? Latest)> ReleaseList()
+    {
+        var found = new List<ReleaseInfo>();
+        string? latest = null;
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("HookshotBuilder");
+            using var request = new HttpRequestMessage(HttpMethod.Get, Releases + "?per_page=30");
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            using var response = await http.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                foreach (var r in doc.RootElement.EnumerateArray())
+                {
+                    if (r.GetProperty("draft").GetBoolean() || r.GetProperty("tag_name").GetString() is not { Length: > 0 } tag) continue;
+                    // (only versions: Hookshot also publishes builds under other names, "nightly", "ultrawide", "low-vram", which
+                    // the bar would list as releases)
+                    if (!LaunchList.IsRelease(tag)) continue;
+                    var pre = r.GetProperty("prerelease").GetBoolean();
+                    var names = new HashSet<string?>();
+                    if (r.TryGetProperty("assets", out var assets))
+                        foreach (var asset in assets.EnumerateArray()) names.Add(asset.GetProperty("name").GetString());
+                    // (what UpdateFolder downloads: the setup and its list, else the whole zip)
+                    found.Add(new ReleaseInfo(tag, pre, names.Contains(Asset) || (names.Contains(SetupAsset) && names.Contains(SetupList))));
+                    if (latest == null && !pre) latest = tag;
+                }
+            }
+        }
+        catch (Exception) { }
+        // (the API's limit: the setup list still names the latest. What it holds is not known then: it is taken to have its builder)
+        if (found.Count == 0 && await LatestTag() is { } named)
+        {
+            latest = named;
+            found.Add(new ReleaseInfo(named, false, true));
+        }
+        return (found, latest);
+    }
+
     /// The latest release's tag, quietly (null: GitHub did not answer); a few tries, 20 s at most
     public static async Task<string?> LatestTag()
     {
@@ -199,9 +242,12 @@ static class Updater
     }
 
     /// The game in folder built again with the latest release: here when these tools are it (or fetched), else after the setup
-    /// installed it (it starts the new builder with --update folder --tag t --fetched)
+    /// installed it (it starts the new builder with --update folder --tag t --fetched). named (a switch of track; the launcher, for
+    /// a version picked that is not the latest: a pre-release, or a release to go back to): the release named tag instead of the
+    /// latest. The setup installs the release its --tag names and keeps only that one (builder/setup/setup.c)
     public static async void UpdateFolder(MainWindow w, string folder, string? tag, bool fetched, bool named = false)
     {
+        named &= tag != null;
         w.BeginUpdate(folder, tag);
         var tools = Tools.Find();
         if (tools == null)
@@ -227,14 +273,15 @@ static class Updater
             var token = w.DownloadToken;
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("HookshotBuilder");
-            w.Note("Asking GitHub for the latest release");
+            w.Note(named ? $"Asking GitHub for {tag}" : "Asking GitHub for the latest release");
             string? newTag = null, url = null, setupUrl = null;
             string? apiUrl = null, setupApiUrl = null;
             string? digest = null, setupDigest = null;
             long size = 0, setupSize = 0;
             var hasList = false;
             // (another track's build, or one a switch of track asked for: that release; the nightly's is named by its list's tag)
-            var api = named && tag != null ? Releases + "/tags/" + ReleaseOf(tag) : ReleaseApi(tag);
+            var api = named ? Releases + "/tags/" + Uri.EscapeDataString(ReleaseOf(tag!)) : ReleaseApi(tag);
+            var which = api == Latest ? "The latest release" : tag!;
             using (var response = await GetWithRetries(w, http, api, token, "application/vnd.github+json", TimeSpan.FromSeconds(30)))
             using (var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token)))
             {
@@ -260,7 +307,7 @@ static class Updater
                     else if (assetName == SetupList) hasList = true;
                 }
             }
-            if (newTag == null || (url == null && setupUrl == null)) throw new InvalidOperationException("The latest release has no " + Asset + ".");
+            if (newTag == null || (url == null && setupUrl == null)) throw new InvalidOperationException(which + " has no " + Asset + ".");
             if (newTag == tools.Version)
             {
                 w.UpdateBuild(tools, folder);
@@ -286,7 +333,7 @@ static class Updater
                 Application.Current.Shutdown();
                 return;
             }
-            if (url == null) throw new InvalidOperationException("The latest release has no " + Asset + ".");
+            if (url == null) throw new InvalidOperationException(which + " has no " + Asset + ".");
             var zip = Path.Combine(cache, "HookshotBuilder-" + name + ".zip");
             w.Note($"Downloading {Asset} of {newTag} ({size >> 20} MB)");
             await DownloadWithRetries(w, http, url, apiUrl, zip, size, digest, token, w.DownloadProgress);

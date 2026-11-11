@@ -328,6 +328,8 @@ namespace DigestFixture
 
 namespace HookshotBuilder
 {
+    // (the release's files and folders under the names Updater.cs asks for them by. ReleaseInfo is LaunchList.cs's
+    // own, compiled beside Updater.cs: its list keeps only the tags that are versions)
     sealed class Tools
     {
         public string Version => "v0.0.0";
