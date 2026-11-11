@@ -3152,6 +3152,14 @@ void nvn_stage_resources(StageResources& out, const NvnState& s, int stage, cons
     // (web: from the 17th texture on, a texture shares the sampler of the last earlier one of its kind that has its
     // own, as the WGSL backend declares them and stage_resources binds them: browsers allow 16 samplers a stage)
     uint32_t last_own[2] = {0, 0}, own_samplers = 0;   // (at most 16: wgsl_emit_context.cpp SetupTextures)
+    // (the last texture of each kind with a sampler of its own: where its sampler's layout and bind group entries are,
+    // and that sampler never filtering. A texture that shares it and cannot be filtered (a depth buffer read as a
+    // color) makes it non-filtering, the owner's filtering lost: wgpu refused the pipeline, "Non-filterable float
+    // textures can't be sampled with a filtering sampler", and the gameplay's final picture with it)
+    struct Owner {
+        size_t layout = SIZE_MAX, entry = SIZE_MAX;
+        WGPUSampler nonfiltering = nullptr;
+    } owner[2];
     for (const auto& d : info.texture_descriptors) {
         const bool shared_sampler = RX_SHARE_SAMPLERS && own_samplers >= 15 && last_own[d.is_depth ? 1 : 0];
         if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1, own_samplers++;
@@ -3203,7 +3211,19 @@ void nvn_stage_resources(StageResources& out, const NvnState& s, int stage, cons
         sl.sampler.type = t.kind == TexKind::Depth             ? WGPUSamplerBindingType_Comparison
                           : t.kind == TexKind::UnfilterableFloat ? WGPUSamplerBindingType_NonFiltering
                                                                  : WGPUSamplerBindingType_Filtering;
-        if (!shared_sampler) out.layout.push_back(pack_layout(sl));
+        Owner& own = owner[d.is_depth ? 1 : 0];
+        if (!shared_sampler) {
+            own.layout = out.layout.size(), own.nonfiltering = t.nonfiltering;
+            out.layout.push_back(pack_layout(sl));
+        } else if (sl.sampler.type == WGPUSamplerBindingType_NonFiltering && own.layout != SIZE_MAX && own.nonfiltering) {
+            WGPUBindGroupLayoutEntry ol = unpack_layout(out.layout[own.layout]);
+            if (ol.sampler.type == WGPUSamplerBindingType_Filtering) {
+                ol.sampler.type = WGPUSamplerBindingType_NonFiltering;
+                out.layout[own.layout] = pack_layout(ol);
+                if (own.entry != SIZE_MAX) out.entries[own.entry].sampler = own.nonfiltering;
+                count("shared_sampler_nonfiltering");
+            }
+        }
         WGPUBindGroupEntry te{};
         te.binding = b;
         te.textureView = t.view;
@@ -3211,7 +3231,7 @@ void nvn_stage_resources(StageResources& out, const NvnState& s, int stage, cons
         WGPUBindGroupEntry se{};
         se.binding = b + 1;
         se.sampler = t.sampler;
-        if (!shared_sampler) out.entries.push_back(se);
+        if (!shared_sampler) own.entry = out.entries.size(), out.entries.push_back(se);
         b += 2;
     }
     out.next_binding = b;

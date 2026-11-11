@@ -532,6 +532,9 @@ enum class TexKind : uint8_t { Float, UnfilterableFloat, Depth, Uint, Sint };
 struct BoundTexture {
     WGPUTextureView view = nullptr;
     WGPUSampler sampler = nullptr;
+    // (the same sampler never filtering: a texture past 16 that shares this one's sampler and cannot be filtered,
+    // a depth buffer read as a color, needs it: RX_SHARE_SAMPLERS, nvn_stage_resources)
+    WGPUSampler nonfiltering = nullptr;
     TexKind kind = TexKind::Float;
     Image* image = nullptr;   // a render target sampled (must not be an attachment of the same pass)
     char source = 'd';        // (debugging) d placeholder, t texture from memory, r render target

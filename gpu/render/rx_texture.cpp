@@ -2313,12 +2313,13 @@ BoundTexture nvn_texture_resolve(const NvnState& s, uint64_t tex_handle, uint64_
         b.kind = TexKind::Float;
         b.view = texture_view(false);
         b.sampler = nvn_sampler(sp, 0);
+        b.nonfiltering = nvn_sampler(sp, 1);
         return b;
     case TexKind::UnfilterableFloat:
     case TexKind::Depth:
         b.kind = TexKind::UnfilterableFloat;
         b.view = texture_view(kind == TexKind::Depth && has_stencil(im->format));
-        b.sampler = nvn_sampler(sp, 1);
+        b.sampler = b.nonfiltering = nvn_sampler(sp, 1);
         return b;
     default:
         log_limited("tex_int", 8, "rx: integer texture (format %d) bound to a float binding", (int)im->pixel_format);
