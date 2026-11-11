@@ -3053,7 +3053,7 @@ bool flush_finish(Flush& f, bool gpu_ok) {
     const std::vector<Part>& parts = f.parts;
     void* map = f.map;
     bool ok = f.ok && gpu_ok;
-    if (ok && !flush_uncached()) invalidate_mapped(f.alloc, total);
+    if (ok && !flush_uncached() && f.alloc) invalidate_mapped(f.alloc, total);
     if (ok && total <= 64) {   // (RX_VK_LOG_TINY_FLUSH=1: the values of tiny ones, 400 lines: a 1 x 1 luminance)
         static const bool log_tiny = env_on("RX_VK_LOG_TINY_FLUSH");
         static int logged;
@@ -3258,23 +3258,28 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
         for (auto it = vw.lower_bound(lo > kFlushMax ? lo - kFlushMax : 0); it != vw.end() && it->first < hi;)
             it = it->second > lo ? vw.erase(it) : std::next(it);
     }
-    static const bool no_auto_rb = getenv("RX_VK_NO_AUTO_READBACK") != nullptr;
+    static const bool no_auto_rb = env_on("RX_VK_NO_AUTO_READBACK");
     int done = 0;
     uint64_t bytes = 0;
     for (Texture* t : todo) {
         bool flushed_ok = false;
+        bool served_from_ring = false;
         if (!no_auto_rb && t->auto_rb && t->auto_rb->ready && !t->auto_rb->dirty_in_rec.load(std::memory_order_relaxed)) {
             Texture::AutoReadback& rb = *t->auto_rb;
             const uint32_t slot = (rb.head - 1) % Texture::AutoReadback::kSlots;
             if (rb.slot_val[slot]) vk_timeline_wait(rb.slot_val[slot]);
-            invalidate_mapped(rb.alloc, (VkDeviceSize)Texture::AutoReadback::kSlots * rb.slot_sz);
-            Flush f{t, lo, hi};
-            f.parts.push_back({0, 0, 0, rb.copy_bytes, level_geo(*t, 0)});
-            f.total = (rb.copy_bytes + 15) & ~15ull;
-            f.map = (uint8_t*)rb.map + (size_t)slot * rb.slot_sz;
-            f.ok = true;
-            flushed_ok = flush_finish(f, true);
-        } else {
+            if (vk_timeline_completed() >= rb.slot_val[slot]) {
+                Flush f{t, lo, hi};
+                f.parts.push_back({0, 0, 0, rb.copy_bytes, level_geo(*t, 0)});
+                f.total = (rb.copy_bytes + 15) & ~15ull;
+                f.map = (uint8_t*)rb.map + (size_t)slot * rb.slot_sz;
+                f.alloc = rb.alloc;
+                f.ok = true;
+                flushed_ok = flush_finish(f, true);
+                served_from_ring = flushed_ok;
+            }
+        }
+        if (!served_from_ring) {
             if (t->auto_rb) {
                 t->auto_rb->ready = false;
                 t->auto_rb->dirty_in_rec.store(false, std::memory_order_relaxed);
@@ -3436,7 +3441,7 @@ int texture_segment_end(int index) {
 }
 bool texture_marked(const Texture* tex) {
     return !tex || (tex->gpu_written && !tex->released && tex->uploaded && tex->owned_frame == frame_no &&
-                    tex->first_render_frame && (!tex->auto_rb || tex->auto_rb->dirty_in_rec.load(std::memory_order_relaxed)));
+                    tex->first_render_frame);
 }
 
 namespace {
