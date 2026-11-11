@@ -139,7 +139,11 @@ LEFT_OUT = {("adult", "Sacred Forest Meadow"): "Sheik's lesson starts on arrival
             ("child", "Sacred Forest Meadow"): "4"}
 # Rooms no Teleport destination reaches, by the game's own map and start position names ("!teleport <map> <start>": host/hos_main.c):
 # the boss arenas and the sages' rooms, and the boss rush's rooms (DreamWorld). The "extras" part visits them, the child ones
-# first. (label, map, start position, age)
+# first; it is not one of the tour's default parts. (label, map, start position, age)
+# Measured (a short run): Gohma_BattleStartPos loads the Deku Tree but the picture stays black, and no teleport is taken from there
+# after ("result 0", as in the Haunted Wasteland); the run added 36 pipelines the tour list lacked. These are the events' own start
+# positions, not the entrances' (NextStartPos): each wants its own arrival event, still to find. Until then each needs a game of
+# its own (--part extras --first <label> --stops 1)
 EXTRAS = [
     ("Gohma's room", "InsideTheDekuTree", "Gohma_BattleStartPos", "child"),
     ("Deku Tree, after Gohma", "InsideTheDekuTree", "StartPos_Get_StoneOfForest", "child"),
