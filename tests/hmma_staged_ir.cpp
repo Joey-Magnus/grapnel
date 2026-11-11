@@ -48,6 +48,9 @@ static Profile test_profile(bool explicit_layout) {
     profile.supported_subgroup_stages = 0xffffffffu;
     profile.support_int64 = true;
     profile.support_explicit_workgroup_layout = explicit_layout;
+    // (the float modes vk_shader.cpp's make_profile has the game's programs keep: the self-test's module declares the same)
+    profile.support_float_controls = true;
+    profile.support_fp16_signed_zero_nan_preserve = profile.support_fp32_signed_zero_nan_preserve = true;
     return profile;
 }
 
@@ -76,6 +79,8 @@ static std::vector<u32> emit(u32 width, bool explicit_layout, bool bytes = false
         ir.WriteShared(16, ir.Imm32(kOwnShared - 10), ir.Imm32(2u));
     }
     ir.Barrier();
+    ir.SubgroupBarrier();          // (the warp's own stores before its LDSM: Ampere's lowering)
+    ir.WorkgroupMemoryBarrier();   // (MEMBAR.CTA)
     const IR::U32 own{ir.LoadShared(32, false, ir.Imm32(kOwnShared - 4))};   // (the program's own last word)
     const IR::Value a{ir.CompositeConstruct(own, ir.Imm32(0x3c003c00u), ir.Imm32(0x40004000u), ir.Imm32(0xbc00bc00u))};
     const IR::Value b{ir.CompositeConstruct(ir.Imm32(0x3c004000u), own)};
@@ -97,10 +102,11 @@ static std::vector<u32> emit(u32 width, bool explicit_layout, bool bytes = false
 }
 
 // what a module holds: its memory model, the cooperative matrix instructions, the function calls, the shared words, SubgroupId;
-// its Workgroup loads and stores (those NonPrivatePointer) and its control barriers (those making memory available and visible)
+// its Workgroup loads and stores (those NonPrivatePointer) and its control and memory barriers (those making memory available
+// and visible); and which float modes it keeps (SignedZeroInfNanPreserve's widths)
 static std::string inspect(const std::vector<u32>& code) {
     unsigned muladd = 0, load = 0, store = 0, calls = 0, functions = 0, subgroup_id = 0, model = 0;
-    unsigned shared_access = 0, shared_nonprivate = 0, barriers = 0, barriers_visible = 0;
+    unsigned shared_access = 0, shared_nonprivate = 0, barriers = 0, barriers_visible = 0, signed_zero_inf_nan = 0;
     std::map<u32, u64> constants;
     std::map<u32, u32> array_length;   // (array type id: its length constant's value)
     u64 workgroup_words = 0;
@@ -130,6 +136,13 @@ static std::string inspect(const std::vector<u32>& code) {
             barriers++;
             if ((constants[w[2]] & visible) == visible) barriers_visible++;
             break;
+        case spv::Op::OpMemoryBarrier:
+            barriers++;
+            if ((constants[w[1]] & visible) == visible) barriers_visible++;
+            break;
+        case spv::Op::OpExecutionMode:
+            if (w[1] == static_cast<u32>(spv::ExecutionMode::SignedZeroInfNanPreserve)) signed_zero_inf_nan |= w[2];
+            break;
         case spv::Op::OpMemoryModel: model = w[1]; break;
         case spv::Op::OpCooperativeMatrixMulAddKHR: muladd++; break;
         case spv::Op::OpCooperativeMatrixLoadKHR: load++; break;
@@ -154,10 +167,10 @@ static std::string inspect(const std::vector<u32>& code) {
     }
     char line[384];
     std::snprintf(line, sizeof line, "model=%s muladd=%u load=%u store=%u calls=%u functions=%u subgroup_id=%u shared_elements=%llu "
-                  "shared_access=%u shared_nonprivate=%u barriers=%u barriers_visible=%u",
+                  "shared_access=%u shared_nonprivate=%u barriers=%u barriers_visible=%u preserve_bits=%u",
                   model == static_cast<u32>(spv::MemoryModel::VulkanKHR) ? "vulkan" : "glsl450", muladd, load, store, calls,
                   functions, subgroup_id, (unsigned long long)workgroup_words, shared_access, shared_nonprivate, barriers,
-                  barriers_visible);
+                  barriers_visible, signed_zero_inf_nan);
     return line;
 }
 
