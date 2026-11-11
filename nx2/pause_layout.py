@@ -1,4 +1,4 @@
-"""(hookshot) A sixth button in the pause menu's Menu page layout, for "Opções Recomp" (host/oot_pause_menu.c): PaSystemMenu_00
+"""(hookshot) A sixth button in the pause menu's Menu page layout, for "Recomp Options" (host/oot_pause_menu.c): PaSystemMenu_00
 in UI/Layout2Archive/Common.*.blarc has panes for five buttons (Pa_Button_00..04, PaCommonBtnThin_00 parts) and the page draws
 the panes its layout has, so Pa_Button_05 is added to the layout: a copy of Pa_Button_04 below it at the buttons' spacing.
 

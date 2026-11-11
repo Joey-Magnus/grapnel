@@ -1,11 +1,12 @@
-/* (hookshot) "Opções Recomp" (Recomp options): a sixth button on the pause menu's Menu page, below Title Screen, that opens the
+/* (hookshot) "Recomp Options": a sixth button on the pause menu's Menu page, below Title Screen, that opens the
    Insert menu (gpu/vk/vk_menu.cpp). nx2/pause_layout.py adds its pane, Pa_Button_05, to the page's layout (PaSystemMenu_00, a
    copy of Pa_Button_04 below it), served by host/prompts.c; nx2/oot_pause_menu.py puts the calls below into the lifted code.
 
    - The button: when the game has made the page and its five buttons (f_80f99400), the sixth gets a button object as they do
      (f_80f99390, f_8045c6c0).
-   - Its text: "Opções Recomp" in the game's language, given to its text boxes (the text and its shadow) as the game gives a
-     box its message (f_80459520): the page's buttons take theirs from LayoutMsg/PlusMenu_00, which has none for a sixth.
+   - Its text: "Recomp Options" in the game's language ("Opções Recomp" in Portuguese and the like), given to its text
+     boxes (the text and its shadow) as the game gives a box its message (f_80459520): the page's buttons take theirs from
+     LayoutMsg/PlusMenu_00, which has none for a sixth.
    - Pressed: A while the cursor is on it (its state, noted at f_80ad5310) opens the Insert menu (F1, as the key opens it),
      and the game does not see that press (hos_pausebtn_buttons, from host/nn_hid.c).
    HOS_RECOMP_BUTTON=0: none of it (the layout's sixth pane then shows without a text and does nothing). */

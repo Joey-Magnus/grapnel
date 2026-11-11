@@ -1,4 +1,4 @@
-"""A sixth button on the pause menu's Menu page, "Opções Recomp" (Recomp options), that opens the Insert menu: the calls into
+"""A sixth button on the pause menu's Menu page, "Recomp Options", that opens the Insert menu: the calls into
 host/oot_pause_menu.c, put into the lifted C (nx2/oot_patches.py apply, for the build of LIFE_BUILD_ID). Its pane is the layout's
 (nx2/pause_layout.py).
 

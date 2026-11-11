@@ -541,7 +541,7 @@ def apply(gen, *, protect_hearts=False, required=False):
 
 
 def apply_pause_menu(gen):
-    """The pause menu's "Opções Recomp" button (nx2/oot_pause_menu.py): all its edits, or none"""
+    """The pause menu's "Recomp Options" button (nx2/oot_pause_menu.py): all its edits, or none"""
     import oot_pause_menu
     found, holders = [0] * len(oot_pause_menu.EDITS), []
     for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
