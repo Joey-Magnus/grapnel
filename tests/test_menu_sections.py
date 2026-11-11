@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 GRAPHICS = [
     ("Resolution and upscaling", ["Output resolution", "Upscaler", "DLSS model", "Render resolution", "Sharpness"]),
-    ("Frame generation and latency", ["Frame generation", "Frame pacing", "Game frame rate cap", "NVIDIA Reflex",
-                                      "AMD Anti-Lag 2"]),
+    ("Frame generation and latency", ["Frame generation", "Frame generation by", "Frame pacing", "Game frame rate cap",
+                                      "NVIDIA Reflex", "AMD Anti-Lag 2"]),
     ("Detail", ["Anisotropic filtering"]),
     ("GPU and memory", ["GPU device", "Mesh shaders"]),
 ]
