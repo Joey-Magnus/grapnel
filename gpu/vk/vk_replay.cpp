@@ -343,7 +343,7 @@ Recording& begin_recording(uint64_t value) {
     trace.mark("begin_resources");
     return r;
 }
-void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
+void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0, NativePresentSync* handoff = nullptr) {
     StageTrace trace("submit_recording", r.value);
     draw_flush_recording(r.slot);
     const bool uploads = texture_uploads_recorded();
@@ -362,7 +362,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
     si.commandBufferInfoCount = n;
     si.pCommandBufferInfos = cb;
-    VkSemaphoreSubmitInfo signals[2] = {signal, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
+    VkSemaphoreSubmitInfo signals[3] = {signal, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
     uint32_t nsig = signal_value ? 1 : 0;
     uint64_t seq = 0;
     if (rec_timeline) {   // (and its number on the recordings' timeline; every caller holds replay_mu: in order)
@@ -377,12 +377,25 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         rec_open_values.clear();
         while (value_rec.size() > 8192) value_rec.erase(value_rec.begin());
     }
+    VkSemaphoreSubmitInfo reuse{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    if (handoff) {
+        signals[nsig].semaphore = handoff->timeline;
+        signals[nsig].value = handoff->ready;
+        signals[nsig++].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        if (handoff->ready > 1) {
+            reuse.semaphore = handoff->timeline;
+            reuse.value = handoff->ready - 1;
+            reuse.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            si.waitSemaphoreInfoCount = 1;
+            si.pWaitSemaphoreInfos = &reuse;
+        }
+    }
     si.signalSemaphoreInfoCount = nsig;
     si.pSignalSemaphoreInfos = nsig ? signals : nullptr;
     trace.mark("end_commands_signals");
     std::lock_guard lk(dev.present_mu);   // (one queue: submits and presents take turns)
     trace.mark("queue_lock_wait");
-    if (batch_on()) {
+    if (batch_on() && !handoff) {
         if (pend.cbs.empty()) batch_next++, pend_since = std::chrono::steady_clock::now();
         for (uint32_t i = 0; i < n; i++) pend.cbs.push_back(cb[i]);
         if (signal_value) pend.signal = std::max(pend.signal, signal.value), pend.any_signal = true;
@@ -395,6 +408,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         if (!pend.cbs.empty() && batch_gpu_idle()) flush_reason = FR_OTHER, queue_flush_locked();   // (#1993)
         return;
     }
+    if (handoff) queue_flush_locked(); // Publish capture readiness before handing it to another thread.
     PROF(PROF_QSUBMIT);
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
     r.submitted = res == VK_SUCCESS;
@@ -3016,7 +3030,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
     VkImage src = VK_NULL_HANDLE;
     VkImageView direct_view = VK_NULL_HANDLE;
     uint32_t sw = 0, sh = 0;
-    bool shot = false, interpolated = false;
+    bool shot = false, interpolated = false, native_async = false;
     PresentContentSize shot_size{kShotW, kShotH}, made_size{kShotW, kShotH};
     VkImage made_src = VK_NULL_HANDLE;
     {
@@ -3057,6 +3071,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         interpolated = framegen_on() && tex && fg_inline &&
                        framegen_record(r.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample), sw,
                                        sh, crop);
+        native_async = present_async_record(r.cmd, src, tex ? tex->format : VK_FORMAT_UNDEFINED, sw, sh, crop);
         texture_frame(completed());
         full_barrier(r.cmd);
         presents++;
@@ -3140,7 +3155,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         }
         memory_end_submission(r.cmd);
         full_barrier(r.cmd);
-        submit_recording(r);   // (nothing is stopped at a present: drain)
+        submit_recording(r, true, 0, native_async ? present_async_pending() : nullptr);   // Publish owned capture.
         if (pushed.load() < value) pushed = value;
         done_max = std::max(done_max, value), signaled = std::max(signaled, value);
         if (fg_after) {
@@ -3151,6 +3166,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             submit_recording(g, false);
         }
         if (interpolated) framegen_queue(value);
+        else if (native_async) present_async_queue(r.submitted);
         else menu_note_frame(true);   // (the FPS counter's, as frame generation's thread counts what it shows)
         {   // (RX_VK_WAIT_GPU=<frames>: the replay no further ahead of the GPU than that)
             static uint64_t values[8];
@@ -3351,7 +3367,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         }
         log_frame_stats();
     }
-    if (dev.offscreen || interpolated) return;
+    if (dev.offscreen || interpolated || native_async) return;
     present_image(src, sw, sh, crop, direct_view);
 }
 
@@ -3584,7 +3600,7 @@ struct PresentStageSample {
 std::mutex present_image_mu;
 static VkResult present_out(uint32_t index, std::unique_lock<std::mutex>& qk);
 thread_local PendingPresent* present_defer_into = nullptr;
-void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
+void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, NativePresentSync* sync) {
     StageTrace trace("present_image", 0);
     static const bool trace_stages = getenv("RX_VK_PRESENT_STAGES") && atoi(getenv("RX_VK_PRESENT_STAGES")) != 0;
     const int64_t begin = trace_stages ? prof_now() : 0;
@@ -3684,7 +3700,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     }
     const VkImage scaled = src && view ? framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h) : VK_NULL_HANDLE;
     // (hookshot) the Insert menu's HDR: the picture (scaled, or the game's own with its crop) to HDR10, copied in as the SDR one is
-    const VkImage hdr_image = dev.hdr && src && view && !present_native_pq.load(std::memory_order_relaxed)
+    const VkImage hdr_image = dev.hdr && src && view && !(sync ? sync->native_pq : present_native_pq.load(std::memory_order_relaxed))
         ? (scaled ? framegen_hdr(f.cmd, framegen_scaled_view(), rect.w, rect.h, nullptr, rect.w, rect.h)
                   : framegen_hdr(f.cmd, view, sw, sh, crop, rect.w, rect.h))
         : VK_NULL_HANDLE;
@@ -3753,7 +3769,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     if (vkEndCommandBuffer(f.cmd) == VK_ERROR_DEVICE_LOST) device_lost();
     // after the image's acquisition. (Not on the timeline: one queue runs submits in order, and a wait for a value
     // another thread had counted but not yet submitted blocked the queue for good)
-    VkSemaphoreSubmitInfo waits[1] = {{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
+    VkSemaphoreSubmitInfo waits[2] = {{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
     waits[0].semaphore = f.acquired;
     waits[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -3766,8 +3782,19 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     si.pWaitSemaphoreInfos = waits;
     si.commandBufferInfoCount = 1;
     si.pCommandBufferInfos = &cb;
+    VkSemaphoreSubmitInfo signals[2] = {signal, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
     si.signalSemaphoreInfoCount = 1;
-    si.pSignalSemaphoreInfos = &signal;
+    si.pSignalSemaphoreInfos = signals;
+    if (sync) {
+        waits[1].semaphore = sync->timeline;
+        waits[1].value = sync->ready;
+        waits[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        si.waitSemaphoreInfoCount = 2;
+        signals[1].semaphore = sync->timeline;
+        signals[1].value = sync->consumed;
+        signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        si.signalSemaphoreInfoCount = 2;
+    }
     stages.mark(PresentStageSample::Record);
     trace.mark("record");
     std::unique_lock qk(dev.present_mu);
@@ -3791,7 +3818,9 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     trace.mark("flush");
     reflex_submit_ends();
     res = vkQueueSubmit2(dev.queue, 1, &si, f.done);
+    if (sync) sync->read_submitted = res == VK_SUCCESS;
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
+    if (res != VK_SUCCESS) device_lost(); // A reset frame fence has no safe recovery without a submission.
     stages.mark(PresentStageSample::Submit);
     trace.mark("submit");
     if (present_defer_into) {
@@ -3805,6 +3834,22 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     stages.mark(PresentStageSample::Present);
     trace.mark("present");
     stages.shown = res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR;
+    if (sync) sync->shown = stages.shown;
+}
+
+void present_async_release(NativePresentSync& sync) {
+    VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    wait.semaphore = sync.timeline; wait.value = sync.ready;
+    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSemaphoreSubmitInfo signal = wait; signal.value = sync.consumed;
+    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submit.waitSemaphoreInfoCount = submit.signalSemaphoreInfoCount = 1;
+    submit.pWaitSemaphoreInfos = &wait; submit.pSignalSemaphoreInfos = &signal;
+    std::lock_guard lock(dev.present_mu);
+    queue_flush_locked();
+    const VkResult result = vkQueueSubmit2(dev.queue, 1, &submit, VK_NULL_HANDLE);
+    if (result != VK_SUCCESS) device_lost(); // Never publish a reusable slot with no releasing submission.
+    sync.read_submitted = true;
 }
 
 bool present_commit(const PendingPresent& p) {
