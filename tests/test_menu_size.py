@@ -47,15 +47,19 @@ def main():
     check('!strcmp(line, "menu_size") && atoi(eq + 1) == 0' in init and "if (menu_auto) opts.menu_size = 2;" in init,
           "an options file's menu_size=0 (Auto) does not load as Medium")
 
-    banner = menu[menu.index("which build, at the banner"):]
-    banner = banner[:banner.index("\n    }\n")]
-    check("ui::fit_px(px, opts.menu_size == 3 ? px : kVersionMinPt * s, 0.5f * s, room, width)" in banner and "if (fit > 0)" in banner,
-          "the banner's version is not shrunk to fit at Small and Medium (and kept at its size at Large)")
-    check(banner.index('ver.resize(ver.find(" ("))') < banner.index("ui::fit_px("), "the version shrinks before it drops its source")
-    check("constexpr float kVersionMinPt = 10;" in menu, "the version's smallest size is not 10 points")
+    head = block(menu, "MenuHeader menu_header(")
+    draw = block(menu, "void draw_options(")
+    check("const MenuHeader mh = menu_header(c);" in draw and "mh.text.c_str()" in draw and "if (fit > 0)" not in draw,
+          "the banner's header (icon and version) is not always drawn")
+    check("ui::logo(&aspect)" in draw and "AddImage(icon->GetTexRef()" in draw, "the banner's header has no icon")
+    check('{"Hookshot " + full, full, release}' in head, "the header does not give up \"Hookshot \" before the git suffix")
+    check("std::max((c.w - total) * 0.5f, mh.end + keys_w)" in draw, "the tabs do not start after the header")
+    check("kVersionMinPt" not in menu, "the version still has a size under which it is hidden")
 
     src = "#include <cmath>\n#include <cstdio>\n#include <cstring>\n" + block(ui, "inline float unit(") + "\n" + \
-          "template <class Width>\n" + block(ui, "float fit_px(") + "\n" + block(menu, "const char* tx_menu_size(") + r'''
+          "#include <string>\n" + \
+          "template <class Width>\n" + block(ui, "float fit_px(") + "\n" + block(menu, "const char* tx_menu_size(") + "\n" + \
+          block(menu, "std::string version_release(") + r'''
 #define CHECK(x) do { if (!(x)) { printf("FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
 // (a stand-in font: a text n characters long, 0.5 em a character, its glyphs rounded up to whole pixels as an atlas's are)
 static float width_of(int n, float px) { return n * std::ceil(px * 0.5f); }
@@ -76,6 +80,12 @@ int main() {
         const float g = fit_px(px, 10 * s, 0.5f * s, 70, rounding);
         CHECK(g > 0 && rounding(g) <= 70);
     }
+    // (the header's shortest version: the release, the git suffix past it cut to "...", the source note gone)
+    CHECK(version_release("v2.1.0-rc.3-95-g2ed98c4-dirty") == "v2.1.0-rc.3...");
+    CHECK(version_release("v2.1.0-rc.3-95-g2ed98c4-dirty (source e939301d)") == "v2.1.0-rc.3...");
+    CHECK(version_release("v2.0.11-821-g7b81752") == "v2.0.11...");
+    CHECK(version_release("v2.0.12") == "v2.0.12" && version_release("v2.0.12 (x)") == "v2.0.12");
+    CHECK(version_release("v2.0-gold") == "v2.0-gold");   // (a -g not after "-<count>": not a git suffix)
     float m = 0;
     CHECK(unit(1080, 2, &m) == 1.5f && m == 1080 * 0.025f);    // (Medium)
     CHECK(unit(1080, 0, &m) == 1.5f && m == 1080 * 0.025f);    // (an older file's Auto, or anything else: Medium)
@@ -84,7 +94,7 @@ int main() {
     CHECK(unit(720, 1, &m) == 0.85f);   // (Small)
     CHECK(!strcmp(tx_menu_size(1), "Small") && !strcmp(tx_menu_size(2), "Medium") && !strcmp(tx_menu_size(3), "Large"));
     CHECK(!strcmp(tx_menu_size(0), "Medium") && !strcmp(tx_menu_size(4), "Medium"));
-    printf("menu size: Small, Medium, Large; Medium otherwise, whatever the input; the version shrinks to fit but at Large\n");
+    printf("menu size: Small, Medium, Large; Medium otherwise, whatever the input; the header's version shortens to fit\n");
     return 0;
 }
 '''

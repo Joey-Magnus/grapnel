@@ -541,7 +541,6 @@ const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
 // (hookshot) Menu size: how large the overlays are drawn (vk_ui.h unit), Medium unless the player chooses Small or Large. It
 // was Auto by default, Large in fullscreen at 1080 lines and up while a controller opened the menu: the menu changed size with
 // the input that opened it, and the version in its banner no longer fitted. An options file's menu_size=0 (that Auto): Medium
-constexpr float kVersionMinPt = 10;   // (the banner's version at Small and Medium: shrunk to fit, no smaller than this, in points)
 bool pad_last = false;   // (a controller was the menu's last input: its buttons in the prompts)
 int pad_confirm = 0, pad_back = 1;   // (the face buttons that confirm and go back, HOS_PAD_*: menu_keys::confirm_back, each tick)
 const char* tx_menu_size(int v) {
@@ -2210,22 +2209,72 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
     }
 }
 
+/// (hookshot) The banner's header (draw_options): the icon's height, the build's text and its size, where it ends (the tab keys
+/// start no further left), and the tabs' scale. The first that fits with every tab shown: the header at 13 points with
+/// "Hookshot " and the build; without "Hookshot "; the release alone (the git suffix after it cut to "..."); those at 11
+/// points; then the tabs smaller, down to 80%. At worst the last of them, which may run past the banner's right end
+struct MenuHeader { float icon_h, px, end, tab_scale; std::string text; };
+std::string version_release(const std::string& v) {   // ("v2.1.0-rc.3-95-g2ed98c4-dirty (x)" -> "v2.1.0-rc.3...")
+    std::string r = v.substr(0, v.find(" ("));
+    for (size_t g = r.find("-g"); g != std::string::npos; g = r.find("-g", g + 2)) {
+        size_t d = g;
+        while (d > 0 && r[d - 1] >= '0' && r[d - 1] <= '9') d--;
+        if (d < g && d > 0 && r[d - 1] == '-') return r.substr(0, d - 1) + "...";
+    }
+    return r;
+}
+MenuHeader menu_header(const ui::Ctx& c) {
+    const float s = c.s;
+    float aspect = 1;
+    const bool icon = ui::logo(&aspect) != nullptr;
+    const std::string ver = HOOKSHOT_VERSION, full = ver.substr(0, ver.find(" (")), release = version_release(ver);
+    const std::string texts[3] = {"Hookshot " + full, full, release};
+    float tabs = 0;   // (the tabs at full size, with their keys: draw_options' layout)
+    for (int i = 0; i < TAB_COUNT; i++)
+        if (tab_shown(i)) tabs += ui::size_of(c.f.heading, 21 * s, tab_titles[i]).x + 48 * s;
+    MenuHeader h{};
+    h.icon_h = 30 * s;
+    struct Try { float pt; int text; float k; };   // (in order: the header gives up its words, then its size, then the tabs theirs)
+    static const Try tries[] = {{13, 0, 1}, {13, 1, 1}, {13, 2, 1}, {11, 0, 1}, {11, 1, 1}, {11, 2, 1},
+                                {11, 2, 0.95f}, {11, 2, 0.9f}, {11, 2, 0.85f}, {11, 2, 0.8f}};
+    for (const Try& t : tries) {
+        h.px = t.pt * s, h.text = texts[t.text], h.tab_scale = t.k;
+        h.end = c.safe + (icon ? h.icon_h * aspect + 8 * s : 0) + ui::size_of(c.f.body, h.px, h.text.c_str()).x + 18 * s;
+        if (h.end + tabs * t.k + 2 * 48 * s <= c.w - c.safe) return h;
+    }
+    return h;
+}
 void draw_options(ui::Ctx& c) {
     const float s = c.s, hh = banner_h(c);
     ui::banner(c, hh);
-    // the tabs in the banner: dark ink on the tan, the shown one light on a dark inset; the tab keys at their ends (a click there
-    // is the previous or the next tab)
+    // (hookshot) at the banner's left a small header, always shown: Hookshot's icon and which build this is, so a report can
+    // say it without opening the log. The tabs follow it: in the middle of the banner while that leaves the header room,
+    // else from its end. When header and tabs do not fit at their sizes, the header gives up first: "Hookshot " (the icon
+    // says it), then the build's git suffix past the release ("v2.1.0-rc.3..."), then its size; the tabs last (menu_header)
+    const MenuHeader mh = menu_header(c);
+    const float ty = hh * 0.5f + s, tab_px = 21 * s * mh.tab_scale, tab_pad = 48 * s * mh.tab_scale;
     float tw[TAB_COUNT], total = 0;
-    for (int i = 0; i < TAB_COUNT; i++) tw[i] = tab_shown(i) ? ui::size_of(c.f.heading, 23 * s, tab_titles[i]).x + 56 * s : 0, total += tw[i];
-    float x = (c.w - total) * 0.5f;
-    const float ty = hh * 0.5f + s;
+    for (int i = 0; i < TAB_COUNT; i++) tw[i] = tab_shown(i) ? ui::size_of(c.f.heading, tab_px, tab_titles[i]).x + tab_pad : 0, total += tw[i];
+    const float keys_w = 48 * s;   // (a tab key's cap, 26, and its gap to the tabs, 22)
+    float x = std::max((c.w - total) * 0.5f, mh.end + keys_w);
+    {
+        float aspect = 1;
+        ImTextureData* icon = ui::logo(&aspect);
+        float hx = c.safe;
+        if (icon) {
+            const float ih = mh.icon_h;
+            c.d->AddImage(icon->GetTexRef(), ImVec2(hx, ty - ih * 0.5f), ImVec2(hx + ih * aspect, ty + ih * 0.5f));
+            hx += ih * aspect + 8 * s;
+        }
+        ui::text_mid(c, c.f.body, mh.px, hx, ty, ui::kBannerInk, mh.text.c_str());
+    }
     const char* const keys[2] = {c.pad ? "L" : "Q", c.pad ? "R" : "E"};
     for (int i = 0; i < 2; i++) {
         const float cw = 26 * s, cx = i ? x + total + 22 * s : x - 22 * s - cw;
         const bool hover = hover_tab == TAB_COUNT + i;
         c.d->AddRectFilled(ImVec2(cx, ty - 13 * s), ImVec2(cx + cw, ty + 13 * s), hover ? ui::kTabInset : ui::kBannerInk, 3 * s);
         ui::text_mid_centre(c, c.f.strong, 14 * s, cx + cw * 0.5f, ty, ui::kInk, keys[i]);
-        hits.add(i ? cx - 10 * s : 0, 0, i ? c.w : cx + cw + 10 * s, hh, i ? menu_hit::kTabNext : menu_hit::kTabPrev, -1);
+        hits.add(i ? cx - 10 * s : mh.end, 0, i ? c.w : cx + cw + 10 * s, hh, i ? menu_hit::kTabNext : menu_hit::kTabPrev, -1);
     }
     for (int i = 0; i < TAB_COUNT; i++) {
         if (!tab_shown(i)) continue;   // (the Mods tab without mods)
@@ -2237,21 +2286,9 @@ void draw_options(ui::Ctx& c) {
                 c.d->AddLine(ImVec2(x + tw[i] - 1, 0), ImVec2(x + tw[i] - 1, hh - 3 * s), ui::rgba(52, 34, 16), std::max(1.0f, s));
             }
         }
-        ui::text_mid(c, c.f.heading, 23 * s, x + 28 * s, ty, shown ? ui::kInkBright : ui::kBannerInk, tab_titles[i]);
+        ui::text_mid(c, c.f.heading, tab_px, x + tab_pad * 0.5f, ty, shown ? ui::kInkBright : ui::kBannerInk, tab_titles[i]);
         hits.add(x, 0, x + tw[i], hh, menu_hit::kTab, i);
         x += tw[i];
-    }
-    {   // (which build, at the banner's left, so a report can say it without opening the log; the release alone when the whole
-        // line would run into the tabs)
-        std::string ver = std::string("Hookshot ") + HOOKSHOT_VERSION;
-        const float room = (c.w - total) * 0.5f - 60 * s - c.safe, px = 15 * s;
-        const auto width = [&](float p) { return ui::size_of(c.f.body, p, ver.c_str()).x; };
-        if (width(px) > room && ver.find(" (") != std::string::npos) ver.resize(ver.find(" ("));
-        // (still too long, as a source build's "v2.0.11-821-g7b81752-dirty" since the Audio tab: at Small and Medium smaller
-        // until it fits, on half-point steps, 10 points at the least; at Large, the size for a TV across the room, at its size
-        // or not at all, as before)
-        const float fit = ui::fit_px(px, opts.menu_size == 3 ? px : kVersionMinPt * s, 0.5f * s, room, width);
-        if (fit > 0) ui::text_mid(c, c.f.body, fit, c.safe, ty, ui::kBannerInk, ver.c_str());
     }
     // the rows, in the column; the help beside it
     float cx0, cx1, hx0, hx1;
