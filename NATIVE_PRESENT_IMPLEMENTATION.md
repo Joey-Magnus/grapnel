@@ -99,3 +99,12 @@ test_present_device_loss (60 injections), and test_present_geometry_trace
 (logging unset, disabled and enabled). git diff --check passed. The existing
 integration failure log is ../renderer-redesign-integration-tests-20261111.log.
 No renderer build or game launch was needed for these fixture changes.
+
+The later leases integration suite exposed three more literal extraction markers:
+test_antilag, test_present_ahead and test_present_semaphores named the pre-telemetry
+present_out signature/call. Updated those three markers to include the sync
+parameter without altering any timing, semaphore ownership, deferred-present or
+recreation assertion. All three passed with the bundled clang23/Vulkan headers at
+nice 19; no renderer change or rebuild. Parent foreground native smoke separately
+observed matching source/accepted cadence, but concurrent tests prevent treating
+that smoke as a performance comparison.
