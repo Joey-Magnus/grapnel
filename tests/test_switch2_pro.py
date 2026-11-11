@@ -12,7 +12,9 @@ rumble encoding; Fritchii's HD rumble report), run on the same bytes, and compar
   report's layout, its cadence, SDL's fixed-frequency rumble for HOS_HD_RUMBLE=0;
 - the setup over the bulk pipes, against a fake controller: the flash reads, the calibration, the init sequence, the
   player lights;
-- the USB descriptors as usbfs gives them.
+- the USB descriptors as usbfs gives them; the usbfs requests against linux/usbdevice_fs.h (Linux only);
+- how it is wired in: host/hos_sdl.c hands the pads over and leaves SDL's view of the controller out,
+  host/pad_sdl.c sends it the game's vibration values.
 
 Nothing here opens a device. Run with: python -I -B tests/test_switch2_pro.py
 """
@@ -20,12 +22,16 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = ROOT / "host"
+PAD = HOST / "pad_sw2.c"
+SDLPAD = HOST / "pad_sdl.c"
+SDLWRAP = HOST / "hos_sdl.c"
 
 
 def function(path, name):
@@ -632,6 +638,35 @@ int main(void) {
 """
 
 
+def usbfs_block():
+    src = PAD.read_text(encoding="utf-8")
+    start = src.index("struct sw2_bulk {")
+    end = src.index("#define SW2_DISCONNECT_CLAIM_EXCEPT_DRIVER", start)
+    end = src.index("\n", end)
+    return src[start:end]
+
+
+IOCTLS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/ioctl.h>
+#include <linux/usbdevice_fs.h>
+""" + "%(block)s" + r"""
+#define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %%d %%s\n", __LINE__, #x); return 1; } } while (0)
+int main(void) {
+    CHECK(SW2_USBDEVFS_CONTROL == USBDEVFS_CONTROL && SW2_USBDEVFS_BULK == USBDEVFS_BULK);
+    CHECK(SW2_USBDEVFS_CLAIMINTERFACE == USBDEVFS_CLAIMINTERFACE && SW2_USBDEVFS_RELEASEINTERFACE == USBDEVFS_RELEASEINTERFACE);
+    CHECK(SW2_USBDEVFS_IOCTL == USBDEVFS_IOCTL && SW2_USBDEVFS_CONNECT == USBDEVFS_CONNECT);
+    CHECK(SW2_USBDEVFS_DISCONNECT_CLAIM == USBDEVFS_DISCONNECT_CLAIM);
+    CHECK(SW2_DISCONNECT_CLAIM_EXCEPT_DRIVER == USBDEVFS_DISCONNECT_CLAIM_EXCEPT_DRIVER);
+    CHECK(sizeof(struct sw2_bulk) == sizeof(struct usbdevfs_bulktransfer));
+    CHECK(sizeof(struct sw2_ctrl) == sizeof(struct usbdevfs_ctrltransfer));
+    CHECK(sizeof(struct sw2_disclaim) == sizeof(struct usbdevfs_disconnect_claim));
+    puts("ok");
+    return 0;
+}
+"""
+
 
 class Switch2ProTests(unittest.TestCase):
     def test_ids_and_input_report(self):
@@ -645,6 +680,63 @@ class Switch2ProTests(unittest.TestCase):
 
     def test_descriptors(self):
         build_and_run(self, DESCRIPTORS)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "usbfs is Linux's")
+    def test_usbfs_requests(self):
+        if not Path("/usr/include/linux/usbdevice_fs.h").exists():
+            self.skipTest("no linux/usbdevice_fs.h")
+        build_and_run(self, IOCTLS % {"block": usbfs_block()})
+
+    def test_only_this_controller_is_opened(self):
+        src = PAD.read_text(encoding="utf-8")
+        linux = src[src.index("#else   /* (linux"):]
+        listing = linux[linux.index("static int dev_list"):linux.index("static int usb_out")]
+        # (Linux: a device is a key only after its ids are checked; nothing is opened while looking)
+        self.assertLess(listing.index("sw2_is_pro(vid, pid)"), listing.index("snprintf(keys[n++]"))
+        self.assertNotIn("open(", listing.replace("opendir(", "").replace("fopen(", ""))
+        # (Windows: only interfaces whose path names 057E:2069)
+        self.assertIn('wide_has(u.h.DevicePath, "vid_057e&pid_2069")', src)
+        self.assertIn('"vid_057e&pid_2069&mi_01"', src)
+        # (SDL's view of the controller is left out by these ids alone: the Switch Pro Controller stays SDL's)
+        skip = function(SDLWRAP, "static int sw2_skip")
+        self.assertIn("vid == 0x057E && pid == 0x2069", skip)
+        self.assertIn("hos_sw2_enabled()", skip)
+        # (HOS_NO_SW2=1: nothing of it runs)
+        self.assertIn('getenv("HOS_NO_SW2")', function(PAD, "int hos_sw2_enabled"))
+        self.assertIn("if (!hos_sw2_enabled()) return 0;", function(PAD, "int hos_sw2_list"))
+        # (another program's claim on the HID interface is never taken: hid-generic only)
+        claim = linux[linux.index("static int dev_claim_hid"):linux.index("static int dev_read")]
+        self.assertIn("dc.flags = SW2_DISCONNECT_CLAIM_EXCEPT_DRIVER", claim)
+        self.assertIn('"usbfs"', claim)
+
+    def test_wired_in(self):
+        wrap = SDLWRAP.read_text(encoding="utf-8")
+        for name in ("hos_sdl_pad_close", "hos_sdl_pad_connected", "hos_sdl_pad_button", "hos_sdl_pad_axis",
+                     "hos_sdl_pad_name", "hos_sdl_pad_id", "hos_sdl_pad_rumble", "hos_sdl_pad_type",
+                     "hos_sdl_pad_effect", "hos_sdl_pad_has_sensor", "hos_sdl_pad_sensor_enable", "hos_sdl_pad_sensor"):
+            body = function(SDLWRAP, name)
+            self.assertIn("hos_sw2_is(pad)", body, name)
+            self.assertLess(body.index("hos_sw2_is(pad)"), body.index("CALL(") if "CALL(" in body else len(body), name)
+        self.assertIn("if (what < 0) return hos_sw2_open(what);", function(SDLWRAP, "void *hos_sdl_pad_open"))
+        lst = function(SDLWRAP, "int hos_sdl_pads_list")
+        self.assertIn("return n + hos_sw2_list(ids + n, opens + n, max - n);", lst)
+        self.assertEqual(lst.count("sw2_skip("), 2)   # (SDL3's list and SDL2's)
+        self.assertIn("if (hos_sw2_is(pad)) return 0;", function(SDLWRAP, "int hos_sdl_pad_type"))   # (no Switch packets)
+        self.assertIn("opens[count] = -1 - i", function(PAD, "int hos_sw2_list"))   # (never an SDL id or index)
+        # (pad_sdl.c: the game's values to it, before the Switch HD rumble and the motors; HOS_HD_RUMBLE=0 the motors)
+        poll = function(SDLPAD, "static void pads_poll")
+        self.assertIn("hos_sw2_rumble_hd(gc, felt[0], felt[1], strength);", poll)
+        self.assertLess(poll.index("hos_sw2_rumble_hd("), poll.index("if (hd_poll(i, side, now)) continue;"))
+        self.assertLess(poll.index("hd_rumble_felt(hv[1], felt[1])"), poll.index("hos_sw2_rumble_hd("))
+        self.assertIn("hos_sw2_is(gc) && sw2_hd_rumble()", poll)
+        self.assertIn('getenv("HOS_HD_RUMBLE")', function(SDLPAD, "static int sw2_hd_rumble"))
+        start = function(SDLPAD, "static int pads_start")
+        self.assertIn('hos_sdl_hint("SDL_HIDAPI_IGNORE_DEVICES", ignore)', start)   # (SDL's HIDAPI: this one id only)
+        self.assertIn('"%s%s0x057e/0x2069"', start)
+        self.assertNotIn("SDL_JOYSTICK_HIDAPI_SWITCH2", start)   # (that would take the Joy-Con 2 and GameCube from SDL)
+        self.assertLess(start.index("SDL_HIDAPI_IGNORE_DEVICES"), start.index("hos_sdl_init("))
+        # (the felt amplitudes: the same curve as the Switch controllers' HD rumble)
+        self.assertIn("hd_rumble_felt(hv[0], felt[0])", poll)
 
 
 if __name__ == "__main__":
