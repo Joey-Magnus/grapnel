@@ -454,12 +454,12 @@ static void cv_enter(Obj *cv, Obj *m) {
     if (cv->cv_waiting && cv->cv_mutex != m) cv->cv_mixed = 1;
     if (!cv->cv_waiting) cv->cv_mixed = 0;
     cv->cv_mutex = m;
-    cv->cv_waiting++;
+    __atomic_add_fetch(&cv->cv_waiting, 1, __ATOMIC_SEQ_CST);   /* (atomic: a signal reads it without cv->lk) */
 }
 /* a waiter out (cv->lk held): whether a signal reserved its mutex m for it. A reservation made on another mutex (a
    waiter with a different one came in after the signal) is given back: never left owed to nobody */
 static int cv_leave(Obj *cv, Obj *m) {
-    cv->cv_waiting--;
+    __atomic_sub_fetch(&cv->cv_waiting, 1, __ATOMIC_SEQ_CST);
     if (cv->cv_owed <= 0) return 0;
     Obj *r = cv->cv_owed_mutex[--cv->cv_owed];
     if (r == m) return 1;
@@ -584,10 +584,24 @@ HLE(_ZN2nn2os28IsMutexLockedByCurrentThreadEPKNS0_9MutexTypeE) {
 /* ---- condition variable ---------------------------------------------------------------------------------- */
 HLE(_ZN2nn2os27InitializeConditionVariableEPNS0_21ConditionVariableTypeE) { fresh(ARG(0), K_COND); }
 HLE(_ZN2nn2os25FinalizeConditionVariableEPNS0_21ConditionVariableTypeE) { drop(ARG(0)); }
+/* A signal with no waiter returns at once (~2,500 signals a frame in Hyrule: each took cv->lk and made a wake call, a
+   waiter there or not), as glibc's pthread_cond_signal does, and as Horizon's user mode does when the key reads 0. No
+   waiter that can still miss its predicate's change is missed: a waiter counts itself in (cv_enter) under cv->lk before
+   mutex_release_all gives the guest mutex back (sequentially consistent), so a signaller that holds the mutex, having
+   taken it after that, reads the count with the waiter in; a waiter woken and not yet out (cv_leave) still counts. A
+   signaller that does not hold the mutex can miss a waiter between its gen snapshot and its sleep, as on Horizon: with
+   the predicate changed under the mutex that waiter has not yet looked at it. HOS_CV_SIGNAL_ALWAYS=1: every signal takes
+   the lock, as before (tests/test_cv_signal_early.py) */
+static int cv_signal_always(void) {
+    static int v = -1;
+    if (v < 0) v = env_on("HOS_CV_SIGNAL_ALWAYS");
+    return v;
+}
 HLE(_ZN2nn2os23SignalConditionVariableEPNS0_21ConditionVariableTypeE) {
     Obj *cv = obj(ARG(0), K_COND);
     if (watched_cv(ARG(0))) watch_log("signal", watch_mutex(), ARG(0), c, NULL);
     HOS_CHAIN(HOS_CHAIN_SIGNAL, cv->key);
+    if (!__atomic_load_n(&cv->cv_waiting, __ATOMIC_SEQ_CST) && !cv_signal_always()) return;
     AcquireSRWLockExclusive(&cv->lk);
     cv_reserve(cv);
     cv->gen++;
