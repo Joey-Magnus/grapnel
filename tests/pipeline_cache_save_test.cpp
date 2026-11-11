@@ -71,6 +71,8 @@ void logf(const char* fmt, ...) {
 // The copy's gate (vk_draw.cpp cache_copy_begin: the copy held apart from pipeline builds on the drivers that need it, vk_vendor.h
 // pcache_apart). gate_open false: builds kept it for the save's whole try; a forced save waits, so it always gets it.
 // gate_stuck: a build never ends (a compile stuck in the driver): even a forced save gives up, after its bounded wait.
+// The fake decides at once what the real gate decides by its deadline: a forced save (kCopyWaitForced) gets the gate unless a
+// build is stuck; any other save (one try in play, kCopyWaitStart before it) gets it only while gate_open.
 std::atomic<bool> gate_open{true}, gate_held{false}, gate_stuck{false};
 std::atomic<int> gate_tries{0}, gate_waits{0}, gate_ends{0}, gate_last_wait{-1};
 constexpr int kCopyWaitForced = 30000, kCopyWaitStart = 2000;

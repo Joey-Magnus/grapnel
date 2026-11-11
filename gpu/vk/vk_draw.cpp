@@ -848,19 +848,37 @@ void play_cache_begin() {
         logf("vk: pipeline cache: what play makes goes into play files (RX_VK_PLAY_CACHE=0: into the one cache)");
     }
 }
+int play_drain_ms = 30000;   // (how long a save waits for a generation's builds to end: play_cache_save)
 /// (pipeline_cache_save's thread, or the window's close) play's generation taken away once nothing is being made with it, a new one
 /// in its place, and written alone. One not written is kept and tried again at the next save
 void play_cache_save() {
     static std::mutex mu;   // (a save's thread and the window's close, pipeline_cache_close)
     std::lock_guard lk(mu);
-    static std::vector<PlayCache*> unsaved;
+    static std::vector<PlayCache*> unsaved, draining;
     if (PlayCache* g = play_cache.load(); g && g->built.load()) {
-        unsaved.reserve(unsaved.size() + 1);   // (before it is taken away: it cannot then be lost to a failed allocation)
+        draining.reserve(draining.size() + 1);   // (before it is taken away: it cannot then be lost to a failed allocation)
+        unsaved.reserve(unsaved.size() + draining.size() + 1);
         if (PlayCache* next = play_cache_make()) {
             play_cache.store(next);
-            while (g->users.load()) Sleep(1);
-            unsaved.push_back(g);
+            draining.push_back(g);
         }
+    }
+    // (a generation taken away is written once nothing is being made with it any more. The wait is bounded: a compile stuck in
+    // the driver keeps its generation's count up for good, and the exit and every later save would wait on it. One still in
+    // use after play_drain_ms (30 s) is left, and tried again at the next save)
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(play_drain_ms);
+    for (auto it = draining.begin(); it != draining.end();) {
+        while ((*it)->users.load() && std::chrono::steady_clock::now() < end) Sleep(1);
+        if ((*it)->users.load()) {
+            static std::atomic<int> told{0};
+            if (told++ < 4)
+                logf("vk: pipeline cache: a play file not saved yet: a pipeline is still being built into it after %d s",
+                     play_drain_ms / 1000);
+            ++it;
+            continue;
+        }
+        unsaved.push_back(*it);
+        it = draining.erase(it);
     }
     for (auto it = unsaved.begin(); it != unsaved.end();) {
         PlayCache* old = *it;
@@ -1211,8 +1229,15 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
 // holds pcache_use shared, the copy holds it alone. Elsewhere the driver keeps the cache synchronized, as Vulkan says it does, and
 // nothing here takes a lock
 std::shared_mutex pcache_use;
+std::atomic<int> copy_pending{0};   // (copies waiting for the gate: new builds hold back for them a little, cache_use_begin)
 bool cache_use_begin(VkPipelineCache cache) {
     if (!cache || !dev.fixes.pcache_apart) return false;
+    // (a copy waiting for the gate: builds that overlap without a gap would otherwise keep it out until its deadline. A new build
+    // holds back for it, for 1 s at most: the copy's own wait is bounded, and a build is never held back for good)
+    if (copy_pending.load()) {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (copy_pending.load() && std::chrono::steady_clock::now() < end) Sleep(1);
+    }
     pcache_use.lock_shared();
     return true;
 }
@@ -1232,18 +1257,23 @@ VkResult apart_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo*
     cache_use_end(held);
     return r;
 }
-/// (pcache_apart) The copy of a cache's data held apart from the builds, tried for up to wait_ms (kCopyWaitForced for the forced
-/// saves: the exit, Restart now, the prepare's end; kCopyWaitStart for a save before play; 0, one try, for a save in play, which is
-/// tried again at the next one); false when the builds kept it. Never a blocking lock: a waiting exclusive lock holds back new
+/// (pcache_apart) The copy of a cache's data held apart from the builds, tried for up to wait_ms (kCopyWaitForced for pcache's
+/// forced saves: the exit, Restart now, the prepare's end; kCopyWaitStart for a save of pcache before play and for every play file,
+/// play_file_write; 0, one try, for a save of pcache in play, which is tried again at the next one); false when the builds kept it.
+/// While it waits, new builds hold back for it for up to 1 s (copy_pending, cache_use_begin). Never a blocking lock: a waiting exclusive lock holds back new
 /// shared ones (Windows' SRW locks), so every later build would wait behind it, and for good when a worker is stuck in the driver
 /// (prepare_left_workers): the save is then left out, and logged
 bool cache_copy_begin(int wait_ms) {
     if (!dev.fixes.pcache_apart) return true;
-    for (int waited = 0;; waited += 2) {
-        if (pcache_use.try_lock()) return true;
-        if (waited >= wait_ms) return false;
-        Sleep(2);
-    }
+    if (pcache_use.try_lock()) return true;
+    if (wait_ms <= 0) return false;
+    // (a deadline on the clock, not a count of sleeps: Windows' timer can make Sleep(2) last 15.6 ms)
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+    copy_pending++;
+    bool got = false;
+    while (!(got = pcache_use.try_lock()) && std::chrono::steady_clock::now() < end) Sleep(2);
+    copy_pending--;
+    return got;
 }
 void cache_copy_end() {
     if (dev.fixes.pcache_apart) pcache_use.unlock();

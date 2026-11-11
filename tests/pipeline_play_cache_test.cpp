@@ -313,6 +313,23 @@ int run(const std::string& name) {
         CHECK(file_keys(play_path(1)) == (std::set<uint64_t>{29, 30}));   // (the compile under way in its generation's file)
         play_cache_save();
         CHECK(file_keys(play_path(2)) == std::set<uint64_t>{31});
+    } else if (name == "users-stuck") {
+        // A compile stuck in the driver: the save does not wait for its generation for good (the exit would hang on it); the
+        // generation is kept, and written by a later save once the compile has ended.
+        play_drain_ms = 100;
+        pcache = cache_of({});
+        play_cache_begin();
+        PlayCache* g = play_cache.load();
+        block_key = 30;
+        std::thread maker([] { make(30); });
+        CHECK(wait_for([] { return blocked.load(); }));
+        CHECK(make(29) == VK_SUCCESS && g->built == 1);
+        play_cache_save();   // (returns after its bound, the generation taken away but not written)
+        CHECK(play_cache.load() != g && !exists(play_path(1)));
+        release = true;
+        maker.join();
+        play_cache_save();   // (the compile ended: written now, with the one that was under way)
+        CHECK(file_keys(play_path(1)) == (std::set<uint64_t>{29, 30}));
     } else if (name == "merge") {
         pcache = cache_of({1});
         write_file(at("mkw_vk_pipelines_play_3.bin"), "FAKE", {40});
