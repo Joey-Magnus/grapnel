@@ -11,6 +11,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+RUN_ALL_SKIP = {"windows": "the fixture sets the switch with POSIX setenv: checked on Linux"}
+
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = "static const bool snapshot = [] {"
 
