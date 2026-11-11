@@ -1151,7 +1151,6 @@ def main():
             subprocess.run(["install_name_tool", "-change", wgpu_lib, "@rpath/libwgpu_native.dylib", exe], check=True)
         sdl = os.environ.get("HOOKSHOT_SDL2", "")
         if sdl and os.path.exists(sdl):
-            import shutil
             name = "libSDL2-2.0.0.dylib" if MACOS else "libSDL2-2.0.so.0"
             shutil.copyfile(sdl, os.path.join(out, name))
     elif a.standalone and not a.only and not vk_only:
@@ -1175,7 +1174,6 @@ def main():
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
         if wgpu:
-            import shutil
             if not MACOS:
                 dll, dst = os.path.join(WGPU, "lib", "wgpu_native.dll"), os.path.join(out, "wgpu_native.dll")
                 if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
@@ -1184,17 +1182,14 @@ def main():
         sdl = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL2.dll")
         sdl_dst = os.path.join(out, "SDL2.dll")
         if os.path.exists(sdl) and (not os.path.exists(sdl_dst) or os.path.getsize(sdl_dst) != os.path.getsize(sdl)):
-            import shutil
             shutil.copyfile(sdl, sdl_dst)
         # (SDL2.dll is sdl2-compat: the SDL2 calls on SDL3, whose controller support is current (a Steam Controller user's
         # report). It loads SDL3.dll from beside it)
         sdl3 = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL3.dll")
         sdl3_dst = os.path.join(out, "SDL3.dll")
         if os.path.exists(sdl3) and (not os.path.exists(sdl3_dst) or os.path.getsize(sdl3_dst) != os.path.getsize(sdl3)):
-            import shutil
             shutil.copyfile(sdl3, sdl3_dst)
     if vk_prebuilt and a.standalone and not a.only and not MACOS:
-        import shutil
         shutil.copyfile(vk_prebuilt, os.path.join(out, VK_LIB))
     if vk_jobs:   # (hookshot_vk.dll beside the exe: loaded by host/rx_backend.c with RX_BACKEND=vulkan)
         vdll = os.path.join(out, VK_LIB)
