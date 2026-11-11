@@ -33,6 +33,7 @@ struct HosThread {
     char name[48];
     HANDLE handle;
     int started;
+    int serial;   /* one of the frame's serial threads (hos_thread_serial), set with the name */
     /* the kernel side (hos_svc.c): this thread's Horizon handle and the event it blocks on */
     uint32_t kernel_handle;
     HANDLE wake;
@@ -473,6 +474,7 @@ Ctx *hos_boot_main_thread(uint64_t stack_size) {
     t->ideal_core = 0;
     t->started = 1;
     snprintf(t->name, sizeof t->name, "MainThread");
+    t->serial = 1;
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &t->handle, 0, FALSE,
                     DUPLICATE_SAME_ACCESS);   /* a real handle, for the profiler */
     SetThreadDescription(GetCurrentThread(), L"MainThread");   /* (HOS_SAMPLE finds threads by it) */
@@ -580,8 +582,37 @@ void hos_thread_destroy(HosThread *t) {
     free(t);
 }
 
+/* The frame's serial threads: OoT's game thread (sead::MainThread, the boot thread's MainThread before the game names
+   it) and its Presentation Thread. A frame waits on each in turn, so a wait of theirs that ends late ends the frame late;
+   the host keeps their short waits short (sleep_ns's pollers, the spin before a wait sleeps: hos_spin_ns). By name, as
+   the game names them: kept in the thread's record when it is named, not read from the name while it may change. */
+static int serial_name(const char *name) { return strstr(name, "MainThread") || !strcmp(name, "Presentation Thread"); }
+int hos_thread_serial(const HosThread *t) { return t && t->serial; }
+
+/* How long a wait spins before it sleeps (nn_os_sync.c's events, queues and mutexes; hos_svc.c's mutexes), in ns, for the
+   calling thread: HOS_SPIN_US (20 us) on the frame's serial threads, HOS_SPIN_OTHER_US (5 us, never more than HOS_SPIN_US)
+   on the others. A sleeper runs again 6.6-8.4 us after its signal (HOS_WAKE_LAT, Hyrule), so a spin much longer than that
+   mostly burns its thread's time: 90 % of the spin's 15 % of a core in Hyrule was on the job workers and the actor
+   executors. 5 us for every thread cut the process's CPU a frame 3.3 % at the same fps (6 pairs, Hyrule, 16 threads); the
+   serial threads keep 20 us, as their wait ends are on the frame's path. HOS_SPIN_OTHER_US=20: as before, one spin for all;
+   HOS_SPIN_US=0: no spin. */
+int64_t hos_spin_ns(void) {
+    static int64_t serial_ns, other_ns = -1;
+    int64_t other = __atomic_load_n(&other_ns, __ATOMIC_ACQUIRE);
+    if (other < 0) {
+        const char *e = getenv("HOS_SPIN_US"), *o = getenv("HOS_SPIN_OTHER_US");
+        const int64_t s = (e ? atoll(e) : 20) * 1000;
+        other = (o ? atoll(o) : 5) * 1000;
+        other = other < 0 ? 0 : other > s ? s : other;
+        serial_ns = s;
+        __atomic_store_n(&other_ns, other, __ATOMIC_RELEASE);
+    }
+    return hos_thread_serial(hos_self()) ? serial_ns : other;
+}
+
 void hos_thread_set_name(HosThread *t, const char *name) {
     snprintf(t->name, sizeof t->name, "%s", name);
+    t->serial = serial_name(t->name);
     if (t->handle) {
         wchar_t w[48];
         MultiByteToWideChar(CP_UTF8, 0, t->name, -1, w, 48);
@@ -970,6 +1001,21 @@ static int hos_short_sleep_timer(const char *asked, int threads) {
     if (asked) return env_value_off(asked) ? 0 : 2;
     return threads > 0 && threads <= SHORT_SLEEP_TIMER_THREADS ? 1 : 0;
 }
+/* Where the game's short sleeps yield (more than SHORT_SLEEP_TIMER_THREADS processors), at most this many of its
+   threads yield through one at the same time; the game's next short sleep then waits on the timer until one is back.
+   OoT's idle job workers all poll their queues in 20 us steps: the first few notice new work within ~20 us, the rest
+   stop keeping a processor busy each (as Go's scheduler keeps at most half of its idle threads looking for work, and
+   RPCS3 yields below its host quantum only on CPUs with few threads). The frame's serial threads (hos_thread_serial:
+   the game thread's wait for its own batch of jobs) and the host's sleeps always yield and are not counted.
+   asked: HOS_SHORT_SLEEP_POLLERS, NULL when not set: a number, 0 = no limit (every short sleep yields, as before); not
+   a number = not set. Not set: a quarter of the processors (4 of 16), none where they are not known. */
+static volatile LONG short_pollers;   /* (the game's threads in the yield loop now) */
+static int hos_short_sleep_pollers(const char *asked, int threads) {
+    char *end = NULL;
+    const long n = asked && *asked ? strtol(asked, &end, 10) : 0;
+    if (end && end != asked && *end == 0) return n > 0 ? (int)(n < 1024 ? n : 1024) : 0;
+    return threads > SHORT_SLEEP_TIMER_THREADS ? threads / 4 : 0;
+}
 /* (virtual cores: a sleep gives the core up, SleepThread(0) offers it to a waiter as good) guest: the game's own sleep */
 static void sleep_away(int64_t ns, int guest) {
     if (ns <= 0) {
@@ -1013,7 +1059,7 @@ static void sleep_ns(int64_t ns, int guest) {
 #endif
     /* Under a millisecond: yielded away until the time, or the timer for the game's own sleeps where the processors
        are few (hos_short_sleep_timer). HOS_SHORT_SLEEP_TIMER=1: the timer always, 0: never, not set: by the processors */
-    static int short_timer = -1;
+    static int short_timer = -1, poll_cap;
     if (short_timer < 0) {
         int threads = 0;
 #if defined(_WIN32)   /* (measured on Windows only: elsewhere the timer when asked for) */
@@ -1040,12 +1086,23 @@ static void sleep_ns(int64_t ns, int guest) {
             hos_log("sleep: %s sleeps under a millisecond wait on the timer where the high-resolution one can be made "
                     "(%d logical processors, 0: not counted; HOS_SHORT_SLEEP_TIMER=0: all yield)",
                     how == 2 ? "all" : "the game's", threads);
+        /* (HOS_SHORT_SLEEP_TIMER set says how all short sleeps wait: no limit then) */
+        const int cap = how || getenv("HOS_SHORT_SLEEP_TIMER") ? 0 : hos_short_sleep_pollers(getenv("HOS_SHORT_SLEEP_POLLERS"), threads);
+        if (cap && !InterlockedExchange(&told, 1))
+            hos_log("sleep: at most %d of the game's threads yield through a short sleep at a time, the others wait on the "
+                    "timer (%d logical processors; HOS_SHORT_SLEEP_POLLERS=0: all yield)", cap, threads);
+        poll_cap = cap;
         short_timer = how;
     }
     if (ns < 1000000 && short_timer < (guest ? 1 : 2)) {
-        while (hos_now_ns() < until)
-            if (!SwitchToThread()) YieldProcessor();
-        return;
+        const int counted = guest && poll_cap && !hos_thread_serial(hos_self());
+        if (!counted || InterlockedIncrement(&short_pollers) <= poll_cap) {
+            while (hos_now_ns() < until)
+                if (!SwitchToThread()) YieldProcessor();
+            if (counted) InterlockedDecrement(&short_pollers);
+            return;
+        }
+        InterlockedDecrement(&short_pollers);   /* (enough of them poll already: the timer, below) */
     }
     if (!tried) {
         tried = 1;
