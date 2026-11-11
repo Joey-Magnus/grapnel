@@ -797,10 +797,10 @@ void stage_resources(StageResources& out, const Channel& ch, const Regs& r, cons
     if (frame_dump_active()) dump_textures.clear();
     // (web: from the 17th texture on, a texture shares the sampler of the last earlier one of its kind that has its
     // own, as the WGSL backend declares them: browsers allow 16 samplers a stage)
-    uint32_t last_own[2] = {0, 0};
+    uint32_t last_own[2] = {0, 0}, own_samplers = 0;   // (at most 16: wgsl_emit_context.cpp SetupTextures)
     for (const auto& d : info.texture_descriptors) {
-        const bool shared_sampler = RX_WEB && t_index >= 16 && last_own[d.is_depth ? 1 : 0];
-        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1;
+        const bool shared_sampler = RX_SHARE_SAMPLERS && own_samplers >= 15 && last_own[d.is_depth ? 1 : 0];
+        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1, own_samplers++;
         const uint32_t handle = read_handle(ch, stage, d);
         if (static const bool trace_bindings = env_flag("RX_TRACE_BINDINGS"); trace_bindings) {
             static std::unordered_map<uint64_t, bool> seen;
@@ -3151,10 +3151,10 @@ void nvn_stage_resources(StageResources& out, const NvnState& s, int stage, cons
     uint32_t t_index = 0;
     // (web: from the 17th texture on, a texture shares the sampler of the last earlier one of its kind that has its
     // own, as the WGSL backend declares them and stage_resources binds them: browsers allow 16 samplers a stage)
-    uint32_t last_own[2] = {0, 0};
+    uint32_t last_own[2] = {0, 0}, own_samplers = 0;   // (at most 16: wgsl_emit_context.cpp SetupTextures)
     for (const auto& d : info.texture_descriptors) {
-        const bool shared_sampler = RX_WEB && t_index >= 16 && last_own[d.is_depth ? 1 : 0];
-        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1;
+        const bool shared_sampler = RX_SHARE_SAMPLERS && own_samplers >= 15 && last_own[d.is_depth ? 1 : 0];
+        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1, own_samplers++;
         uint32_t primary = 0, secondary = 0;
         banks.read(s, stage, d.cbuf_index, d.cbuf_offset, &primary, 4);
         if (d.has_secondary) banks.read(s, stage, d.secondary_cbuf_index, d.secondary_cbuf_offset, &secondary, 4);

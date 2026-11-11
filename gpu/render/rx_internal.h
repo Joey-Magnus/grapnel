@@ -40,6 +40,14 @@ bool wgpuDevicePoll(WGPUDevice device, bool wait, const void* submission);   // 
 #define RX_WEB 0
 #include <webgpu/wgpu.h>
 #endif
+// (macOS port) Samplers shared past 16 a stage, as the WGSL backend declares them (wgsl_emit_context.cpp SetupTextures):
+// browsers allow 16, and so does Metal. With 17 or 18 OoT's pixel programs' layouts were invalid there, and every
+// batch holding one of their draws was dropped: the 3D white after the opening
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+#define RX_SHARE_SAMPLERS 1
+#else
+#define RX_SHARE_SAMPLERS 0
+#endif
 #ifndef RX_WEB_MT
 #define RX_WEB_MT 0   // (the threaded web build: rx_web_mt.h)
 #endif
