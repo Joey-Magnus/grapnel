@@ -1729,13 +1729,13 @@ void bench_frame(int64_t presents) {
     const size_t ub_before = ub_updates.size();
     queue_flush();
     for (int i = 0; i < times; i++) {
-        vkDeviceWaitIdle(dev.device);
+        { std::lock_guard qk(dev.present_mu); device_wait_idle_locked(); }   // (every queue's lock: vkDeviceWaitIdle needs them all)
         ub_updates.resize(ub_before);   // (the last time's uniform updates are written: as if pruned)
         const auto t0 = std::chrono::steady_clock::now();
         for (const auto& h : frame_submits) bench_replay(h);
         ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
-    vkDeviceWaitIdle(dev.device);
+    { std::lock_guard qk(dev.present_mu); device_wait_idle_locked(); }
     prof_full--;
     int64_t draws1 = 0;
     draw_stats(&draws1, &sk, &di, &pl);
@@ -3334,6 +3334,11 @@ std::shared_ptr<std::vector<uint8_t>> shot_pixels(uint64_t at_value, int64_t at_
     const uint8_t* const sm = (const uint8_t*)shot_maps[at_present & 1];
     return std::make_shared<std::vector<uint8_t>>(sm, sm + (size_t)kShotW * kShotH * 4);
 }
+thread_local bool present_from_game = false;   // (do_present: the game's own present, the presenter thread's to make)
+struct GamePresent {   // (present_from_game for the scope of do_present's present_image)
+    GamePresent() { present_from_game = true; }
+    ~GamePresent() { present_from_game = false; }
+};
 void do_present(const nvn_tex* t, const int crop[4]) {
     static PendingShot pending;
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
@@ -3723,6 +3728,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         log_frame_stats();
     }
     if (dev.offscreen) frame_log_present();   // (no window: the copy into the offscreen image above is its present)
+    const GamePresent game_present;   // (only the game's own presents go to the presenter thread)
     if (dev.offscreen || interpolated) return;
     present_image(src, sw, sh, crop, direct_view);
 }
@@ -3981,6 +3987,13 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     if (vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX) == VK_ERROR_DEVICE_LOST) device_lost();
     framelog_collect(log_slot);
     uint32_t index = 0;
+    // (the presenter thread idle before the acquire: vkAcquireNextImageKHR, vkQueuePresentKHR and vkWaitForPresentKHR all need the
+    // swapchain externally synchronized, and the presenter may hold this slot's fence, reset below. The held submits go out first,
+    // so the GPU has them while this thread waits. Usually it waits for nothing: the presenter had the frame's whole time)
+    if (present_thread_on()) {
+        queue_flush();
+        present_thread_drain();
+    }
     const int64_t acquire_t0 = fence_t0 ? fps_clock() : 0;   // (then the swapchain's image: the display's pace)
     if (fence_t0) fps_wait(fps_stats::kGpuWait, acquire_t0 - fence_t0);
 #ifdef _WIN32
@@ -4184,8 +4197,10 @@ static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     VkResult res;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.pNext = reflex_present_id(nullptr);   // (NVIDIA Reflex: the frame's present id, and its present's markers)
-    if (present_copy_done && !pi.pNext && present_thread_on()) {   // (RX_VK_PRESENT_THREAD: below)
-        antilag_present();   // (AMD Anti-Lag 2: the frame's present stage)
+    // (RX_VK_PRESENT_THREAD: below. Only the game's own presents made right after their copy, and never while Reflex numbers this
+    // swapchain's presents: its ids and the presenter's would not go up together)
+    if (present_copy_done && present_from_game && !pi.pNext && !reflex_owns_present_ids() && present_thread_on()) {
+        antilag_present();   // (AMD Anti-Lag 2: the frame's present stage, at the hand-off)
         qk.unlock();
         present_hand_off(index, present_copy_done);
         return true;   // (taken as shown: only present_commit's presents, never handed over, read it)
@@ -4245,7 +4260,9 @@ namespace {
 void present_finish(VkResult res, bool on_presenter) {
     if (res < 0 && res != VK_ERROR_OUT_OF_DATE_KHR) {   // (a present that failed: said, a few times)
         static int logged;
-        if (logged++ < 8) logf("vk: present failed (VkResult %d%s)", (int)res, dev.present_queue_supported ? ", on the presents' own queue" : "");
+        if (logged++ < 8)
+            logf("vk: present failed (VkResult %d%s)", (int)res, on_presenter ? ", on the presenter thread's queue"
+                                                                 : dev.present_queue_supported ? ", on the presents' own queue" : "");
     }
     frame_log_present();
     if (on_presenter && res == VK_ERROR_SURFACE_LOST_KHR) presenter_surface_lost.store(true, std::memory_order_release);
@@ -4269,7 +4286,11 @@ void present_finish(VkResult res, bool on_presenter) {
 //   queue's lock).
 // - Only the presents made right after their copy (present_image; not frame interpolation's, made by present_commit), and NVIDIA
 //   Reflex off (its markers are the game thread's). A device without a second queue that can present keeps them on the game's thread.
-// - No wait without end: the copy's fence and the present wait in steps, a device lost ends them, and a drain gives up after 5 s.
+// - The swapchain is used by one thread at a time: present_image waits for the presenter to be idle before its acquire (and before
+//   it resets the frame slot's fence the presenter may hold), and any other present, remake or drop of the swapchain waits for it too.
+// - The presenter's waits end: the copy's fence for 5 s at most (then it presents all the same; swap_rendered orders it on the
+//   GPU), the present wait in 20 ms steps, and a device lost ends either. So the waits for the presenter have no limit of their own.
+// - Off on Windows unless asked for: nothing was run there.
 namespace {
 struct Presenter {
     std::mutex mu;
@@ -4282,17 +4303,18 @@ struct Presenter {
     bool started = false;
 };
 Presenter presenter;
-/// The copy's fence, in 100 ms steps: false after 5 s (a GPU that stopped: the present is not made) or a device lost
-bool presenter_wait_copy(VkFence done) {
+/// The copy's fence, in 100 ms steps, for 5 s at most (a device lost ends it). The present is made either way: swap_rendered orders
+/// it after the copy on the GPU, and an image acquired and never presented would stay the application's for good (one more such
+/// image and the acquires find none)
+void presenter_wait_copy(VkFence done) {
     for (int step = 0; step < 50; step++) {
         const VkResult r = vkWaitForFences(dev.device, 1, &done, VK_TRUE, 100000000ull);
-        if (r == VK_SUCCESS) return true;
+        if (r == VK_SUCCESS) return;
         if (r == VK_ERROR_DEVICE_LOST) device_lost();
-        if (r != VK_TIMEOUT) return false;
+        if (r != VK_TIMEOUT) break;
     }
     static int told;
-    if (told++ < 4) logf("vk: presenter thread: a frame's copy not done in 5 s: its present not made");
-    return false;
+    if (told++ < 4) logf("vk: presenter thread: a frame's copy not done in 5 s: presented all the same (the GPU orders it)");
 }
 void presenter_loop() {
     SetThreadDescription(GetCurrentThread(), L"mkw_vk presenter");
@@ -4308,7 +4330,7 @@ void presenter_loop() {
         const VkFence done = presenter.done;
         lk.unlock();
         const auto t0 = std::chrono::steady_clock::now();
-        const bool copied = !done || presenter_wait_copy(done);
+        if (done) presenter_wait_copy(done);
         const auto t1 = std::chrono::steady_clock::now();
         if (fps_breakdown_on()) {
             const int64_t at = fps_clock();
@@ -4317,7 +4339,7 @@ void presenter_loop() {
         }
         VkResult res = VK_NOT_READY;
         double shown_ms = -1;
-        if (copied) {
+        {
             if (sc != ids_of) ids_of = sc, next_id = 0;
             // (under FIFO the present is waited for until shown: the next frame is not handed over before, as the game's own
             // present held it at the swapchain before. Mailbox and immediate: as before, the present's return)
@@ -4362,7 +4384,7 @@ void presenter_loop() {
                 fence_ms = present_ms = shown_sum = 0, shown_n = 0;
             }
         }
-        if (copied) present_finish(res, true);
+        present_finish(res, true);
         lk.lock();
         presenter.busy = false;
         presenter.cv.notify_all();
@@ -4384,24 +4406,19 @@ bool present_thread_on() {
     }
     return on;
 }
-/// Waits, with presenter.mu held in lk, until the presenter has made the present it was handed (limit_ms: at most that long; false
-/// then). For the FPS counter's Breakdown, the wait is the GPU's until the presenter's wait for the copy ended, and the pacing's after it
-/// (the present itself, vsync)
-bool presenter_wait_idle(std::unique_lock<std::mutex>& lk, int limit_ms = 0) {
-    if (!presenter.busy) return true;
+/// Waits, with presenter.mu held in lk, until the presenter has made the present it was handed. No limit: the presenter's own waits
+/// are bounded (the copy's fence 5 s, the present wait 100 ms; vkQueuePresentKHR is the driver's), and a caller that went on would
+/// remake or present on the swapchain the presenter is using. For the FPS counter's Breakdown, the wait is the GPU's until the
+/// presenter's wait for the copy ended, and the pacing's after it (the present itself, vsync)
+void presenter_wait_idle(std::unique_lock<std::mutex>& lk) {
+    if (!presenter.busy) return;
     const int64_t t0 = fps_breakdown_on() ? fps_clock() : 0;
-    const auto idle = [] { return !presenter.busy; };
-    if (limit_ms) {
-        if (!presenter.cv.wait_for(lk, std::chrono::milliseconds(limit_ms), idle)) return false;
-    } else {
-        presenter.cv.wait(lk, idle);
-    }
-    if (!t0) return true;
+    presenter.cv.wait(lk, [] { return !presenter.busy; });
+    if (!t0) return;
     const int64_t t1 = fps_clock();
     const int64_t gpu = presenter.copy_done_at ? std::clamp<int64_t>(presenter.copy_done_at - t0, 0, t1 - t0) : 0;
     fps_wait(fps_stats::kGpuWait, gpu);
     fps_wait(fps_stats::kPace, t1 - t0 - gpu);
-    return true;
 }
 /// The present of image index, whose copy signals done, to the presenter thread (started at the first), once the one before is made
 void present_hand_off(uint32_t index, VkFence done) {
@@ -4420,7 +4437,7 @@ void present_hand_off(uint32_t index, VkFence done) {
 /// and never with dev.present_mu held (a resize must not wait on a present that waits for the window). Gives up after 5 s, said
 void present_thread_drain() {
     std::unique_lock lk(presenter.mu);
-    if (!presenter_wait_idle(lk, 5000)) logf("vk: presenter thread: its present not made in 5 s; going on without it");
+    presenter_wait_idle(lk);   // (no limit: the presenter's own waits end, and its swapchain must not go before its present)
 }
 
 

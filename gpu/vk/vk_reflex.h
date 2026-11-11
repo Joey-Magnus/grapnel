@@ -31,6 +31,9 @@ void reflex_present_begins();
 void reflex_submit_ends();
 /// The present: a VkPresentIdKHR for VkPresentInfoKHR's pNext (or null), and the present's start marker
 const void* reflex_present_id(const void* next);
+/// Whether Reflex is on or gave a present of this swapchain an id: its presents' ids are Reflex's then, and the presenter thread
+/// (vk_replay.cpp) is not used, so two counters never number the presents of one swapchain
+bool reflex_owns_present_ids();
 /// Its present-id feature struct when its extensions put one in the device's feature chain (null: none; the presenter thread's
 /// present waits then add their own, vk_main.cpp create_device)
 const VkPhysicalDevicePresentIdFeaturesKHR* reflex_present_id_features();

@@ -674,6 +674,7 @@ bool invalidate_lost_surface(VkResult result) {
     if (dev.surface) vkDestroySurfaceKHR(dev.instance, dev.surface, nullptr);
     dev.surface = VK_NULL_HANDLE;
     dev.present_queue_supported = false;
+    dev.presenter_supported = false;   // (checked again on the new surface, choose_present_queue)
     static unsigned logged = 0;
     if (logged++ < 8) logf("vk: presentation surface lost; will retry with a replacement");
     return true;

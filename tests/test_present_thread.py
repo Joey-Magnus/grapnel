@@ -39,8 +39,16 @@ def main():
 
     out = block(replay, "static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
     hand = out[: out.index("present_hand_off(")]
-    need("present_copy_done && !pi.pNext && present_thread_on()" in hand,
-         "a present is handed over from frame generation or with Reflex on")
+    need("present_copy_done && present_from_game && !pi.pNext && !reflex_owns_present_ids() && present_thread_on()" in hand,
+         "a present is handed over from frame generation's paced presents or the start-up screen, or while Reflex numbers the presents")
+    game = block(replay, "void do_present(const nvn_tex* t, const int crop[4]) {")
+    need("const GamePresent game_present;" in game and game.index("const GamePresent game_present;") < game.index("present_image(src, sw, sh, crop, direct_view);"),
+         "the game's own present is not the only one marked for the presenter")
+    gp = block(replay, "struct GamePresent {")
+    need("present_from_game = true;" in gp and "~GamePresent() { present_from_game = false; }" in gp, "the game's present mark outlives its present")
+    rx = (ROOT / "gpu" / "vk" / "vk_reflex.cpp").read_text(encoding="utf-8")
+    owns = block(rx, "bool reflex_owns_present_ids() {")
+    need("on() || r.last_present_id != 0" in owns, "Reflex's ids on this swapchain do not keep the presenter off it")
     need("qk.unlock();" in hand, "the queue's lock is held while the game's thread hands a present over")
     rest = out[out.index("present_hand_off("):]
     need("qk.unlock();\n        present_thread_drain();\n        qk.lock();" in rest and
@@ -59,16 +67,27 @@ def main():
          "frame generation's paced presents are handed over")
 
     give = block(replay, "void present_hand_off(uint32_t index, VkFence done) {")
-    idle = block(replay, "bool presenter_wait_idle(std::unique_lock<std::mutex>& lk, int limit_ms = 0) {")
-    need("presenter.cv.wait(lk, idle);" in idle, "presenter_wait_idle does not wait for the presenter")
+    idle = block(replay, "void presenter_wait_idle(std::unique_lock<std::mutex>& lk) {")
+    need("presenter.cv.wait(lk, [] { return !presenter.busy; });" in idle and "wait_for" not in idle, "presenter_wait_idle does not wait for the presenter")
     need(give.index("presenter_wait_idle(lk);") < give.index("presenter.busy = true"),
          "a present is handed over before the one before is made")
-    need("presenter_wait_idle(lk, 5000)" in block(replay, "void present_thread_drain() {"), "present_thread_drain does not wait, or without a limit")
+    drain = block(replay, "void present_thread_drain() {")
+    need("presenter_wait_idle(lk);" in drain and "5000" not in drain,
+         "present_thread_drain gives up: its callers would remake or present on the swapchain the presenter is using")
+    # (one thread on the swapchain at a time: the presenter idle before the acquire, and before the slot's fence is reset)
+    acq = image.index("vkAcquireNextImageKHR(dev.device, dev.swapchain")
+    pre = image[:acq]
+    need("present_thread_drain();" in pre and pre.rindex("queue_flush();") < pre.rindex("present_thread_drain();"),
+         "present_image acquires with the presenter maybe still presenting or waiting on the swapchain (or without sending the held submits first)")
+    need(pre.rindex("present_thread_drain();") < image.index("vkResetFences(dev.device, 1, &f.done)"),
+         "present_image resets a frame fence the presenter may be waiting on")
 
     loop = block(replay, "void presenter_loop() {")
     need(loop.index("presenter_wait_copy(done)") < loop.index("vkQueuePresentKHR"),
          "the presenter presents before the copy is done (the driver's wait comes back)")
-    copy = block(replay, "bool presenter_wait_copy(VkFence done) {")
+    copy = block(replay, "void presenter_wait_copy(VkFence done) {")
+    need("copied" not in loop and "present_finish(res, true);" in loop,
+         "the presenter skips a present whose copy took long: its image would stay acquired for good")
     need("UINT64_MAX" not in copy and "100000000ull" in copy and "VK_ERROR_DEVICE_LOST" in copy,
          "the presenter's wait for the copy has no limit, or misses a device lost")
     need("vkQueuePresentKHR(dev.presenter_queue, &pi)" in loop and "std::lock_guard pq(dev.presenter_queue_mu);" in loop,
@@ -80,6 +99,9 @@ def main():
     wait_idle = block(main_cpp, "") if False else replay[replay.index("void device_wait_idle_locked() {"):]
     wait_idle = wait_idle[:wait_idle.index("\n}") + 2]
     need("std::lock_guard pr(dev.presenter_queue_mu);" in wait_idle, "vkDeviceWaitIdle runs with the presenter's queue in use")
+    need(replay.count("vkDeviceWaitIdle(dev.device)") == 1, "a vkDeviceWaitIdle outside device_wait_idle_locked (without every queue's lock)")
+    lost_fn = main_cpp[main_cpp.index("bool invalidate_lost_surface(VkResult result) {"):]
+    need("dev.presenter_supported = false;" in lost_fn[:lost_fn.index("\n}")], "a lost surface leaves the presenter's queue taken as presenting to it")
     need("presenter.busy = false" in loop and "notify_all" in loop, "the presenter does not say it is done")
     need("create_swapchain" not in loop and "reflex_presented" not in loop,
          "the presenter makes a swapchain itself, or sets Reflex's present marker")

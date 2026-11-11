@@ -267,6 +267,11 @@ const void* reflex_submit_id(const void* next, uint64_t frame) {
 const VkPhysicalDevicePresentIdFeaturesKHR* reflex_present_id_features() {
     return rx().have_ext ? &rx().present_id : nullptr;
 }
+bool reflex_owns_present_ids() {
+    Reflex& r = rx();
+    std::lock_guard lk(r.mu);
+    return on() || r.last_present_id != 0;
+}
 const void* reflex_present_id(const void* next) {
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
