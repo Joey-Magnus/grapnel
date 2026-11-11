@@ -11,6 +11,7 @@ import ctypes
 from datetime import datetime
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -207,12 +208,9 @@ def layer_environment(parent, base, run, shm):
                VKLayer_DLSS5='1', VKLAYER_DLSS5='1',
                DLSSNR_SHM=str(shm), DLSSNR_LOG=str(run / 'layer.log'),
                XDG_STATE_HOME=str(run / 'state'),
-               HOS_DLSS5_SESSION=str(run / 'session.json'))
-    menu = ROOT / 'scripts/dlss5_menu.py'
-    if menu.is_file():
-        env['HOS_DLSS5_MENU'] = str(menu)
-    else:
-        env.pop('HOS_DLSS5_MENU', None)
+               HOS_DLSS5_SESSION=str(run / 'session.json'),
+               HOS_DLSS5_CONTROL=str(run / 'control'))
+    env.pop('HOS_DLSS5_MENU', None)
     return env
 
 
@@ -248,6 +246,7 @@ def run(base, command, preferences_path=None):
             helper = None
             session = None
             target = None
+            bridge = None
             try:
                 with (run_dir / 'launcher.log').open('w') as log:
                     helper = subprocess.Popen([cfg['proton'], 'run', cfg['artifacts']['helper']['path']],
@@ -273,6 +272,10 @@ def run(base, command, preferences_path=None):
                 else:
                     raise TimeoutError(f'Helper did not initialize; see {run_dir}')
                 (run_dir / 'ready.json').write_text(json.dumps(status, indent=2) + '\n')
+                spec = importlib.util.spec_from_file_location('hookshot_dlss5_control', Path(__file__).with_name('dlss5_control.py'))
+                controls = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(controls)
+                bridge = controls.ControlBridge(session, SETTINGS, setting_value, run_dir / 'control').start()
                 target = subprocess.Popen(command, env=layer_environment(os.environ, base, run_dir, shm))
                 info.update(target_pid=target.pid, target_start_ticks=process_stamp(target.pid))
                 temporary = session_path.with_suffix('.tmp')
@@ -291,6 +294,8 @@ def run(base, command, preferences_path=None):
                         target.kill()
                         target.wait()
                 try:
+                    if bridge is not None:
+                        bridge.close()
                     if session is not None:
                         session.control('quit')
                         if not wait_replacement_helper(session, info['helper_launcher_pid'],

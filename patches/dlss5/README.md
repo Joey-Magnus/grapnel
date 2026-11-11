@@ -80,3 +80,29 @@ pinned checkout. `dlss5_present_vulkan.cpp` supplies a separate real-Vulkan harn
 These checks establish transport/lifecycle behavior, not neural image quality,
 complete gameplay coverage or a performance improvement. Model visual evaluation
 and real scene timing remain separate acceptance checks.
+
+## Native settings control bridge
+
+The adapter exposes `HOS_DLSS5_CONTROL` only to its child game. It names a private
+session directory with a versioned file protocol; the renderer does not map or
+interpret the external project's shared-memory ABI. The separate F1 menu change
+consumes this interface. The adapter no longer exports the former F10 menu hook.
+
+`state` is an atomic ASCII `key=value` snapshot, capped at 4096 bytes: `protocol=1`,
+`ack`, `available`, `helper_state`, `model_up`, `error`, and all 19 documented
+`SETTINGS` keys. Float settings use integer hundredths; enum/bool values are
+unchanged. `request` has `protocol=1`, a positive monotonically increasing
+uint64 `sequence`, and all 19 settings. The adapter validates the complete request
+before applying any key, ignores stale sequences, acknowledges invalid complete
+requests with an error, and saves preferences after successful application.
+The external commands are not transactional: a command failure reports actual
+settings where readable and never persists a partially applied full request.
+Untouched values retain their original precision when saved.
+
+The native page writes a new uint64 nonce to `poll` at most twice a second while
+open. Every new nonce refreshes and rewrites `state`, even if values did not
+change. Otherwise the adapter only checks file metadata; it launches no periodic
+control subprocesses during gameplay. IPC/persistence runs on the adapter's
+worker, which stops before helper teardown. The native client must treat missing,
+stale or unavailable state as unavailable controls and initialize its next
+request sequence above the acknowledged sequence.
