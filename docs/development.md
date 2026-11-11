@@ -94,6 +94,8 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
+| `HOS_SAVE_JOURNAL=0` | The save written in place, `nn::fs::Commit` doing nothing, as before the journal (`host/save_journal.c`: the game's writes go to `save-tx/<user id>/work` and Commit makes them `save/<user id>` in one step) |
+| `HOS_SAVE_CRASH_AT=<n>` | A test: the process ends at the n-th step of the first commit that writes the save, as a crash or a kill there would; the next start finishes or rolls it back |
 
 ### Input for scripted runs
 
