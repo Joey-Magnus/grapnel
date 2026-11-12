@@ -110,6 +110,8 @@ void logf(const char* fmt, ...) {
     if (host) host->log(b);
 }
 
+bool g_maintenance5 = false, g_pipeline_binary = false;   // (hookshot: RX_VK_BINARY_TEST, vk_draw.cpp binary_test_run)
+
 namespace {
 
 bool has_extension(const std::vector<VkExtensionProperties>& all, const char* name) {
@@ -298,6 +300,14 @@ bool create_device() {
     optional(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, dev.index_uint8);
     optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev.push_descriptor);
     optional(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, dev.conditional_rendering);
+    // (hookshot: RX_VK_BINARY_TEST, a measurement, and RX_VK_BINARY_CACHE, the pipelines' binaries kept: vk_draw.cpp binstore)
+    if ((getenv("RX_VK_BINARY_TEST") && atoi(getenv("RX_VK_BINARY_TEST")) > 0) ||
+        (getenv("RX_VK_BINARY_CACHE") && atoi(getenv("RX_VK_BINARY_CACHE")) != 0)) {
+        optional(VK_KHR_MAINTENANCE_5_EXTENSION_NAME, g_maintenance5);
+        if (g_maintenance5) optional(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME, g_pipeline_binary);
+        logf("vk: pipeline binary test: maintenance5 %s, pipeline binaries %s", g_maintenance5 ? "yes" : "no",
+             g_pipeline_binary ? "yes" : "no");
+    }
     optional(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, dev.provoking_vertex);
     optional(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME, dev.vertex_divisor);
     optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, dev.stencil_export);
@@ -432,6 +442,13 @@ bool create_device() {
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
+    // (hookshot, RX_VK_BINARY_TEST: VK_KHR_pipeline_binary measured, vk_draw.cpp binary_test; maintenance5 for its create flags)
+    VkPhysicalDeviceMaintenance5FeaturesKHR m5{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
+    VkPhysicalDevicePipelineBinaryFeaturesKHR pbin{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR};
+    if (g_maintenance5 && g_pipeline_binary) {
+        *tail = &m5, tail = &m5.pNext;
+        *tail = &pbin, tail = &pbin.pNext;
+    }
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     VkPhysicalDevicePresentIdFeaturesKHR present_id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
     VkPhysicalDevicePresentWaitFeaturesKHR present_wait{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};

@@ -72,6 +72,7 @@ struct PointerEntry { uint64_t addr, size; };
 const PointerEntry* pointer_table(const NvnState& s, int stage);
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
 uint64_t sampler_registrations_generation();   // (vk_bank.cpp: sampler_for's cache)
+extern bool g_maintenance5, g_pipeline_binary;   // (vk_main.cpp: RX_VK_BINARY_TEST's extensions, binary_test_run)
 namespace {
 // ---- (hookshot) this file's per-thread objects that need a constructor or a destructor ----
 // With llvm-mingw every use of such a thread_local calls the file's TLS init function, which saves registers, finds the
@@ -931,7 +932,10 @@ VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline
 bool play_cache_in_use() { return play_cache.load() != nullptr; }
 // ---- (end of the play caches) ----
 
-bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init)
+bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0, or RX_VK_PCACHE_SKIP=1 with the binaries kept: pcache_init)
+namespace binstore {
+bool on();   // (RX_VK_BINARY_CACHE, below)
+}
 void pcache_init() {
     if (pcache) return;
     char exe[MAX_PATH];
@@ -941,7 +945,11 @@ void pcache_init() {
     pcache_path = dir + "mkw_vk_pipelines.bin";
     // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
     // starts empty and is not saved; the driver's own shader cache is all there is)
-    static const bool off = getenv("RX_VK_PCACHE_LOAD") && atoi(getenv("RX_VK_PCACHE_LOAD")) == 0;
+    // (hookshot) RX_VK_PCACHE_SKIP=1 with RX_VK_BINARY_CACHE=1: the same, for play: the pipelines come from
+    // hookshot_pipeline_binaries.bin (binstore). The file stays as it was, for a start without the binaries, and the play files
+    // are not merged into the empty cache, only numbered on
+    static const bool skip = getenv("RX_VK_PCACHE_SKIP") && atoi(getenv("RX_VK_PCACHE_SKIP")) != 0 && binstore::on();
+    static const bool off = skip || (getenv("RX_VK_PCACHE_LOAD") && atoi(getenv("RX_VK_PCACHE_LOAD")) == 0);
     pcache_no_save = off;
     std::vector<uint8_t> data = off ? std::vector<uint8_t>{} : pcache_file_read(pcache_path);
     VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
@@ -951,9 +959,24 @@ void pcache_init() {
         ci.initialDataSize = 0, ci.pInitialData = nullptr;
         vkCreatePipelineCache(dev.device, &ci, nullptr, &pcache);
     }
-    logf("vk: pipeline cache %s (%zu KB)", pcache_path.c_str(), data.size() >> 10);
+    logf("vk: pipeline cache %s (%zu KB)%s", pcache_path.c_str(), data.size() >> 10,
+         skip ? ": not read (RX_VK_PCACHE_SKIP, the pipelines come from hookshot_pipeline_binaries.bin)" : "");
     data = {};
-    if (pcache) play_files_merge();
+    if (pcache && skip) {   // (the play files' numbers taken up, so that new ones do not write over those not merged yet)
+        std::error_code ec;
+        static const std::string pre = "mkw_vk_pipelines_play_", suf = ".bin";
+        for (const auto& e : std::filesystem::directory_iterator(pcache_dir, ec)) {
+            const std::string name = e.path().filename().string();
+            if (name.size() <= pre.size() + suf.size() || name.compare(0, pre.size(), pre) ||
+                name.compare(name.size() - suf.size(), suf.size(), suf))
+                continue;
+            const std::string num = name.substr(pre.size(), name.size() - pre.size() - suf.size());
+            if (num.size() > 9 || num.find_first_not_of("0123456789") != std::string::npos) continue;
+            play_seq = std::max(play_seq, (uint32_t)std::stoul(num));
+        }
+    } else if (pcache) {
+        play_files_merge();
+    }
     // (what it holds as read, the play files too: a save of data that size has nothing to add to the files)
     size_t held = 0;
     if (pcache && vkGetPipelineCacheData(dev.device, pcache, &held, nullptr) == VK_SUCCESS) pcache_saved_size = held;
@@ -1202,11 +1225,281 @@ bool gpl_libs_cached() {
 thread_local bool driver_cache_only = false;   // (predict_run's: pipelines for the driver's own cache, not into ours)
 // (with driver_cache_only: the cache handed to the driver instead of none, predicted_check's empty one, as play hands its generation's)
 thread_local VkPipelineCache driver_ask_cache = VK_NULL_HANDLE;
-/// (with the pipeline cache: from it, or in play into the play generation's, create_cached)
+// ---- (hookshot) RX_VK_BINARY_CACHE=1: the pipelines' binaries (VK_KHR_pipeline_binary) kept one by one in
+// hookshot_pipeline_binaries.bin, an index of their keys in memory and their data read from the file only when a pipeline is made.
+// mkw_vk_pipelines.bin is read whole at every start and the driver holds it for the whole session (2.4 GB of RAM on an RX 7700S);
+// with the binaries kept it need not be read at all (RX_VK_PCACHE_SKIP=1). Measured on that card (RX_VK_BINARY_TEST): a pipeline's
+// key 0.002-0.010 ms, made from its binary 0.03-0.15 ms (3-680 ms through the caches), 6-400 KB each, and the binaries of one start
+// good for the next (23 of 23). A pipeline the file has is made from it; one it has not is made as before (the caches, or compiled)
+// and its binary then taken from the driver's own cache (asked by its create info: nothing compiled again) and added. ----
+namespace binstore {
+std::mutex mu;
+FILE* file = nullptr;
+std::unordered_map<std::string, int64_t> index;   // (mu) pipeline key -> its record's offset
+int64_t append_at = 0;
+bool opened = false, usable = false;
+PFN_vkGetPipelineKeyKHR GetKey;
+PFN_vkCreatePipelineBinariesKHR CreateBins;
+PFN_vkGetPipelineBinaryDataKHR GetData;
+PFN_vkDestroyPipelineBinaryKHR DestroyBin;
+std::atomic<int64_t> st_hits{0}, st_misses{0}, st_stored{0}, st_not_in_driver{0}, st_failed{0}, st_hit_us{0}, st_bytes{0};
+constexpr char kMagic[8] = {'H', 'K', 'P', 'B', 'I', 'N', '1', 0};
+constexpr uint32_t kRecord = 0x31524250;   // ("PBR1": each record's first word)
+constexpr uint32_t kKeyMax = VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR;
+
+bool on() {
+    static const bool v = g_pipeline_binary && getenv("RX_VK_BINARY_CACHE") && atoi(getenv("RX_VK_BINARY_CACHE")) != 0;
+    return v;
+}
+/// (mu held) the file opened and its records indexed, once. A file of another driver (its global key) is moved aside to .old
+bool open_locked() {
+    if (opened) return usable;
+    opened = true;
+    const auto t0 = std::chrono::steady_clock::now();
+    GetKey = (PFN_vkGetPipelineKeyKHR)vkGetDeviceProcAddr(dev.device, "vkGetPipelineKeyKHR");
+    CreateBins = (PFN_vkCreatePipelineBinariesKHR)vkGetDeviceProcAddr(dev.device, "vkCreatePipelineBinariesKHR");
+    GetData = (PFN_vkGetPipelineBinaryDataKHR)vkGetDeviceProcAddr(dev.device, "vkGetPipelineBinaryDataKHR");
+    DestroyBin = (PFN_vkDestroyPipelineBinaryKHR)vkGetDeviceProcAddr(dev.device, "vkDestroyPipelineBinaryKHR");
+    if (!GetKey || !CreateBins || !GetData || !DestroyBin) {
+        logf("vk: pipeline binaries: the driver gave no entry points: off");
+        return false;
+    }
+    VkPipelineBinaryKeyKHR g{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    if (GetKey(dev.device, nullptr, &g) != VK_SUCCESS || g.keySize > kKeyMax) {
+        logf("vk: pipeline binaries: no global key: off");
+        return false;
+    }
+    const std::string path = pcache_dir + "hookshot_pipeline_binaries.bin";
+    file = fopen(path.c_str(), "r+b");
+    int64_t pos = 0;
+    if (file) {
+        char magic[8]{};
+        uint32_t gn = 0;
+        uint8_t gk[kKeyMax]{};
+        const bool same = fread(magic, 1, 8, file) == 8 && !memcmp(magic, kMagic, 8) && fread(&gn, 4, 1, file) == 1 &&
+                          fread(gk, 1, kKeyMax, file) == kKeyMax && gn == g.keySize && !memcmp(gk, g.key, gn);
+        if (!same) {
+            fclose(file), file = nullptr;
+            const std::string old = path + ".old";
+            remove(old.c_str());
+            rename(path.c_str(), old.c_str());
+            logf("vk: pipeline binaries: %s was made for another driver: moved to .old, started again", path.c_str());
+        } else {
+            pos = 8 + 4 + kKeyMax;
+            for (;;) {   // (each record: magic, key size, key, binary count; per binary: key size, key, data size, data)
+                _fseeki64(file, pos, SEEK_SET);
+                uint32_t m = 0, kn = 0, n = 0;
+                uint8_t key[kKeyMax];
+                if (fread(&m, 4, 1, file) != 1 || m != kRecord || fread(&kn, 4, 1, file) != 1 || kn > kKeyMax ||
+                    fread(key, 1, kKeyMax, file) != kKeyMax || fread(&n, 4, 1, file) != 1 || !n || n > 16)
+                    break;
+                int64_t at = pos + 4 + 4 + kKeyMax + 4;
+                bool ok = true;
+                for (uint32_t i = 0; i < n && ok; i++) {
+                    uint32_t bn = 0;
+                    uint64_t dn = 0;
+                    _fseeki64(file, at, SEEK_SET);
+                    ok = fread(&bn, 4, 1, file) == 1 && bn <= kKeyMax && _fseeki64(file, kKeyMax, SEEK_CUR) == 0 &&
+                         fread(&dn, 8, 1, file) == 1 && dn && dn < (64ull << 20);
+                    at += 4 + kKeyMax + 8 + (int64_t)dn;
+                }
+                if (!ok) break;
+                _fseeki64(file, 0, SEEK_END);
+                if (at > _ftelli64(file)) break;   // (a record cut short by a closed game: written over)
+                index[std::string((const char*)key, kn)] = pos;
+                pos = at;
+            }
+        }
+    }
+    if (!file) {
+        file = fopen(path.c_str(), "w+b");
+        if (!file) {
+            logf("vk: pipeline binaries: %s could not be made: off", path.c_str());
+            return false;
+        }
+        uint8_t gk[kKeyMax]{};
+        memcpy(gk, g.key, g.keySize);
+        const uint32_t gn = g.keySize;
+        fwrite(kMagic, 1, 8, file), fwrite(&gn, 4, 1, file), fwrite(gk, 1, kKeyMax, file), fflush(file);
+        pos = 8 + 4 + kKeyMax;
+    }
+    append_at = pos;
+    usable = true;
+    logf("vk: pipeline binaries: %zu pipelines kept in %s (%.0f MB), indexed in %.0f ms (RX_VK_BINARY_CACHE)", index.size(),
+         path.c_str(), pos / 1048576.0, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    return true;
+}
+/// (mu held) a record's binaries
+bool read_locked(int64_t at, std::vector<VkPipelineBinaryKeyKHR>& keys, std::vector<std::vector<uint8_t>>& datas) {
+    uint32_t m = 0, kn = 0, n = 0;
+    _fseeki64(file, at, SEEK_SET);
+    if (fread(&m, 4, 1, file) != 1 || m != kRecord || fread(&kn, 4, 1, file) != 1 || _fseeki64(file, kKeyMax, SEEK_CUR) != 0 ||
+        fread(&n, 4, 1, file) != 1 || !n || n > 16)
+        return false;
+    for (uint32_t i = 0; i < n; i++) {
+        VkPipelineBinaryKeyKHR bk{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+        uint64_t dn = 0;
+        if (fread(&bk.keySize, 4, 1, file) != 1 || bk.keySize > kKeyMax || fread(bk.key, 1, kKeyMax, file) != kKeyMax ||
+            fread(&dn, 8, 1, file) != 1 || !dn || dn >= (64ull << 20))
+            return false;
+        std::vector<uint8_t> d(dn);
+        if (fread(d.data(), 1, dn, file) != dn) return false;
+        keys.push_back(bk), datas.push_back(std::move(d));
+    }
+    return true;
+}
+/// VkPipelineBinaryKHRs made from a create info (the driver's own cache) or from kept data; empty when it had none
+std::vector<VkPipelineBinaryKHR> make_bins(const VkPipelineBinaryCreateInfoKHR& bci) {
+    std::vector<VkPipelineBinaryKHR> bins;
+    VkPipelineBinaryHandlesInfoKHR h{VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR};
+    if (CreateBins(dev.device, &bci, nullptr, &h) != VK_SUCCESS || !h.pipelineBinaryCount) return bins;
+    bins.resize(h.pipelineBinaryCount);
+    h.pPipelineBinaries = bins.data();
+    if (CreateBins(dev.device, &bci, nullptr, &h) != VK_SUCCESS) {
+        for (VkPipelineBinaryKHR b : bins)
+            if (b) DestroyBin(dev.device, b, nullptr);
+        bins.clear();
+        return bins;
+    }
+    bins.resize(h.pipelineBinaryCount);
+    return bins;
+}
+void drop(std::vector<VkPipelineBinaryKHR>& bins) {
+    for (VkPipelineBinaryKHR b : bins)
+        if (b) DestroyBin(dev.device, b, nullptr);
+    bins.clear();
+}
+/// A pipeline just made: its binaries, from the driver's own cache, added to the file
+void keep(const std::string& key, const VkPipelineCreateInfoKHR& pci) {
+    {
+        std::lock_guard lk(mu);
+        if (index.count(key)) return;
+    }
+    VkPipelineBinaryCreateInfoKHR probe{VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR};
+    probe.pPipelineCreateInfo = &pci;
+    std::vector<VkPipelineBinaryKHR> bins = make_bins(probe);
+    if (bins.empty()) {
+        st_not_in_driver++;
+        return;
+    }
+    std::vector<VkPipelineBinaryKeyKHR> keys;
+    std::vector<std::vector<uint8_t>> datas;
+    for (VkPipelineBinaryKHR b : bins) {
+        VkPipelineBinaryDataInfoKHR di{VK_STRUCTURE_TYPE_PIPELINE_BINARY_DATA_INFO_KHR};
+        di.pipelineBinary = b;
+        VkPipelineBinaryKeyKHR bk{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+        size_t n = 0;
+        if (GetData(dev.device, &di, &bk, &n, nullptr) != VK_SUCCESS || !n || n >= (64ull << 20)) break;
+        std::vector<uint8_t> d(n);
+        if (GetData(dev.device, &di, &bk, &n, d.data()) != VK_SUCCESS) break;
+        keys.push_back(bk), datas.push_back(std::move(d));
+    }
+    const bool whole = keys.size() == bins.size();
+    drop(bins);
+    if (!whole) {
+        st_failed++;
+        return;
+    }
+    std::lock_guard lk(mu);
+    if (!file || index.count(key)) return;
+    _fseeki64(file, append_at, SEEK_SET);
+    uint8_t kb[kKeyMax]{};
+    memcpy(kb, key.data(), std::min<size_t>(key.size(), kKeyMax));
+    const uint32_t m = kRecord, kn = (uint32_t)key.size(), n = (uint32_t)keys.size();
+    bool ok = fwrite(&m, 4, 1, file) == 1 && fwrite(&kn, 4, 1, file) == 1 && fwrite(kb, 1, kKeyMax, file) == kKeyMax &&
+              fwrite(&n, 4, 1, file) == 1;
+    uint64_t bytes = 0;
+    for (size_t i = 0; ok && i < keys.size(); i++) {
+        uint8_t bkb[kKeyMax]{};
+        memcpy(bkb, keys[i].key, std::min<uint32_t>(keys[i].keySize, kKeyMax));
+        const uint64_t dn = datas[i].size();
+        ok = fwrite(&keys[i].keySize, 4, 1, file) == 1 && fwrite(bkb, 1, kKeyMax, file) == kKeyMax && fwrite(&dn, 8, 1, file) == 1 &&
+             fwrite(datas[i].data(), 1, dn, file) == dn;
+        bytes += dn;
+    }
+    fflush(file);
+    if (!ok) return;   // (the next record goes over it: append_at is where it started)
+    index[key] = append_at;
+    append_at = _ftelli64(file);
+    st_stored++, st_bytes += (int64_t)bytes;
+}
+void report() {
+    const int64_t total = st_hits + st_misses;
+    if (total % 2000 != 0 || !total) return;
+    logf("vk: pipeline binaries: %lld made from the file (%.2f ms each), %lld not in it (%lld added, %lld the driver's cache had "
+         "not, %lld failed); %.0f MB added this run",
+         (long long)st_hits.load(), st_hits ? st_hit_us / (double)st_hits / 1000.0 : 0.0, (long long)st_misses.load(),
+         (long long)st_stored.load(), (long long)st_not_in_driver.load(), (long long)st_failed.load(), st_bytes / 1048576.0);
+}
+/// A pipeline made from the file when it has it, else as before (create_cached) and its binaries then kept
+template <class CI>
+VkResult create(VkResult (*plain)(VkPipelineCache, const CI*, VkPipeline*), const CI* ci, VkPipeline* pl) {
+    {
+        std::lock_guard lk(mu);
+        if (!open_locked()) return create_cached(plain, ci, pl);
+    }
+    CI base = *ci;   // (as the binaries are made for and with: no ask-only flag, which binaries do not allow)
+    base.flags &= ~(VkPipelineCreateFlags)VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+    VkPipelineCreateInfoKHR pci{VK_STRUCTURE_TYPE_PIPELINE_CREATE_INFO_KHR};
+    pci.pNext = &base;
+    VkPipelineBinaryKeyKHR pk{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    if (GetKey(dev.device, &pci, &pk) != VK_SUCCESS || !pk.keySize || pk.keySize > kKeyMax) return create_cached(plain, ci, pl);
+    const std::string key((const char*)pk.key, pk.keySize);
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<VkPipelineBinaryKeyKHR> keys;
+    std::vector<std::vector<uint8_t>> datas;
+    bool have = false;
+    {
+        std::lock_guard lk(mu);
+        auto it = index.find(key);
+        if (it != index.end()) have = read_locked(it->second, keys, datas);
+    }
+    if (have) {
+        std::vector<VkPipelineBinaryDataKHR> data(datas.size());
+        for (size_t i = 0; i < data.size(); i++) data[i].dataSize = datas[i].size(), data[i].pData = datas[i].data();
+        VkPipelineBinaryKeysAndDataKHR kd{};
+        kd.binaryCount = (uint32_t)keys.size();
+        kd.pPipelineBinaryKeys = keys.data();
+        kd.pPipelineBinaryData = data.data();
+        VkPipelineBinaryCreateInfoKHR bci{VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR};
+        bci.pKeysAndDataInfo = &kd;
+        std::vector<VkPipelineBinaryKHR> bins = make_bins(bci);
+        if (!bins.empty()) {
+            VkPipelineBinaryInfoKHR bi{VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR};
+            bi.binaryCount = (uint32_t)bins.size();
+            bi.pPipelineBinaries = bins.data();
+            CI c = base;
+            bi.pNext = c.pNext;
+            c.pNext = &bi;
+            *pl = VK_NULL_HANDLE;
+            const VkResult r = plain(VK_NULL_HANDLE, &c, pl);
+            drop(bins);
+            if (r == VK_SUCCESS && *pl) {
+                st_hits++;
+                st_hit_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+                report();
+                return r;
+            }
+        }
+        const int64_t f = ++st_failed;
+        if (f <= 10) logf("vk: pipeline binaries: a kept one was not taken back: made as before (%lld so far)", (long long)f);
+    }
+    st_misses++;
+    report();
+    const VkResult r = create_cached(plain, ci, pl);
+    if (r == VK_SUCCESS && *pl) keep(key, pci);
+    return r;
+}
+}   // namespace binstore
+
+/// (with the pipeline cache: from it, or in play into the play generation's, create_cached; RX_VK_BINARY_CACHE: the kept binaries
+/// first, binstore)
 VkResult cached_graphics(const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    if (binstore::on()) return binstore::create(guarded_graphics, ci, pl);
     return create_cached(guarded_graphics, ci, pl);
 }
 VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    if (binstore::on()) return binstore::create(guarded_compute, ci, pl);
     return create_cached(guarded_compute, ci, pl);
 }
 /// (a graphics pipeline made with the cache chosen for it: pcache through the play caches, another or none as it is)
@@ -2014,6 +2307,32 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
             e->ready.store(true, std::memory_order_release);
         }
     }
+    // (hookshot) RX_VK_PIPE_TRY_CACHED=<ms>: a pipeline the driver's or our cache has is made here and now (asked without compiling:
+    // ~0.5 ms), up to that much a frame; only one that must be compiled goes to the workers. All of them queued, the ones the
+    // caches had waited behind compiles of 10-44 s each (a boss area on an RX 7700S: 286 jobs queued for 4 workers, the boss not
+    // drawn for minutes). Unset: all to the workers, as before
+    static const double try_cached_ms = getenv("RX_VK_PIPE_TRY_CACHED") ? atof(getenv("RX_VK_PIPE_TRY_CACHED")) : -1.0;
+    if (try_cached_ms > 0 && !e->ready.load(std::memory_order_acquire) && !p.fallback) {
+        static std::atomic<uint64_t> try_frame{0};
+        static std::atomic<int64_t> try_spent_us{0}, st_try_hits{0}, st_try_cold{0};
+        const uint64_t f = texture_frame_no();
+        if (try_frame.exchange(f) != f) try_spent_us.store(0);
+        if (try_spent_us.load() < (int64_t)(try_cached_ms * 1000.0)) {
+            const auto t0 = std::chrono::steady_clock::now();
+            bool was_cold = false;
+            const VkPipeline made = build_graphics(p, s, at, topo, -1, &was_cold);
+            try_spent_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+            const int64_t n = made ? ++st_try_hits : ++st_try_cold;
+            if (n == 1 || n % 1000 == 0)
+                logf("vk: pipelines asked of the caches at the draw (RX_VK_PIPE_TRY_CACHED): %lld there, %lld to compile",
+                     (long long)st_try_hits.load(), (long long)st_try_cold.load());
+            if (made) {
+                e->pipeline = made;
+                e->ready.store(true, std::memory_order_release);
+                return remember(e);
+            }
+        }
+    }
     struct Job {
         PipeEntry* e;
         const Program* p;
@@ -2043,6 +2362,226 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
 /// part: -1 the whole pipeline, or the graphics pipeline library it stands for: 0 vertex input, 1 pre-rasterization, 2 fragment
 /// shader, 3 fragment output
 /// cold: made only if the driver has it compiled already; set, and nothing made, when it would have had to compile
+// ---- (hookshot) RX_VK_BINARY_TEST=<n>: VK_KHR_pipeline_binary measured on the first n graphics pipelines play makes, for a cache
+// that keeps each pipeline's binary apart and reads only those drawn (mkw_vk_pipelines.bin is read whole and held in RAM: 2.4 GB).
+// For each: its key, whether the driver's own cache has it, a build that captures its binaries (their count and size), a build from
+// them, and one from the binaries the last run kept for the same key (hookshot_binary_test.bin): whether they hold across starts.
+// Nothing it makes is used: every pipeline and binary is destroyed. Off unless set (the device then has the two extensions) ----
+namespace {
+struct BinRec {
+    std::vector<VkPipelineBinaryKeyKHR> keys;
+    std::vector<std::vector<uint8_t>> datas;
+};
+std::string bin_key_str(const VkPipelineBinaryKeyKHR& k) { return std::string((const char*)k.key, k.keySize); }
+}
+void binary_test_run(const VkGraphicsPipelineCreateInfo& ci, uint64_t prog) {
+    static const int limit = getenv("RX_VK_BINARY_TEST") ? atoi(getenv("RX_VK_BINARY_TEST")) : 0;
+    if (limit <= 0 || !g_pipeline_binary) return;
+    static std::atomic<int> taken{0};
+    const int k = taken++;
+    if (k >= limit) return;
+    static auto GetKey = (PFN_vkGetPipelineKeyKHR)vkGetDeviceProcAddr(dev.device, "vkGetPipelineKeyKHR");
+    static auto CreateBins = (PFN_vkCreatePipelineBinariesKHR)vkGetDeviceProcAddr(dev.device, "vkCreatePipelineBinariesKHR");
+    static auto GetData = (PFN_vkGetPipelineBinaryDataKHR)vkGetDeviceProcAddr(dev.device, "vkGetPipelineBinaryDataKHR");
+    static auto DestroyBin = (PFN_vkDestroyPipelineBinaryKHR)vkGetDeviceProcAddr(dev.device, "vkDestroyPipelineBinaryKHR");
+    static auto Release = (PFN_vkReleaseCapturedPipelineDataKHR)vkGetDeviceProcAddr(dev.device, "vkReleaseCapturedPipelineDataKHR");
+    if (!GetKey || !CreateBins || !GetData || !DestroyBin || !Release) {
+        static std::atomic<int> told{0};
+        if (told++ == 0) logf("vk: pipeline binary test: the driver gave no entry points");
+        return;
+    }
+    using clk = std::chrono::steady_clock;
+    const auto ms = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+    static std::mutex mu;
+    static std::unordered_map<std::string, BinRec> last;   // (the last run's, by pipeline key)
+    static std::string last_global, global;
+    static FILE* out = nullptr;
+    static std::atomic<int64_t> st_bytes{0}, st_bins{0}, st_internal{0}, st_from_last{0}, st_last_tried{0};
+    static std::atomic<int64_t> st_capture_us{0}, st_rebuild_us{0}, st_last_us{0}, st_key_us{0};
+    {
+        std::lock_guard lk(mu);
+        static bool opened = false;
+        if (!opened) {
+            opened = true;
+            VkPipelineBinaryKeyKHR g{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+            if (GetKey(dev.device, nullptr, &g) == VK_SUCCESS) global = bin_key_str(g);
+            const std::string path = pcache_dir + "hookshot_binary_test.bin";
+            if (FILE* f = fopen(path.c_str(), "rb")) {   // (u32 size + global key; records: u32 size + key, u32 n, n x (u32 size + key, u64 size + data))
+                uint32_t n = 0;
+                if (fread(&n, 4, 1, f) == 1 && n <= 32) {
+                    last_global.resize(n);
+                    fread(last_global.data(), 1, n, f);
+                }
+                for (;;) {
+                    uint32_t kn = 0, bn = 0;
+                    if (fread(&kn, 4, 1, f) != 1 || kn > 32) break;
+                    std::string key(kn, '\0');
+                    if (fread(key.data(), 1, kn, f) != kn || fread(&bn, 4, 1, f) != 1 || bn > 16) break;
+                    BinRec rec;
+                    bool ok = true;
+                    for (uint32_t i = 0; i < bn && ok; i++) {
+                        VkPipelineBinaryKeyKHR bk{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+                        uint64_t dn = 0;
+                        ok = fread(&bk.keySize, 4, 1, f) == 1 && bk.keySize <= 32 && fread(bk.key, 1, bk.keySize, f) == bk.keySize &&
+                             fread(&dn, 8, 1, f) == 1 && dn < (256ull << 20);
+                        if (!ok) break;
+                        std::vector<uint8_t> d(dn);
+                        ok = fread(d.data(), 1, dn, f) == dn;
+                        rec.keys.push_back(bk), rec.datas.push_back(std::move(d));
+                    }
+                    if (!ok) break;
+                    last[key] = std::move(rec);
+                }
+                fclose(f);
+            }
+            logf("vk: pipeline binary test: global key %s the last run's; %zu pipelines kept by it", last_global.empty() ? "(no last run)" :
+                 last_global == global ? "the same as" : "NOT the same as", last.size());
+            out = fopen(path.c_str(), "wb");
+            if (out) {
+                const uint32_t n = (uint32_t)global.size();
+                fwrite(&n, 4, 1, out), fwrite(global.data(), 1, n, out);
+            }
+        }
+    }
+    // the create info, its flags in VkPipelineCreateFlags2CreateInfoKHR (the capture flag is a flags2 bit), no cache, no ask-only flag
+    VkGraphicsPipelineCreateInfo base = ci;
+    const VkPipelineCreateFlags flags = base.flags & ~(VkPipelineCreateFlags)VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+    base.flags = flags;
+    VkPipelineCreateInfoKHR pci{VK_STRUCTURE_TYPE_PIPELINE_CREATE_INFO_KHR};
+    pci.pNext = &base;
+    auto t0 = clk::now();
+    VkPipelineBinaryKeyKHR pkey{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    const VkResult kr = GetKey(dev.device, &pci, &pkey);
+    const double key_ms = ms(t0);
+    st_key_us += (int64_t)(key_ms * 1000);
+    // 1. the driver's own cache, probed by the create info
+    const auto make_bins = [&](const VkPipelineBinaryCreateInfoKHR& bci, std::vector<VkPipelineBinaryKHR>& bins) -> VkResult {
+        VkPipelineBinaryHandlesInfoKHR h{VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR};
+        VkResult r = CreateBins(dev.device, &bci, nullptr, &h);
+        if (r != VK_SUCCESS || !h.pipelineBinaryCount) return r;
+        bins.resize(h.pipelineBinaryCount);
+        h.pPipelineBinaries = bins.data();
+        r = CreateBins(dev.device, &bci, nullptr, &h);
+        bins.resize(h.pipelineBinaryCount);
+        return r;
+    };
+    const auto drop_bins = [&](std::vector<VkPipelineBinaryKHR>& bins) {
+        for (VkPipelineBinaryKHR b : bins)
+            if (b) DestroyBin(dev.device, b, nullptr);
+        bins.clear();
+    };
+    std::vector<VkPipelineBinaryKHR> bins;
+    VkPipelineBinaryCreateInfoKHR probe{VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR};
+    probe.pPipelineCreateInfo = &pci;
+    t0 = clk::now();
+    const VkResult pr = make_bins(probe, bins);
+    const double probe_ms = ms(t0);
+    const size_t probe_n = bins.size();
+    if (pr == VK_SUCCESS && probe_n) st_internal++;
+    drop_bins(bins);
+    // 2. a build that captures its binaries
+    VkPipelineCreateFlags2CreateInfoKHR f2{VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR};
+    f2.flags = (VkPipelineCreateFlags2KHR)flags | VK_PIPELINE_CREATE_2_CAPTURE_DATA_BIT_KHR;
+    VkGraphicsPipelineCreateInfo cap = base;
+    f2.pNext = cap.pNext;
+    cap.pNext = &f2;
+    VkPipeline pl = VK_NULL_HANDLE;
+    t0 = clk::now();
+    VkResult r = vkCreateGraphicsPipelines(dev.device, VK_NULL_HANDLE, 1, &cap, nullptr, &pl);
+    const double capture_ms = ms(t0);
+    st_capture_us += (int64_t)(capture_ms * 1000);
+    BinRec rec;
+    size_t bytes = 0;
+    if (r == VK_SUCCESS && pl) {
+        VkPipelineBinaryCreateInfoKHR from{VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR};
+        from.pipeline = pl;
+        r = make_bins(from, bins);
+        for (VkPipelineBinaryKHR b : bins) {
+            VkPipelineBinaryDataInfoKHR di{VK_STRUCTURE_TYPE_PIPELINE_BINARY_DATA_INFO_KHR};
+            di.pipelineBinary = b;
+            VkPipelineBinaryKeyKHR bk{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+            size_t n = 0;
+            if (GetData(dev.device, &di, &bk, &n, nullptr) != VK_SUCCESS) continue;
+            std::vector<uint8_t> d(n);
+            if (GetData(dev.device, &di, &bk, &n, d.data()) != VK_SUCCESS) continue;
+            bytes += n;
+            rec.keys.push_back(bk), rec.datas.push_back(std::move(d));
+        }
+        drop_bins(bins);
+        VkReleaseCapturedPipelineDataInfoKHR rel{VK_STRUCTURE_TYPE_RELEASE_CAPTURED_PIPELINE_DATA_INFO_KHR};
+        rel.pipeline = pl;
+        Release(dev.device, &rel, nullptr);
+        vkDestroyPipeline(dev.device, pl, nullptr);
+    }
+    st_bytes += (int64_t)bytes, st_bins += (int64_t)rec.keys.size();
+    // 3. a build from binaries kept as data: this run's, and the last run's for the same key
+    const auto from_data = [&](const BinRec& br, double* took) -> VkResult {
+        if (br.keys.empty()) return VK_ERROR_UNKNOWN;
+        std::vector<VkPipelineBinaryDataKHR> data(br.datas.size());
+        for (size_t i = 0; i < data.size(); i++) data[i].dataSize = br.datas[i].size(), data[i].pData = (void*)br.datas[i].data();
+        VkPipelineBinaryKeysAndDataKHR kd{};
+        kd.binaryCount = (uint32_t)br.keys.size();
+        kd.pPipelineBinaryKeys = br.keys.data();
+        kd.pPipelineBinaryData = data.data();
+        VkPipelineBinaryCreateInfoKHR bci{VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR};
+        bci.pKeysAndDataInfo = &kd;
+        const auto ta = clk::now();
+        std::vector<VkPipelineBinaryKHR> made;
+        VkResult rr = make_bins(bci, made);
+        if (rr == VK_SUCCESS && !made.empty()) {
+            VkPipelineBinaryInfoKHR bi{VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR};
+            bi.binaryCount = (uint32_t)made.size();
+            bi.pPipelineBinaries = made.data();
+            VkGraphicsPipelineCreateInfo c = base;
+            bi.pNext = c.pNext;
+            c.pNext = &bi;
+            VkPipeline p2 = VK_NULL_HANDLE;
+            rr = vkCreateGraphicsPipelines(dev.device, VK_NULL_HANDLE, 1, &c, nullptr, &p2);
+            if (p2) vkDestroyPipeline(dev.device, p2, nullptr);
+        }
+        *took = std::chrono::duration<double, std::milli>(clk::now() - ta).count();
+        drop_bins(made);
+        return rr;
+    };
+    double rebuild_ms = 0, last_ms = 0;
+    const VkResult rb = from_data(rec, &rebuild_ms);
+    st_rebuild_us += (int64_t)(rebuild_ms * 1000);
+    VkResult lr = VK_NOT_READY;
+    const std::string key = kr == VK_SUCCESS ? bin_key_str(pkey) : std::string();
+    {
+        std::lock_guard lk(mu);
+        auto it = key.empty() ? last.end() : last.find(key);
+        if (it != last.end() && last_global == global) {
+            st_last_tried++;
+            lr = from_data(it->second, &last_ms);
+            if (lr == VK_SUCCESS) st_from_last++, st_last_us += (int64_t)(last_ms * 1000);
+        }
+        if (out && !key.empty() && !rec.keys.empty()) {
+            const uint32_t kn = (uint32_t)key.size(), bn = (uint32_t)rec.keys.size();
+            fwrite(&kn, 4, 1, out), fwrite(key.data(), 1, kn, out), fwrite(&bn, 4, 1, out);
+            for (size_t i = 0; i < rec.keys.size(); i++) {
+                const uint64_t dn = rec.datas[i].size();
+                fwrite(&rec.keys[i].keySize, 4, 1, out), fwrite(rec.keys[i].key, 1, rec.keys[i].keySize, out);
+                fwrite(&dn, 8, 1, out), fwrite(rec.datas[i].data(), 1, dn, out);
+            }
+            fflush(out);
+        }
+    }
+    logf("vk: pipeline binary test %d (%016llx): key %.3f ms (%d); driver's cache %s (%zu, %.2f ms); captured build %.1f ms (%d), "
+         "%zu binaries %.0f KB; rebuilt from them %.2f ms (%d); from the last run's %s",
+         k + 1, (unsigned long long)prog, key_ms, (int)kr, pr == VK_SUCCESS && probe_n ? "has it" : "has not", probe_n, probe_ms,
+         capture_ms, (int)r, rec.keys.size(), bytes / 1024.0, rebuild_ms, (int)rb,
+         lr == VK_NOT_READY ? "(none)" : lr == VK_SUCCESS ? (std::to_string(last_ms) + " ms").c_str() : ("failed " + std::to_string((int)lr)).c_str());
+    if (k + 1 == limit || (k + 1) % 20 == 0) {
+        const double n = (double)(k + 1);
+        logf("vk: pipeline binary test, %d pipelines: %.0f KB a pipeline (%.1f binaries), key %.3f ms, captured build %.1f ms, "
+             "rebuilt from binaries %.2f ms; driver's cache had %lld; the last run's held for %lld of %lld (%.2f ms)",
+             k + 1, st_bytes / n / 1024.0, st_bins / n, st_key_us / n / 1000.0, st_capture_us / n / 1000.0, st_rebuild_us / n / 1000.0,
+             (long long)st_internal.load(), (long long)st_from_last.load(), (long long)st_last_tried.load(),
+             st_from_last ? st_last_us / (double)st_from_last / 1000.0 : 0.0);
+    }
+}
+
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, bool* cold) {
     if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
     const Shader::Info& vs = *vertex_info(p);
@@ -2301,9 +2840,20 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         if (logged++ < 10) logf("vk: graphics pipeline for %016llx not made (%d)", (unsigned long long)p.key, (int)r);
         pl = VK_NULL_HANDLE;
     }
+    if (pl && !cold && play_cache.load()) binary_test_run(ci, p.key);   // (RX_VK_BINARY_TEST: in play only)
     st_pipelines++;
     pcache_built_since_save += !driver_cache_only;
-    st_pipeline_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    const int64_t took_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    st_pipeline_us += took_us;
+    // (hookshot) a graphics pipeline that took long in play (play_cache is set once the game runs): what making them in play costs,
+    // with RX_VK_PRECOMPILE_GRAPHICS. The first 60, then every 100th
+    if (play_cache.load() && took_us >= 50000) {
+        static std::atomic<int> slow;
+        const int k = slow++;
+        if (k < 60 || k % 100 == 0)
+            logf("vk: graphics pipeline for %016llx in play: %.0f ms (%d so far over 50 ms)", (unsigned long long)p.key,
+                 took_us / 1000.0, k + 1);
+    }
     return pl;
 }
 
@@ -6533,16 +7083,42 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // RX_VK_PIPE_SKIP=2 restores the old translation skip for persistent targets; after translation, memory-writing pipelines wait.
     static const bool always_wait = getenv("RX_VK_PIPE_SKIP") && atoi(getenv("RX_VK_PIPE_SKIP")) == 0;
     static const bool legacy_translation_skip = getenv("RX_VK_PIPE_SKIP") && atoi(getenv("RX_VK_PIPE_SKIP")) == 2;
-    auto wait_for = [&](const std::atomic<bool>& ready) {
+    // (hookshot) RX_VK_PIPE_WAIT_MS=<ms>: a frame waits that long at most, in all, for the pipelines of its draws that may be left
+    // out (none of their stages writes memory: the rule above); past it they are left out until a worker has them. Waited for whole
+    // (and run here when still queued), a first-time cutscene on an RX 7700S stopped the picture for ~2 minutes: ten new pipelines
+    // at 12-14 s each, one after the other on this thread, the music going on over a black screen. Translations, and the
+    // pipelines of memory-writing draws, are still waited for whole. Unset: everything waited for whole, as before
+    static const double wait_budget_ms = getenv("RX_VK_PIPE_WAIT_MS") ? atof(getenv("RX_VK_PIPE_WAIT_MS")) : -1.0;
+    auto wait_for = [&](const std::atomic<bool>& ready, bool budgeted) -> bool {
         PROF_EXACT();
         const auto t0 = std::chrono::steady_clock::now();
-        jobs_wait(ready);
+        bool got = true;
+        static std::atomic<uint64_t> budget_frame{0};
+        static std::atomic<int64_t> budget_spent_us{0};
+        if (wait_budget_ms < 0 || !budgeted) {
+            jobs_wait(ready);
+        } else {
+            const uint64_t f = texture_frame_no();
+            if (budget_frame.exchange(f) != f) budget_spent_us.store(0);
+            const double left = wait_budget_ms - budget_spent_us.load() / 1000.0;
+            got = left > 0 && jobs_wait_for(ready, left);
+            if (!got) {
+                static std::atomic<int64_t> gave_up{0};
+                const int64_t k = ++gave_up;
+                if (k <= 20 || k % 500 == 0)
+                    logf("vk: a draw not waited for past the frame's %.0f ms (RX_VK_PIPE_WAIT_MS): left out, %lld so far",
+                         wait_budget_ms, (long long)k);
+            }
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (wait_budget_ms >= 0 && budgeted) budget_spent_us += (int64_t)(ms * 1000.0);
         st_waits++;
-        st_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        st_wait_ms += ms;
+        return got;
     };
     if (!cp->ready.load(std::memory_order_acquire)) {
         if (legacy_translation_skip && targets_persistent(at)) return void(st_pending_skips++);
-        wait_for(cp->ready);
+        wait_for(cp->ready, false);
     }
     if (exposure_log_on() && cp) exposure_note(s, *cp);
     if (cp->failed) SKIP_HERE();
@@ -6574,7 +7150,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (!pe->ready.load(std::memory_order_acquire)) {
         const bool may_skip = !always_wait && targets_persistent(at) && !writes_memory(p);
         if (may_skip) return void(st_pending_skips++);
-        wait_for(pe->ready);
+        if (!wait_for(pe->ready, wait_budget_ms >= 0 && !always_wait && !writes_memory(p))) return void(st_pending_skips++);
     }
     const VkPipeline pl = pe->pipeline;
     if (!pl) SKIP_HERE();
@@ -8106,6 +8682,18 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         std::lock_guard lk(state_mu);
         if (!state_file) state_open_locked();
     }
+    // (hookshot) The graphics pipelines the notes name: every one play ever made, here 15,000-17,000 of them, each kept for the whole
+    // session. Kept, they and their programs were ~9.5 GB of RAM and ~0.9 GB of VRAM on an RX 7700S at the title screen (23.9-24.5
+    // GB private with them, 13.8-15.0 GB without, the driver's cache read either way), and play then took the process past the
+    // PC's 31 GB: Windows paged it out, 7-10 s frames. As with the compute programs (computes_read), they can be made in play
+    // instead, from the driver's cache the start-up reads (a lookup, not a compile). RX_VK_PRECOMPILE_GRAPHICS=keep (default): as
+    // before; =release: each built, so that it is in the driver's cache, and let go; =none: neither built nor its program read
+    static const std::string graphics_mode = getenv("RX_VK_PRECOMPILE_GRAPHICS") ? getenv("RX_VK_PRECOMPILE_GRAPHICS") : "keep";
+    const bool graphics_none = graphics_mode == "none", graphics_release = graphics_mode == "release";
+    if (graphics_none || graphics_release)
+        logf("vk: precompile: the %zu noted graphics pipelines %s (RX_VK_PRECOMPILE_GRAPHICS=%s)", notes.size(),
+             graphics_none ? "left to play, made from the driver's cache when first drawn" : "built and let go", graphics_mode.c_str());
+    if (graphics_none) notes.clear();   // (their keys are in noted already: play does not note them again)
     std::unordered_set<uint64_t> wanted;
     for (const auto& n : notes) wanted.insert(n->prog);
     // (the compute programs: those play dispatched (hookshot_computes.bin), or every kept one when there is no list yet)
@@ -8185,14 +8773,20 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                     const VkPipeline made = build_graphics(*p, n.s, note_targets(n), (VkPrimitiveTopology)n.topo);
                     pre->graphics_begun = true;
                     if (first.owns_lock()) first.unlock();
-                    std::lock_guard lk(note_mu);
-                    auto it = pipelines.find(n.key);
-                    if (it == pipelines.end()) {
-                        auto e = std::make_unique<PipeEntry>();
-                        e->pipeline = made;
-                        e->ready.store(true, std::memory_order_release);
-                        pipelines.emplace(n.key, std::move(e));
-                    } else if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (unpublished: play or another note already owns the entry)
+                    static const bool release = getenv("RX_VK_PRECOMPILE_GRAPHICS") &&
+                                                !strcmp(getenv("RX_VK_PRECOMPILE_GRAPHICS"), "release");
+                    if (release) {   // (in the driver's cache now: play makes it again from there)
+                        if (made) vkDestroyPipeline(dev.device, made, nullptr);
+                    } else {
+                        std::lock_guard lk(note_mu);
+                        auto it = pipelines.find(n.key);
+                        if (it == pipelines.end()) {
+                            auto e = std::make_unique<PipeEntry>();
+                            e->pipeline = made;
+                            e->ready.store(true, std::memory_order_release);
+                            pipelines.emplace(n.key, std::move(e));
+                        } else if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (unpublished: play or another note already owns the entry)
+                    }
                 }
             }
             pre->done++;

@@ -18,6 +18,9 @@ void jobs_push(std::function<void()> fn, bool urgent = false, const std::atomic<
 void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure = {});
 /// Waits until flag is set by a job (which calls jobs_notify after setting it)
 void jobs_wait(const std::atomic<bool>& flag);
+/// (hookshot) Waits at most ms for flag: a job still queued goes to the front for the next free worker (not run here, where it
+/// could take seconds). Whether the flag is set
+bool jobs_wait_for(const std::atomic<bool>& flag, double ms);
 void jobs_notify();
 int jobs_pending();
 

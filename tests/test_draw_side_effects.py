@@ -78,6 +78,10 @@ void jobs_wait(const std::atomic<bool>& ready) {
     else { ++pipeline_waits; pipe_entry.ready.store(true, std::memory_order_release); }
 }
 bool targets_persistent(const Targets& at) { return at.persistent; }
+// (RX_VK_PIPE_WAIT_MS, unset here: the budget's helpers, which the whole wait never reaches)
+unsigned long long texture_frame_no() { return 1; }
+bool jobs_wait_for(const std::atomic<bool>& ready, double) { jobs_wait(ready); return true; }
+void logf(const char*, ...) {}
 bool exposure_log_on() { return false; }
 void exposure_note(NvnState&, const Program&) {}
 void ensure_layout(Program&) {}
