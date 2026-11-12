@@ -360,6 +360,13 @@ unsigned usable_cpus();   // vk_progcache.cpp
 /// (hookshot) Half the PC's CPUs (one a core where a core runs two threads: the translation's and the stage libraries' workers, at
 /// below normal priority), and never more than usable_cpus: on 12 of 24 CPUs, 6 workers made the translation 40% slower than 12
 unsigned half_cpus();   // vk_progcache.cpp
+/// (hookshot) Which prepare pool: translation / stage libraries (half CPUs), predicted and noted pipelines (all usable), or
+/// in-play background translation (a quarter, 2 to 4). HOOKSHOT_SHADER_WORKERS or RX_VK_PREPARE_WORKERS=<n> overrides all three
+/// (1..64); unset keeps the sizes above. why: short reason for the log, or null
+enum class PreparePool : unsigned { Translate, Pipelines, Background };
+unsigned prepare_pool_workers(PreparePool pool, const char** why = nullptr);   // vk_progcache.cpp
+/// (hookshot) One line: usable/half CPUs and available/total RAM, for prepare diagnosis (no behavior change)
+void prepare_resources_log(const char* when);   // vk_progcache.cpp
 /// (hookshot) The driver's shader cache folders' size, logged with when: at the start, after the prediction
 void driver_cache_log(const char* when);   // vk_draw.cpp
 /// (hookshot) At the start after a preparation, behind the game: a sample of its predicted pipelines asked of the driver without

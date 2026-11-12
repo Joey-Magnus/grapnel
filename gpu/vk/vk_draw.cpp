@@ -1702,7 +1702,10 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         }
     };
     std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(worker);
+    const char* pool_why = nullptr;
+    const unsigned pool_n = prepare_pool_workers(PreparePool::Translate, &pool_why);
+    logf("vk: state list: translating on %u workers (%s)", pool_n, pool_why ? pool_why : "?");
+    for (unsigned i = 0; i < pool_n; i++) threads.emplace_back(worker);
     for (std::thread& t : threads) t.join();
     // then each pipeline, noted as a draw would note it
     std::unordered_set<uint64_t> keys;
@@ -1756,7 +1759,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         }
     };
     threads.clear();
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(variant_worker);
+    for (unsigned i = 0; i < pool_n; i++) threads.emplace_back(variant_worker);
     for (std::thread& t : threads) t.join();
     std::unordered_map<uint64_t, const Program*> plain_of;   // (by program key: the variant nothing bound makes)
     for (size_t i = 0; i < variant_of.size(); i++)
@@ -7836,7 +7839,10 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
         }
     };
     std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(worker);
+    const char* warm_why = nullptr;
+    const unsigned warm_n = prepare_pool_workers(PreparePool::Translate, &warm_why);
+    logf("vk: warming stage libraries on %u workers (%s)", warm_n, warm_why ? warm_why : "?");
+    for (unsigned i = 0; i < warm_n; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load(), total);
         Sleep(100);
@@ -8007,10 +8013,11 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         }
     };
     std::vector<std::thread> threads;
-    const unsigned cpus = usable_cpus();
-    // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
-    const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
-    const unsigned workers = background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
+    const char* pool_why = nullptr;
+    const PreparePool pool = background ? PreparePool::Background : PreparePool::Translate;
+    const unsigned workers = prepare_pool_workers(pool, &pool_why);
+    if (!background) prepare_resources_log("before translating shaders");
+    logf("vk: preparing shaders on %u workers (%s, usable %u)", workers, pool_why ? pool_why : "?", usable_cpus());
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
@@ -8199,8 +8206,11 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         }
     };
     std::vector<std::thread> threads;
-    const unsigned cpus = usable_cpus();
-    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    const char* pipe_why = nullptr;
+    const unsigned workers = prepare_pool_workers(PreparePool::Pipelines, &pipe_why);
+    logf("vk: noted pipelines: building %zu on %u workers (%s, usable %u)", total, workers, pipe_why ? pipe_why : "?",
+         usable_cpus());
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     static const int stall_s = getenv("RX_VK_PRECOMPILE_STALL_S") ? atoi(getenv("RX_VK_PRECOMPILE_STALL_S")) : 30;
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();
@@ -8392,8 +8402,12 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     // (the driver's faults before this run's workers start: one in their first milliseconds counts as this run's, below)
     const int faults_before = driver_faults();
     std::vector<std::thread> threads;
-    const unsigned cpus = usable_cpus();
-    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    const char* pipe_why = nullptr;
+    const unsigned workers = prepare_pool_workers(PreparePool::Pipelines, &pipe_why);
+    prepare_resources_log("before predicted pipelines");
+    logf("vk: predicted pipelines: building %zu on %u workers (%s, usable %u)", predicted_n, workers, pipe_why ? pipe_why : "?",
+         usable_cpus());
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     // (hookshot) Nothing finished for this long, on any worker (each pipeline counts as it finishes): the run goes on, the stuck
     // workers left in the driver, the rest of the predicted pipelines built in play when first drawn. When:
     // - the driver faulted in this run (driver_faults: caught, and a driver can stop answering after one): wherever the run is;

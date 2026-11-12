@@ -645,4 +645,55 @@ unsigned half_cpus() {
     return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));
 }
 
+unsigned prepare_pool_workers(PreparePool pool, const char** why) {
+    const unsigned usable = usable_cpus();
+    const char* reason = "auto";
+    unsigned n = 0;
+    // (HOOKSHOT_SHADER_WORKERS first: the name the mission / builder docs use; RX_VK_PREPARE_WORKERS for the Vulkan env style)
+    const char* override_env = nullptr;
+    if (const char* e = getenv("HOOKSHOT_SHADER_WORKERS"); e && *e) override_env = "HOOKSHOT_SHADER_WORKERS", n = (unsigned)atoi(e);
+    else if (const char* e = getenv("RX_VK_PREPARE_WORKERS"); e && *e) override_env = "RX_VK_PREPARE_WORKERS", n = (unsigned)atoi(e);
+    if (override_env) {
+        n = std::clamp(n, 1u, 64u);
+        reason = override_env;
+    } else if (pool == PreparePool::Background) {
+        const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
+        n = std::min(quarter, usable);
+        reason = "auto background";
+    } else if (pool == PreparePool::Pipelines) {
+        n = std::min(usable, 64u);
+        reason = "auto usable";
+    } else {
+        n = std::clamp(half_cpus(), 1u, 32u);
+        reason = "auto half";
+    }
+    if (why) *why = reason;
+    return std::max(1u, n);
+}
+
+void prepare_resources_log(const char* when) {
+    const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned usable = usable_cpus(), half = half_cpus();
+    uint64_t avail_mb = 0, total_mb = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX m{sizeof m};
+    if (GlobalMemoryStatusEx(&m)) {
+        avail_mb = (uint64_t)m.ullAvailPhys >> 20;
+        total_mb = (uint64_t)m.ullTotalPhys >> 20;
+    }
+#else
+    if (FILE* f = fopen("/proc/meminfo", "r")) {
+        char line[128];
+        while (fgets(line, sizeof line, f)) {
+            unsigned long long kb = 0;
+            if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) avail_mb = kb >> 10;
+            else if (sscanf(line, "MemTotal: %llu kB", &kb) == 1) total_mb = kb >> 10;
+        }
+        fclose(f);
+    }
+#endif
+    logf("vk: prepare resources %s: %u usable CPUs (half %u, hardware %u), RAM %llu MB available / %llu MB total",
+         when ? when : "", usable, half, hw, (unsigned long long)avail_mb, (unsigned long long)total_mb);
+}
+
 } // namespace mkwvk

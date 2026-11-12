@@ -5,8 +5,9 @@ A prepare started on 12 of 24 CPUs (an affinity mask: taskset, a launcher, Proce
 host/posix's, from sched_getaffinity); half_cpus keeps the translation's half of the PC's CPUs, but never more than usable_cpus.
 
 Checked here: usable_cpus and half_cpus, extracted unmodified, against a stand-in mask and CPU count; and in the source, that the
-prepare's pools (prepare_run, state_list_prepare, warm_libraries, predict_run, precompile_run, the program cache readers) are sized
-by them and no longer by std::thread::hardware_concurrency alone.
+prepare's pools (prepare_run, state_list_prepare, warm_libraries, predict_run, precompile_run) size through prepare_pool_workers
+(which uses usable/half), and that the program cache readers still use usable_cpus, none by std::thread::hardware_concurrency alone.
+Override behaviour is in test_prepare_pool_workers.py.
 
 No Vulkan, GPU or game. python -I -B tests/test_prepare_cpus.py [--cxx clang++]
 """
@@ -104,12 +105,11 @@ def main():
     if "fake_hw" not in code:
         raise SystemExit("FAIL: usable_cpus and half_cpus no longer read the PC's CPU count")
 
-    for fn, need in (("bool prepare_run(", "half_cpus()"), ("void state_list_prepare(", "half_cpus()"),
-                     ("bool warm_libraries(", "half_cpus()"), ("void predict_run(", "usable_cpus()"),
-                     ("void precompile_run(", "usable_cpus()")):
+    for fn in ("bool prepare_run(", "void state_list_prepare(", "bool warm_libraries(", "void predict_run(",
+               "void precompile_run("):
         text = body(draw, fn)
-        if need not in text:
-            raise SystemExit("FAIL: %s does not size its workers by %s" % (fn.split("(")[0], need))
+        if "prepare_pool_workers(" not in text:
+            raise SystemExit("FAIL: %s does not size its workers by prepare_pool_workers" % fn.split("(")[0])
         if "const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());" in text:
             raise SystemExit("FAIL: %s counts every CPU of the PC, not those the process may use" % fn.split("(")[0])
     for fn in ("size_t program_cache_load_some(", "void program_cache_each("):
