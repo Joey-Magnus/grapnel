@@ -13,6 +13,9 @@ telling the host whether a field has the keyboard, RX_VK_MENU_SCRIPT's TYPE. No 
 The compiled value-cell check uses the real Portuguese translation table: typed data and caret prefixes stay literal,
 while an empty field's placeholder still uses the menu language.
 
+Each generated source opts out of Microsoft's secure-CRT deprecation annotations before any header, as the other
+fixtures do. The test still treats warnings as errors and executes the same field and queue checks on Windows.
+
     python -I -B tests/test_menu_text_field.py [--cxx g++]
 """
 import argparse
@@ -47,7 +50,8 @@ def need(text, pattern, what):
         raise SystemExit("FAIL: " + what)
 
 
-MENU_FIXTURE = r'''#include <algorithm>
+MENU_FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -243,7 +247,8 @@ int main() {
 }
 '''
 
-HOST_FIXTURE = r'''#include <stdint.h>
+HOST_FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
