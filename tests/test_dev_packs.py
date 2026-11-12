@@ -276,6 +276,56 @@ def test_generated_and_runtime(d):
         refused("a pack.json naming %s" % meta, ["rt", str(base_dir), str(d / ("rt-" + name)), name], why)
         check("...and nothing made", not (d / ("rt-" + name)).exists())
     check("the file outside is untouched", victim.read_bytes() == b"not the runtime's")
+    refused("a pack.json naming ..\\outside.txt (a backslash path)",
+            ["rt", str(base_dir), str(d / "rt-bs"), *_pack(base_dir, b, "bs", {"deleted": ["..\\outside.txt"]})], "outside the runtime")
+    # A link in the base's romfs is cloned into the runtime. A relative one that names a file from the base names a folder
+    # beside the runtime once cloned (../../outside from base/game/romfs is base/outside, from rt-link/romfs it is outside/),
+    # so a deleted path through it reads as inside and is not. The runtime is made, then refused at that file.
+    write(base_dir / "outside", b"a file beside the base's game folder")
+    write(d / "outside" / "victim.txt", b"beside the runtime")
+    try:
+        os.symlink(os.path.join("..", "..", "outside"), game / "romfs" / "escape")
+    except OSError:   # (no right to make a file link here, as on Windows without developer mode: nothing to check)
+        print("  skipped: a file link in the base's romfs (this account cannot make one)")
+    else:
+        try:
+            packs.main(["rt", str(base_dir), str(d / "rt-link"), _pack(base_dir, b, "link", {"deleted": ["romfs/escape/victim.txt"]})[0]])
+        except SystemExit as e:
+            if os.path.islink(d / "rt-link" / "romfs" / "escape"):
+                check("a deleted path through a cloned link refused (%r)" % e.code, isinstance(e.code, str) and "through a link" in e.code)
+        check("the file beside the runtime is untouched", (d / "outside" / "victim.txt").read_bytes() == b"beside the runtime")
+        os.remove(game / "romfs" / "escape")
+
+
+def test_resolves_inside(d):
+    """The check made where each file is written: a folder link inside the runtime that leads out is outside"""
+    rt, out = d / "rt", d / "out"
+    (rt / "romfs" / "real").mkdir(parents=True)
+    out.mkdir()
+    try:
+        os.symlink(out, rt / "romfs" / "door", target_is_directory=True)
+    except OSError:   # (Windows without the right to make links: a junction, which needs none)
+        import _winapi
+        _winapi.CreateJunction(str(out), str(rt / "romfs" / "door"))
+    check("a real folder in the runtime is inside", packs.resolves_inside(str(rt), str(rt / "romfs" / "real")))
+    check("a folder not made yet below the runtime is inside", packs.resolves_inside(str(rt), str(rt / "romfs" / "new" / "deeper")))
+    check("a folder link in the runtime that leads out is outside", not packs.resolves_inside(str(rt), str(rt / "romfs" / "door")))
+    check("...and a path through it", not packs.resolves_inside(str(rt), str(rt / "romfs" / "door" / "x")))
+    check("the folder beside the runtime is outside", not packs.resolves_inside(str(rt), str(out)))
+    check("a path written in another case is the same folder (compared by identity, not by name)",
+          packs.resolves_inside(str(rt), str(rt).upper() + os.sep + "ROMFS") if os.name == "nt" else True)
+    for rel, ok in (("romfs/a.bin", True), ("hookshot.exe", True), ("..", False), ("a/../b", False), ("a\\..\\b", False),
+                    (".", False), ("", False), ("/x", False)):
+        check("in_runtime(%r) is %s" % (rel, ok), packs.in_runtime(str(rt), rel) == ok)
+
+
+def _pack(base_dir, b, name, meta):
+    """A pack folder with this pack.json; returns [name] for an rt command line"""
+    p = base_dir / "packs" / name
+    (p / "files").mkdir(parents=True, exist_ok=True)
+    (p / "pack.json").write_text(json.dumps(dict({"base": b["commit"], "files": {}, "generated": [], "deleted": [], "prepare": False},
+                                                 **meta)))
+    return [name]
 
 
 def main():
@@ -288,7 +338,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hookshot-dev-packs-") as d:
         d = Path(d)
         for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime),
-                        ("guard", test_guards)):
+                        ("guard", test_guards), ("inside", test_resolves_inside)):
             (d / name).mkdir()
             t(d / name)
     print("test_dev_packs: ok")

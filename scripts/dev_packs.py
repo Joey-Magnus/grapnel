@@ -429,16 +429,35 @@ def cmd_pack(a):
 
 
 def in_runtime(rt, rel):
-    """A path a pack names (a module, a generated or deleted file) is relative and stays inside the runtime: pack.json is a plain
-    file, and one that named an absolute path or climbed out with .. would have rt write or remove a file anywhere"""
-    if not rel or os.path.isabs(rel) or os.path.splitdrive(rel)[0]:
+    """A path a pack names (a module, a generated or deleted file) is relative and names a file below the runtime: pack.json is
+    a plain file, and one that named an absolute path or climbed out with .. would have rt write or remove a file anywhere. Judged
+    by its text alone, before the runtime exists: no .. anywhere (so no name comparison is needed, which a case-sensitive
+    folder could fool); the links the runtime itself holds are checked where each file is written (resolves_inside)"""
+    # (rooted counts too: "/x" is not isabs on Windows since Python 3.13, and join() would then put it at the drive's root)
+    if not rel or os.path.isabs(rel) or os.path.splitdrive(rel)[0] or rel[0] in "/\\":
         return False
-    root = os.path.normcase(os.path.realpath(rt))
-    target = os.path.normcase(os.path.realpath(os.path.join(rt, rel)))
-    try:
-        return target != root and os.path.commonpath([root, target]) == root
-    except ValueError:
-        return False
+    parts = rel.replace("\\", "/").split("/")
+    return ".." not in parts and os.path.normpath(rel) not in (".", "")
+
+
+def resolves_inside(rt, path):
+    """path (which may not exist yet) lies inside the runtime once links are followed: its nearest existing folder, resolved,
+    is the runtime or below it, compared by file identity rather than by name. A link in the base's romfs is cloned into the
+    runtime, so a path that reads as inside can still lead out of it"""
+    p = os.path.realpath(path)
+    while not os.path.exists(p):
+        up = os.path.dirname(p)
+        if up == p:
+            return False
+        p = up
+    root = os.path.realpath(rt)
+    while True:
+        if os.path.samefile(p, root):
+            return True
+        up = os.path.dirname(p)
+        if up == p:
+            return False
+        p = up
 
 
 def cmd_rt(a):
@@ -483,10 +502,13 @@ def cmd_rt(a):
             shutil.copy2(s, os.path.join(rt, name))
         elif os.path.isdir(s) and name != "romfs":
             shutil.copytree(s, os.path.join(rt, name))
-    for rel, (_, src) in over.items():
+    for rel, (p, src) in over.items():
         dst = os.path.join(rt, rel)
-        if os.path.exists(dst):
-            os.remove(dst)   # (a romfs hard link: replaced, never written through to the base)
+        if not resolves_inside(rt, os.path.dirname(dst)):
+            sys.exit("pack %s: %s leads outside the runtime through a link in it; nothing of the pack was written past this "
+                     "file: delete %s" % (p, rel, rt))
+        if os.path.lexists(dst):
+            os.remove(dst)   # (a romfs hard link, or a link: replaced, never written through to the base or the link's target)
         if src:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
