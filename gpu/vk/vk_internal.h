@@ -362,9 +362,12 @@ unsigned usable_cpus();   // vk_progcache.cpp
 unsigned half_cpus();   // vk_progcache.cpp
 /// (hookshot) Which prepare pool: translation / stage libraries (half CPUs), predicted and noted pipelines (all usable), or
 /// in-play background translation (a quarter, 2 to 4). HOOKSHOT_SHADER_WORKERS or RX_VK_PREPARE_WORKERS=<n> overrides all three
-/// (1..64); unset keeps the sizes above. why: short reason for the log, or null
+/// (1..64); unset keeps the sizes above. With HOOKSHOT_PREPARE_RAM_GUARD=1 (or RX_VK_PREPARE_RAM_GUARD), the auto sizes are also
+/// capped by available RAM (see prepare_pool_workers). why: short reason for the log, or null
 enum class PreparePool : unsigned { Translate, Pipelines, Background };
 unsigned prepare_pool_workers(PreparePool pool, const char** why = nullptr);   // vk_progcache.cpp
+/// (hookshot) Available and total physical RAM in MB (0 if unknown). Shared by the prepare log and the RAM guard
+void prepare_ram_mb(uint64_t* avail_mb, uint64_t* total_mb);   // vk_progcache.cpp
 /// (hookshot) One line: usable/half CPUs and available/total RAM, for prepare diagnosis (no behavior change)
 void prepare_resources_log(const char* when);   // vk_progcache.cpp
 /// (hookshot) The driver's shader cache folders' size, logged with when: at the start, after the prediction

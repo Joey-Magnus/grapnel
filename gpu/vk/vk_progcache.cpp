@@ -645,6 +645,64 @@ unsigned half_cpus() {
     return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));
 }
 
+void prepare_ram_mb(uint64_t* avail_mb, uint64_t* total_mb) {
+    uint64_t avail = 0, total = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    if (GlobalMemoryStatusEx(&m)) {
+        avail = (uint64_t)m.ullAvailPhys >> 20;
+        total = (uint64_t)m.ullTotalPhys >> 20;
+    }
+#else
+    if (FILE* f = fopen("/proc/meminfo", "r")) {
+        char line[128];
+        while (fgets(line, sizeof line, f)) {
+            unsigned long long kb = 0;
+            if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) avail = kb >> 10;
+            else if (sscanf(line, "MemTotal: %llu kB", &kb) == 1) total = kb >> 10;
+        }
+        fclose(f);
+    }
+#endif
+    if (avail_mb) *avail_mb = avail;
+    if (total_mb) *total_mb = total;
+}
+
+// (hookshot) Provisional peak MB a prepare worker may add while pipelines compile. Measured A/B will replace this; until then the
+// RAM guard is opt-in (HOOKSHOT_PREPARE_RAM_GUARD) so Auto keeps the old CPU-only sizes. Override with HOOKSHOT_PREPARE_WORKER_MB
+static unsigned prepare_worker_peak_mb() {
+    if (const char* e = getenv("HOOKSHOT_PREPARE_WORKER_MB"); e && *e) {
+        const int v = atoi(e);
+        if (v > 0) return (unsigned)std::clamp(v, 64, 4096);
+    }
+    return 384;
+}
+
+static unsigned prepare_reserve_mb(uint64_t total_mb) {
+    if (const char* e = getenv("HOOKSHOT_PREPARE_RESERVE_MB"); e && *e) {
+        const int v = atoi(e);
+        if (v >= 0) return (unsigned)std::min(v, 65536);
+    }
+    // (same default headroom idea as the builder's HOOKSHOT_MEM_RESERVE_GB=1.5, plus a little more on big machines)
+    const unsigned from_env_gb = [&] {
+        if (const char* e = getenv("HOOKSHOT_MEM_RESERVE_GB"); e && *e) {
+            const double g = atof(e);
+            if (g > 0) return (unsigned)std::clamp((int)(g * 1024.0), 256, 16384);
+        }
+        return 0u;
+    }();
+    if (from_env_gb) return from_env_gb;
+    const unsigned base = 1536;
+    if (!total_mb) return base;
+    const unsigned scaled = (unsigned)std::min<uint64_t>(total_mb / 8, 4096);
+    return std::max(base, scaled);
+}
+
+static bool prepare_ram_guard_on() {
+    return env_on("HOOKSHOT_PREPARE_RAM_GUARD") || env_on("RX_VK_PREPARE_RAM_GUARD");
+}
+
 unsigned prepare_pool_workers(PreparePool pool, const char** why) {
     const unsigned usable = usable_cpus();
     const char* reason = "auto";
@@ -667,6 +725,29 @@ unsigned prepare_pool_workers(PreparePool pool, const char** why) {
         n = std::clamp(half_cpus(), 1u, 32u);
         reason = "auto half";
     }
+    // (explicit worker override wins for A/B; RAM guard only reshapes the auto sizes. Critical floor still applies when avail is
+    // known and under 1 GB, even with an override: that is past "keep the PC usable" into "about to thrash")
+    uint64_t avail_mb = 0, total_mb = 0;
+    prepare_ram_mb(&avail_mb, &total_mb);
+    if (avail_mb) {
+        if (!override_env && prepare_ram_guard_on()) {
+            const unsigned reserve = prepare_reserve_mb(total_mb);
+            const unsigned peak = prepare_worker_peak_mb();
+            const uint64_t room = avail_mb > reserve ? avail_mb - reserve : 0;
+            const unsigned by_ram = (unsigned)std::max<uint64_t>(1, room / std::max(1u, peak));
+            if (by_ram < n) {
+                n = by_ram;
+                reason = "RAM guard";
+            }
+        }
+        if (avail_mb < 1024 && n > 1) {
+            n = 1;
+            reason = "RAM critical";
+        } else if (avail_mb < 2048 && n > 2) {
+            n = 2;
+            reason = "RAM low";
+        }
+    }
     if (why) *why = reason;
     return std::max(1u, n);
 }
@@ -675,25 +756,10 @@ void prepare_resources_log(const char* when) {
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
     const unsigned usable = usable_cpus(), half = half_cpus();
     uint64_t avail_mb = 0, total_mb = 0;
-#ifdef _WIN32
-    MEMORYSTATUSEX m{sizeof m};
-    if (GlobalMemoryStatusEx(&m)) {
-        avail_mb = (uint64_t)m.ullAvailPhys >> 20;
-        total_mb = (uint64_t)m.ullTotalPhys >> 20;
-    }
-#else
-    if (FILE* f = fopen("/proc/meminfo", "r")) {
-        char line[128];
-        while (fgets(line, sizeof line, f)) {
-            unsigned long long kb = 0;
-            if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) avail_mb = kb >> 10;
-            else if (sscanf(line, "MemTotal: %llu kB", &kb) == 1) total_mb = kb >> 10;
-        }
-        fclose(f);
-    }
-#endif
-    logf("vk: prepare resources %s: %u usable CPUs (half %u, hardware %u), RAM %llu MB available / %llu MB total",
-         when ? when : "", usable, half, hw, (unsigned long long)avail_mb, (unsigned long long)total_mb);
+    prepare_ram_mb(&avail_mb, &total_mb);
+    logf("vk: prepare resources %s: %u usable CPUs (half %u, hardware %u), RAM %llu MB available / %llu MB total%s",
+         when ? when : "", usable, half, hw, (unsigned long long)avail_mb, (unsigned long long)total_mb,
+         prepare_ram_guard_on() ? ", RAM guard on" : "");
 }
 
 } // namespace mkwvk
