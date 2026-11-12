@@ -1084,27 +1084,8 @@ def prompt_directory_matches(expected, actual):
             and expected.st_ino != 0 and os.path.samestat(expected, actual))
 
 
-def prompt_owner_parent(owner):
-    """Windows: query the opened file's resolved path, not the possibly replaced staging pathname.
-    The subsequent parent stat is still path-based: Windows does not provide Python's dir_fd traversal."""
-    import ctypes
-    import msvcrt
-    get_path = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
-    get_path.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
-    get_path.restype = ctypes.c_uint32
-    handle = msvcrt.get_osfhandle(owner.fileno())
-    size = get_path(handle, None, 0, 0)
-    if not size:
-        raise ctypes.WinError(ctypes.get_last_error())
-    path = ctypes.create_unicode_buffer(size + 1)
-    written = get_path(handle, path, len(path), 0)
-    if not written or written >= len(path):
-        raise OSError("cannot establish the opened owner's parent")
-    return os.stat(os.path.dirname(path.value), follow_symlinks=False)
-
-
 @contextlib.contextmanager
-def prompt_owner(folder, create=False, expected=None):
+def prompt_owner(folder, create=False):
     """Hold the owner's lock; POSIX sweepers pass the already checked directory descriptor."""
     with contextlib.ExitStack() as handles:
         relative = {}
@@ -1124,10 +1105,6 @@ def prompt_owner(folder, create=False, expected=None):
         with os.fdopen(os.open(path, flags, 0o600, **relative), "r+b") as owner:
             if not create and (not st.st_ino or not os.path.samestat(st, os.fstat(owner.fileno()))):
                 raise OSError("owner file changed")
-            if os.name == "nt" and expected is not None:
-                if (not prompt_directory_matches(expected, prompt_owner_parent(owner)) or
-                        not prompt_directory_matches(expected, os.stat(folder, follow_symlinks=False))):
-                    raise OSError("staging directory changed")
             if create:
                 owner.write(b"\0")
                 owner.flush()
@@ -1146,8 +1123,17 @@ def prompt_owner(folder, create=False, expected=None):
             yield   # closing releases the lock, including on an exception; process death releases it too
 
 
+def remove_old_prompt_staging(path, modified):
+    """Windows: age alone authorizes a cleanup attempt; an OS refusal is nonfatal."""
+    if time.time() - modified >= 24 * 60 * 60:
+        try:
+            shutil.rmtree(path)
+        except OSError as e:
+            print(f"prompts: kept staging directory {path} ({e})", flush=True)
+
+
 def sweep_prompts(out):
-    """Reclaim abandoned staging directories; descriptor-bound on POSIX, identity-checked but path-based on Windows."""
+    """Reclaim staging: checked descriptors/owner locks on POSIX, a 24-hour age rule on Windows."""
     out = os.path.abspath(out)
     parent = os.path.dirname(out)
     anchored = os.name != "nt"
@@ -1169,38 +1155,31 @@ def sweep_prompts(out):
                     try:
                         if not entry.is_dir(follow_symlinks=False):
                             continue
-                        # Windows DirEntry.stat() has zero file ids; only os.stat() supplies a usable identity.
-                        st = entry.stat(follow_symlinks=False) if anchored else os.stat(path, follow_symlinks=False)
+                        st = entry.stat(follow_symlinks=False)
                         if not stat.S_ISDIR(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
+                            continue
+                        if not anchored:
+                            remove_old_prompt_staging(path, st.st_mtime)
                             continue
                         if not st.st_ino:
                             raise OSError("staging directory identity unavailable")
                         with contextlib.ExitStack() as candidate:
-                            directory, relative = path, {}
-                            if anchored:
-                                directory = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
-                                candidate.callback(os.close, directory)
-                                if not prompt_directory_matches(st, os.fstat(directory)):
-                                    raise OSError("staging directory changed")
-                                relative = {"dir_fd": directory}
+                            directory = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                            candidate.callback(os.close, directory)
+                            if not prompt_directory_matches(st, os.fstat(directory)):
+                                raise OSError("staging directory changed")
                             try:
-                                os.stat(".owner" if anchored else os.path.join(path, ".owner"),
-                                        follow_symlinks=False, **relative)
+                                os.stat(".owner", dir_fd=directory, follow_symlinks=False)
                             except FileNotFoundError:
                                 if time.time() - st.st_mtime < 24 * 60 * 60:
                                     continue   # legacy, unmarked directories get a full day's grace
                             else:
-                                with prompt_owner(directory, expected=st):
+                                with prompt_owner(directory):
                                     pass
-                            # Windows needs the owner closed before removal. Recheck the listed name on both platforms;
-                            # POSIX rmtree also performs its own descriptor-relative lstat/open/fstat checks.
-                            if not prompt_directory_matches(st, os.stat(entry.name if anchored else path,
-                                                                       dir_fd=parent_fd, follow_symlinks=False)):
+                            # Recheck the listed name; rmtree also performs descriptor-relative lstat/open/fstat checks.
+                            if not prompt_directory_matches(st, os.stat(entry.name, dir_fd=parent_fd, follow_symlinks=False)):
                                 raise OSError("staging directory changed before removal")
-                            if anchored:
-                                shutil.rmtree(entry.name, dir_fd=parent_fd)
-                            else:
-                                shutil.rmtree(path)
+                            shutil.rmtree(entry.name, dir_fd=parent_fd)
                     except Exception as e:
                         print(f"prompts: kept staging directory {path} ({e})", flush=True)
     except FileNotFoundError:

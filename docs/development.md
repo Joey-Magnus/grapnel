@@ -214,13 +214,12 @@ directory and publishes only a complete set. A failed generator still removes th
 icons, as before. An interrupted builder can leave the old set without a stamp; the next build regenerates it.
 The files the game derives at run time are still cleared by every build, including a cache hit; they are not part of
 the stamp. If those files cannot be cleared, the build regenerates rather than trusting them.
-Before checking the cache, builds remove abandoned `.prompts-*` staging directories whose owner lock is free (legacy
-unmarked directories only after 24 hours), leave live, unreadable or linked entries alone, and warn rather than fail
-if cleanup cannot finish.
-On POSIX the sweep binds owner access and removal to checked directory descriptors, and skips cleanup if
-descriptor-safe removal is unavailable. Windows gets directory file IDs from `os.stat` (`DirEntry.stat` has none)
-and checks the opened owner's resolved parent identity before locking, but its path-based checks cannot exclude a
-transient external open or later rename races; unknown or changed identity is reported and leaves the directory alone.
+Before checking the cache, builds sweep `.prompts-*` staging directories without following links or Windows reparse
+points. POSIX uses checked directory descriptors and owner locks, with a 24-hour grace period for unmarked legacy
+directories; it skips cleanup if descriptor-safe removal is unavailable. Windows uses only the 24-hour age rule,
+even for directories with an owner marker, and never opens a leftover's owner file or compares file identities.
+Removal is best effort: a locked, in-use or otherwise unremovable directory is kept with a message, without failing
+the build.
 
 #### A faster build for development
 

@@ -148,9 +148,9 @@ class PromptSkipTests(unittest.TestCase):
         return folder
 
     def test_stale_staging_is_removed_and_build_proceeds(self):
-        stale = self.staging(".prompts-abandoned", marked=True)
+        stale = self.staging(".prompts-abandoned", marked=True, old=os.name == "nt")
         self.build()
-        self.assertFalse(stale.exists())   # a marked dead owner is reclaimable even on an immediate rebuild
+        self.assertFalse(stale.exists())   # immediate on POSIX; Windows requires an old directory
         self.assertTrue(self.stamp().exists())
         self.assertEqual(self.calls, 1)
 
@@ -162,6 +162,7 @@ class PromptSkipTests(unittest.TestCase):
         self.assertTrue(recent.exists())
         self.assertTrue(self.stamp().exists())
 
+    @unittest.skipUnless(os.name == "posix", "owner-based reclamation is POSIX-only")
     def test_live_owner_is_kept_even_when_old(self):
         live = self.staging(".prompts-live")
         with P.prompt_owner(str(live), create=True):
@@ -183,6 +184,7 @@ class PromptSkipTests(unittest.TestCase):
         self.build()
         self.assertTrue(self.stamp().exists())
 
+    @unittest.skipUnless(os.name == "posix", "owner-based reclamation is POSIX-only")
     def test_unready_or_unreadable_owner_is_kept(self):
         unready = self.staging(".prompts-unready", marked=True, old=True)
         (unready / ".owner").write_bytes(b"\0")
@@ -202,7 +204,7 @@ class PromptSkipTests(unittest.TestCase):
         self.assertEqual(self.log.getvalue().count("kept staging directory"), 2)
 
     def test_staging_removal_failure_is_nonfatal(self):
-        stale = self.staging(".prompts-cannot-remove", marked=True)
+        stale = self.staging(".prompts-cannot-remove", marked=True, old=os.name == "nt")
         rmtree = P.shutil.rmtree
         def denied(path, *args, **kwargs):
             if Path(path) == stale or (path == stale.name and kwargs.get("dir_fd") is not None):
@@ -330,105 +332,63 @@ class PromptSkipTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual((outside / "sentinel").read_bytes(), b"outside data")
 
-    def test_windows_owner_lock_calls_and_denial(self):
-        folder = self.staging(".prompts-windows")
-        path = str(folder)
-        calls = []
-        def locking(fd, mode, count):
-            self.assertEqual(os.lseek(fd, 0, os.SEEK_CUR), 0)
-            calls.append((fd, mode, count))
-        windows = types.SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, locking=locking)
-        with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"):
-            with P.prompt_owner(path, create=True):
-                pass
-            with P.prompt_owner(path):
-                pass
-        self.assertEqual([(mode, count) for _, mode, count in calls], [(1, 1), (2, 1)])
-        for fd, _, _ in calls:
-            with self.assertRaises(OSError):
-                os.fstat(fd)   # handles close on exit, releasing their locks
-        windows.locking = mock.Mock(side_effect=OSError("authored Windows lock denial"))
-        with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"), \
-                mock.patch.object(P, "prompt_owner_parent", return_value=folder.stat()):
-            P.sweep_prompts(str(self.out))
-        self.assertTrue(folder.exists())
-        self.assertIn("authored Windows lock denial", self.log.getvalue())
+    def test_windows_age_rule_keeps_fresh_owned_staging(self):
+        folder = self.staging(".prompts-fresh-owned", marked=True)
+        P.remove_old_prompt_staging(str(folder), folder.stat().st_mtime)
+        if os.name == "nt":
+            self.build()   # real Windows integration, without changing os.name on another platform
+        self.assertEqual((folder / "new" / "authored.bin").read_bytes(), b"unfinished generation")
+        self.assertEqual((folder / ".owner").read_bytes(), b"1")
 
-    def test_windows_zero_direntry_ids_use_stat_for_owned_and_legacy_cleanup(self):
-        owned = self.staging(".prompts-windows-owned", marked=True)
-        legacy = self.staging(".prompts-windows-legacy", old=True)
-        owner_parent = owned.stat()
-        scandir = os.scandir
-        game = str(self.out.parent)
-        class WindowsEntry:
-            def __init__(entry, real):
-                entry.real, entry.name, entry.path = real, real.name, real.path
+    def test_windows_age_rule_removes_old_owned_and_legacy_staging(self):
+        for marked in (False, True):
+            with self.subTest(marked=marked):
+                folder = self.staging(".prompts-old-" + str(marked), marked=marked, old=True)
+                if os.name == "nt":
+                    self.build()
+                    self.assertTrue(self.stamp().exists())
+                else:
+                    # Exercise the portable age rule on Linux, not fake Windows filesystem semantics.
+                    P.remove_old_prompt_staging(str(folder), folder.stat().st_mtime)
+                self.assertFalse(folder.exists(), self.log.getvalue())
 
-            def is_dir(entry, **kwargs):
-                return entry.real.is_dir(**kwargs)
+    def test_windows_age_rule_reports_removal_refusals(self):
+        for error in (PermissionError("in use"), OSError("path too long")):
+            with self.subTest(error=error):
+                folder = self.staging(".prompts-refused-" + type(error).__name__, old=True)
+                self.log.seek(0)
+                self.log.truncate()
+                with mock.patch.object(P.shutil, "rmtree", side_effect=error):
+                    P.remove_old_prompt_staging(str(folder), folder.stat().st_mtime)
+                self.assertTrue(folder.exists())
+                self.assertEqual(self.log.getvalue().count("kept staging directory"), 1)
+                self.assertIn(str(error), self.log.getvalue())
 
-            def stat(entry, **kwargs):
-                st = entry.real.stat(**kwargs)
-                return types.SimpleNamespace(st_ino=0, st_dev=0, st_nlink=0, st_mode=st.st_mode,
-                                             st_mtime=st.st_mtime, st_file_attributes=0)
-
-        @contextlib.contextmanager
-        def windows_entries(path):
-            with scandir(path) as entries:
-                yield (WindowsEntry(entry) for entry in entries) if path == game else entries
-
-        windows = types.SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, locking=mock.Mock())
-        with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"), \
-                mock.patch.object(P.os, "scandir", side_effect=windows_entries), \
-                mock.patch.object(P, "prompt_owner_parent", return_value=owner_parent):
-            P.sweep_prompts(str(self.out))
-        self.assertFalse(owned.exists(), "owned Windows staging must not silently skip on DirEntry's zero ids")
-        self.assertFalse(legacy.exists(), "legacy Windows staging must use real os.stat identity too")
-        windows.locking.assert_called_once()
-
-    def test_unknown_windows_directory_identity_is_reported(self):
-        folder = self.staging(".prompts-no-identity", marked=True)
-        path, info, real_stat = str(folder), folder.stat(), os.stat
-        def unknown(candidate, *args, **kwargs):
-            if candidate == path:
-                return types.SimpleNamespace(st_ino=0, st_dev=0, st_nlink=0, st_mode=info.st_mode,
-                                             st_mtime=info.st_mtime, st_file_attributes=0)
-            return real_stat(candidate, *args, **kwargs)
-        with mock.patch.object(P.os, "name", "nt"), mock.patch.object(P.os, "stat", side_effect=unknown), \
-                mock.patch.object(P, "prompt_owner_parent", return_value=info):
-            P.sweep_prompts(str(self.out))
-        self.assertTrue(folder.exists())
-        self.assertIn("staging directory identity unavailable", self.log.getvalue())
-        self.assertEqual(self.log.getvalue().count("kept staging directory"), 1)
-
-    def test_windows_unknown_or_changed_owner_parent_is_kept_without_locking(self):
-        folder = self.staging(".prompts-windows-parent", marked=True)
-        outside = self.root / "outside-parent"
-        outside.mkdir()
-        windows = types.SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, locking=mock.Mock())
-        for answer in (outside.stat(), OSError("unknown opened owner parent")):
-            effect = dict(side_effect=answer) if isinstance(answer, OSError) else dict(return_value=answer)
-            with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"), \
-                    mock.patch.object(P, "prompt_owner_parent", **effect):
-                P.sweep_prompts(str(self.out))
+    @unittest.skipUnless(os.name == "nt", "Windows blocks deletion of an open file; Linux does not")
+    def test_windows_open_file_keeps_staging_and_build_proceeds(self):
+        folder = self.staging(".prompts-open-file", old=True)
+        blocked = folder / "new" / "authored.bin"
+        with blocked.open("rb"):
+            self.build()
             self.assertTrue(folder.exists())
-        windows.locking.assert_not_called()
+            self.assertTrue(blocked.exists())
+            self.assertTrue(self.stamp().exists())
+        self.assertIn("kept staging directory", self.log.getvalue())
 
-    def test_windows_opened_parent_query(self):
-        import ctypes
-        folder = self.staging(".prompts-parent-query", marked=True)
-        path = str(folder / ".owner")
-        class FinalPath:
-            def __call__(self, handle, buffer, size, flags):
-                if buffer is not None:
-                    buffer.value = path
-                return len(path)
-        query = FinalPath()
-        windows = types.SimpleNamespace(get_osfhandle=lambda fd: fd)
-        with (folder / ".owner").open("r+b") as owner, \
-                mock.patch.dict(sys.modules, {"msvcrt": windows}), \
-                mock.patch.object(ctypes, "WinDLL", return_value=types.SimpleNamespace(GetFinalPathNameByHandleW=query), create=True):
-            self.assertTrue(os.path.samestat(P.prompt_owner_parent(owner), folder.stat()))
+    @unittest.skipUnless(os.name == "nt", "Windows read-only files refuse deletion")
+    def test_windows_readonly_file_keeps_staging_and_build_proceeds(self):
+        folder = self.staging(".prompts-readonly-file", old=True)
+        blocked = folder / "new" / "authored.bin"
+        blocked.chmod(0o444)
+        try:
+            self.build()
+            self.assertTrue(folder.exists())
+            self.assertTrue(blocked.exists())
+            self.assertTrue(self.stamp().exists())
+            self.assertIn("kept staging directory", self.log.getvalue())
+        finally:
+            if blocked.exists():
+                blocked.chmod(0o600)
 
     def test_cleanup_without_descriptor_safe_rmtree_is_skipped(self):
         if os.name != "posix":
