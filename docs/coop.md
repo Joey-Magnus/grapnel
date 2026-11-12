@@ -16,8 +16,10 @@ You need your own copy of the game, as always. Nothing here comes with game file
 - **The same version of Hookshot for everyone.** The players' games only check that they speak the same co-op
   messages, not that they are the same build.
 - **A network path to the host.** One player hosts, the others join the host's address on TCP port **43400** (the
-  Port row changes it). On one home network that works as it is. Across the internet the host forwards the port in the
-  router, or everyone joins one virtual network (Tailscale, ZeroTier, Radmin) and uses the host's address there.
+  Port row changes it). On one home network that works as it is. Friends in different homes need **Radmin VPN**
+  (free): everyone joins the same Radmin network and the joiners type the host's Radmin address. Every session so far
+  was played that way. The game only opens a plain TCP link: there is no relay and nothing to get through a router, so
+  the only other ways are another virtual network (Tailscale, ZeroTier) or the host forwarding the port.
 - **Co-op's two data files, made once per game folder** (and again after a rebuild that replaces the folder). The
   build does not make them yet; from a clone, with the pipeline's Python packages installed:
 
