@@ -330,6 +330,12 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
     end_pass(cmd);
     GprofSpan gp(cmd, "xfer clear texture (with its barriers)");
     full_barrier(cmd);
+    // (an image kept in ASTC blocks: vkCmdClearColorImage does not take a compressed format, and the region path below only
+    // works in BC blocks; a colour written over ASTC blocks would be garbage, so the image is left as it is)
+    if (s.tex->format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && s.tex->format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+        warn(14, "clear of an ASTC texture: skipped");
+        return;
+    }
     const bool volume = s.tex->type == VK_IMAGE_TYPE_3D;
     const bool raw = s.tex->format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && s.tex->format <= VK_FORMAT_BC7_SRGB_BLOCK;
     if (whole && !volume && !raw) {
