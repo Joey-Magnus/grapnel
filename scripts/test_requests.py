@@ -27,7 +27,13 @@ the person who asked cancels it, and several people can test it at once: each ho
 own result. A claim lasts 90 minutes (at most 8 hours) and simply clears when it runs out, so a tester renews while
 testing (`renew` with no ID renews all of yours). done counts from anyone while the request is open, links to a comment
 on the request's PR, and replaces that person's earlier result. release is the claimer's; cancel is the requester's.
-A message that breaks these rules changes nothing.
+A message that breaks these rules changes nothing. (The approval below is GitHub's, so the script checks it before
+claiming; a claim typed by hand on a request that isn't approved shows nowhere on Discord.)
+
+Only approved requests can be claimed: the PR's author is a collaborator on GitHub (owner, member or collaborator),
+or a maintainer put the "testing wanted" label on it. Anything else waits for a maintainer to add the label (the card
+on Discord says so, and list shows it last); this keeps strangers' code off testers' PCs until someone has looked at
+it. The script asks GitHub (no sign-in needed; GITHUB_TOKEN or GH_TOKEN is used when set).
 
 list puts first what most needs a tester: requests nobody has tested or is testing, then the ones being tested with no
 result yet, then the ones with results; oldest first within each. Exit code 3: the action was refused (closed, not
@@ -42,6 +48,8 @@ import random
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +61,9 @@ MARK = "\N{TEST TUBE}"
 ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
 DEFAULT_TTL = 90
 MAX_TTL = 480
+PR_API = "https://api.github.com/repos/NotRexed/Hookshot/pulls/%d"
+LABEL = "testing wanted"
+TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
 HISTORY_LIMIT = 50000  # messages read back; renews add one per tester every half hour
 EXIT_REFUSED = team_chat.EXIT_REFUSED
 
@@ -147,8 +158,50 @@ def replay(events, now=None):
 
 
 def need(t):
-    """Sort key: what most needs a tester first."""
-    return (bool(t["results"]), bool(t["claims"]), t["requested"])
+    """Sort key: what most needs a tester first; requests waiting for a maintainer last."""
+    return (t.get("approved") is False, bool(t["results"]), bool(t["claims"]), t["requested"])
+
+
+def pr_info(number):
+    """The PR's state (open, draft, merged, closed), its labels and its author's standing, from GitHub."""
+    req = urllib.request.Request(PR_API % number, headers={"Accept": "application/vnd.github+json",
+                                                           "User-Agent": team_chat.USER_AGENT})
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            pr = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise team_chat.ChatError("GitHub answered %d for PR #%d%s" % (
+            error.code, number, " (rate limit: set GITHUB_TOKEN)" if error.code in (403, 429) else "")) from None
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        raise team_chat.ChatError("cannot reach GitHub to check PR #%d: %s" % (number, error)) from None
+    state = "merged" if pr.get("merged_at") else "closed" if pr.get("state") == "closed" \
+        else "draft" if pr.get("draft") else "open"
+    return {"state": state, "labels": [label.get("name") for label in pr.get("labels", [])],
+            "author": (pr.get("user") or {}).get("login"), "association": pr.get("author_association")}
+
+
+def approved(info):
+    return info["association"] in TRUSTED or LABEL in info["labels"]
+
+
+def annotate(tests):
+    """Add each open request's PR state and approval (one call per PR); unknown when GitHub can't be asked."""
+    seen = {}
+    for t in tests:
+        if t["status"] != "open" or not t["pr"]:
+            continue
+        if t["pr"] not in seen:
+            try:
+                seen[t["pr"]] = pr_info(t["pr"])
+            except team_chat.ChatError as error:
+                print("warning: %s" % error, file=sys.stderr)
+                seen[t["pr"]] = None
+        info = seen[t["pr"]]
+        t["pr_state"] = info and info["state"]
+        t["approved"] = info and approved(info)
 
 
 def history(config, rid):
@@ -215,8 +268,12 @@ def describe(t, me=None):
         lines.append("    being tested by " + ", ".join(who(u) for u in sorted(t["claims"])))
     for user, r in sorted(t["results"].items(), key=lambda kv: kv[1]["time"]):
         lines.append("    %s by %s: %s" % (r["result"], who(user), r["comment"]))
-    if not t["claims"] and not t["results"] and t["status"] == "open":
+    if t.get("approved") is False:
+        lines.append('    waiting for a maintainer to add the "%s" label on GitHub: not claimable yet' % LABEL)
+    elif not t["claims"] and not t["results"] and t["status"] == "open":
         lines.append("    nobody has tested it yet")
+    if t.get("pr_state") in ("merged", "closed"):
+        lines.append("    the PR is %s" % t["pr_state"])
     if t["notes"]:
         lines += ["    " + line for line in t["notes"].splitlines()]
     return "\n".join(lines)
@@ -257,6 +314,13 @@ def cmd_request(args, config):
         text += "\n" + args.notes.strip()
     send(config, rid, text)
     print("asked for testing as %s" % tid)
+    try:
+        info = pr_info(pr)
+    except team_chat.ChatError:
+        return 0
+    if not approved(info):
+        print('note: #%d is not from a collaborator and has no "%s" label, so nobody can claim it until a maintainer '
+              "adds the label on GitHub" % (pr, LABEL))
     return 0
 
 
@@ -266,6 +330,7 @@ def cmd_list(args, config):
     shown = [t for t in tests.values()
              if (args.all or t["status"] == "open")
              and (not args.mine or me == t["requester"] or me in t["claims"] or me in t["results"])]
+    annotate(shown)
     shown.sort(key=need)
     if args.json:
         print(json.dumps([public(t) for t in shown], indent=2))
@@ -279,6 +344,7 @@ def cmd_list(args, config):
 def cmd_show(args, config):
     _, tests = state(config)
     t = find(tests, args.id)
+    annotate([t])
     print(json.dumps(public(t), indent=2) if args.json else describe(t, config["user_id"]))
     return 0
 
@@ -291,6 +357,13 @@ def cmd_claim(args, config):
         return refuse("%s is closed" % t["id"])
     if me in t["results"] and not args.again:
         return refuse("you already tested %s (%s); --again to test it again" % (t["id"], t["results"][me]["result"]))
+    if t["pr"]:
+        info = pr_info(t["pr"])  # no answer from GitHub: no claim
+        if not approved(info):
+            return refuse('%s waits for a maintainer: #%d is not from a collaborator and has no "%s" label'
+                          % (t["id"], t["pr"], LABEL))
+        if info["state"] in ("merged", "closed"):
+            return refuse("#%d is %s" % (t["pr"], info["state"]))
     send(config, rid, "%s %s claim: %s" % (MARK, t["id"], until_line()))
     others = sorted(u for u in t["claims"] if u != me)
     print("claimed %s%s; renew while you test (`renew` renews all of yours)" % (

@@ -2,8 +2,10 @@
 PR link, notes; people's chat does not); replaying the room gives each request's state: several people can hold a
 claim at once, a claim clears when it runs out (capped at 8 hours) and renew/release are the claimer's, done counts
 from anyone with a link to a comment on the same PR and replaces that person's earlier result, cancel is the
-requester's and nothing counts after it; list puts untested and unclaimed requests first; and the commands refuse
-with exit code 3 what the replay would ignore, and post the documented lines otherwise.
+requester's and nothing counts after it; list puts untested and unclaimed requests first and the ones waiting for a
+maintainer last; a claim needs an approved PR (its author a collaborator, or the "testing wanted" label) that is still
+open, and no claim goes out when GitHub can't be asked; and the commands refuse with exit code 3 what the replay would
+ignore, and post the documented lines otherwise.
 
     python -I -B tests/test_test_requests.py
 """
@@ -137,14 +139,25 @@ def test_order():
     check(order == ["T-AAAD", "T-AAAE", "T-AAAB", "T-AAAC"], "untested and unclaimed first: %s" % order)
 
 
+GITHUB = {}  # PR number -> what pr_info returns, or an exception to raise
+
+
+def fake_pr_info(number):
+    got = GITHUB.get(number, {"state": "open", "labels": [], "author": "x", "association": "COLLABORATOR"})
+    if isinstance(got, Exception):
+        raise got
+    return got
+
+
 def run(events, user, *argv):
-    """A command against a stand-in room: (exit code, lines it sent, standard output)."""
+    """A command against a stand-in room and GitHub: (exit code, lines it sent, standard output)."""
     sent = []
     config = {"user_id": "@%s:magicbean.dev" % user, "base_url": "http://x", "access_token": "t"}
     out, err = io.StringIO(), io.StringIO()
     with mock.patch.object(tr.team_chat, "session", return_value=config), \
             mock.patch.object(tr.team_chat, "room_id", return_value="!room"), \
             mock.patch.object(tr, "history", side_effect=lambda c, r: list(events)), \
+            mock.patch.object(tr, "pr_info", side_effect=fake_pr_info), \
             mock.patch.object(tr, "send", side_effect=lambda c, r, text: (sent.append(text), events.append(
                 {"sender": config["user_id"], "origin_server_ts": tr.time.time() * 1000, "body": text}))), \
             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -188,7 +201,36 @@ def test_commands():
     check(code == 0 and any(t["id"] == "T-7KQ2" and t["status"] == "closed" for t in json.loads(out)), "list --json")
 
 
-for test in (test_parse, test_request, test_claims, test_done_cancel, test_order, test_commands):
+def test_approval():
+    now_min = int(tr.time.time() // 60)
+    stranger = {"state": "open", "labels": ["bug"], "author": "x", "association": "CONTRIBUTOR"}
+    events = [ev("ann", now_min - 9, "%s T-AAAB request: a\n%s/pull/1" % (T, tr.REPO)),
+              ev("ann", now_min - 8, "%s T-AAAC request: b\n%s/pull/2" % (T, tr.REPO))]
+    GITHUB.update({1: stranger, 2: dict(stranger, association="OWNER")})
+    try:
+        code, sent, _ = run(events, "bob", "claim", "T-AAAB")
+        check(code == 3 and not sent, "a stranger's PR without the label can't be claimed")
+        code, _, out = run(events, "bob", "list", "--json")
+        got = [(t["id"], t["approved"]) for t in json.loads(out)]
+        check(got == [("T-AAAC", True), ("T-AAAB", False)], "waiting requests list last: %s" % got)
+        code, _, out = run(events, "bob", "list")
+        check("waiting for a maintainer" in out, "list says it waits for a maintainer")
+        GITHUB[1] = dict(stranger, labels=["bug", "testing wanted"])
+        code, sent, _ = run(events, "bob", "claim", "T-AAAB")
+        check(code == 0 and sent, "the label approves it")
+        GITHUB[2] = dict(stranger, association="MEMBER", state="merged")
+        code, sent, _ = run(events, "bob", "claim", "T-AAAC")
+        check(code == 3 and not sent, "a merged PR can't be claimed")
+        GITHUB[2] = tr.team_chat.ChatError("cannot reach GitHub")
+        code, sent, _ = run(events, "bob", "claim", "T-AAAC")
+        check(code == 1 and not sent, "no claim when GitHub can't be asked")
+        code, _, out = run(events, "bob", "list", "--json")
+        check(code == 0 and len(json.loads(out)) == 2, "list still works without GitHub")
+    finally:
+        GITHUB.clear()
+
+
+for test in (test_parse, test_request, test_claims, test_done_cancel, test_order, test_commands, test_approval):
     test()
 print("%d failure(s)" % len(FAILS) if FAILS else "all passed")
 sys.exit(1 if FAILS else 0)

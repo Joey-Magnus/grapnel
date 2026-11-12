@@ -32,6 +32,14 @@ python -I scripts/test_requests.py request --pr 2711 --summary "Keep 8 GB cards 
 - The rules of [CONTRIBUTING.md](../../../CONTRIBUTING.md) apply: no game files or anything made from them, no
   secrets or personal details.
 - The script refuses a second open request from you for the same PR and needs.
+- **The label is a request too:** any open PR labelled `testing wanted` gets a request posted for its author within a
+  few minutes (the PR's title as the summary, no needs or notes: put what to test in the PR's description). Don't
+  post a second one for the same PR; `list` shows it as asked by the relay. It closes when the label comes off or
+  the PR is merged or closed.
+- **Approval:** a request can be claimed only when the PR's author is a collaborator on GitHub, or a maintainer has put
+  the `testing wanted` label on the PR. Otherwise the script says so, and the Discord card shows "Waiting for a
+  maintainer" until the label is added (the card opens by itself within a few minutes). Tell the user to ask a
+  maintainer for the label; don't add it yourself unless the user is a maintainer and asks you to.
 
 Tell the user the request ID (`T-XXXX`). If they want it followed up, check back later (Claude Code:
 `/loop 2h /request-testing check T-XXXX`); don't wait in a loop on your own.
