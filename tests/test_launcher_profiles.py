@@ -242,7 +242,8 @@ class LauncherCopyTests(unittest.TestCase):
             folder_asked = []
             launcher.ask_path = lambda *a, **k: folder_asked.append(a)
             launcher.run_waiting = lambda work, text: work()
-            with mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(Path(tmp) / "data")}), \
+            # (HOME too: the emulators' usual folders include ~/Games/Ocarina (NX2navi), which a tester's PC may have)
+            with mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(Path(tmp) / "data"), "HOME": str(Path(tmp) / "home")}), \
                     mock.patch.object(builder.messagebox, "askyesno", lambda *a, **k: True, create=True), \
                     mock.patch.object(oot, "running_games", return_value=[]):
                 builder.Builder.import_profile_save(launcher)
