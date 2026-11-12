@@ -167,6 +167,12 @@ class StartOrderTests(unittest.TestCase):
             order = build.start_order(vk, vk, {"ui_fonts.cpp": 2.0, "vk_draw.cpp": 47.0, "vk_main.cpp": 9.0})
             self.assertEqual([Path(j[1]).name for j in order], ["vk_draw.cpp", "vk_main.cpp", "ui_fonts.cpp"])
 
+    def test_a_history_without_the_back_end_orders_it_by_size(self):
+        with tempfile.TemporaryDirectory() as d:
+            vk = self.jobs(d, [("imgui.cpp", 300), ("vk_bank.cpp", 50), ("vk_draw.cpp", 900)])
+            order = build.start_order(vk, vk, {"code_001.c": 40.0})
+            self.assertEqual([Path(j[1]).name for j in order], ["vk_draw.cpp", "imgui.cpp", "vk_bank.cpp"])
+
     def test_the_compile_starts_in_that_order(self):
         main = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8").split("\ndef main(")[1]
         self.assertIn("order = start_order(jobs, vk_jobs, history)", main)

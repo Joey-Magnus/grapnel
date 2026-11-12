@@ -916,7 +916,9 @@ def start_order(jobs, vk_jobs, history):
     """The order the compiles start in: the Vulkan back end's files the longest first, by this PC's build_times.json
     (per_file_seconds) or else by size. In name order vk_draw.cpp, the longest, started near the end and ran alone. The
     other jobs keep their place (the game's are sorted already: compile_cost), and the link keeps jobs' and vk_jobs' own order"""
-    seconds = per_file_seconds(vk_jobs, history) if history else [src_size(j[1]) for j in vk_jobs]
+    # (a history with none of the back end's files gives them all the same flat guess: their sizes order them better)
+    measured = any(os.path.basename(j[1]) in history for j in vk_jobs)
+    seconds = per_file_seconds(vk_jobs, history) if measured else [src_size(j[1]) for j in vk_jobs]
     longest = {j[2]: s for j, s in zip(vk_jobs, seconds)}
     return [j for j in jobs if j[2] not in longest] + sorted((j for j in jobs if j[2] in longest), key=lambda j: -longest[j[2]])
 
