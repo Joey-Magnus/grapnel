@@ -199,6 +199,10 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_CPM=<dir>`, `WGPU_NATIVE=<dir>` | The CPM cache (Vulkan and SPIR-V headers, VMA, FFmpeg) and wgpu-native |
 | `RX_TARGET=windows` | On Linux: the Windows game, with llvm-mingw's Linux build in `HOOKSHOT_MINGW` |
 | `RX_RELEASE=1` | A release build (`make_game.py` sets it): no console window, the shaders prepared before the title |
+
+While `--prepare-shaders` (or a first start) builds pipelines, `hookshot_log.txt` prints a line every 10 s with the
+worker count, pipelines/s, process RSS / peak and available RAM, and an ETA from the recent rate (it says `finishing`
+near the end instead of a runaway overall ETA). The same fields are on the predicted-pipelines summary line.
 | `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one (`make_game.py` passes the shipped profile) |
 | `RX_HOT_OPT=<level>` | The hot pieces' optimisation level (default `O2`); `O1` for [a faster build for development](#a-faster-build-for-development) |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |

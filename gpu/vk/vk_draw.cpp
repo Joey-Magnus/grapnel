@@ -33,6 +33,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
 #include "vk_paths.h"
+#include <psapi.h>   // (prepare_progress_log: working set / peak while pipelines build)
 #include "vk_draw.h"
 #include "vk_menu.h"          // (opts.anisotropy: the Anisotropic filtering row; resolution_scale)
 #include "upscaler_rows.h"    // (upscale_lod_bias: which upscalers draw the 3D smaller)
@@ -8011,6 +8012,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
     const unsigned workers = background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
+    logf("vk: preparing shaders on %u workers (usable %u, half %u%s)", workers, cpus, half_cpus(),
+         background ? ", in play" : "");
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
@@ -8060,18 +8063,87 @@ void prepare_background() {
     }).detach();
 }
 
-/// (hookshot) A line every 10 s while the preparation builds pipelines: their count and an estimate of the time left. The
-/// pipeline steps wrote nothing to the log for 10-30 minutes on some AMD cards, and players pasted a log whose last lines (the
-/// vertex formats) looked like a hang (Discord 2026-11-10, "stuck on preparing shaders"); the Builder's bar moved, the log did not
+/// (hookshot) Process working set and available system RAM for prepare progress lines (diagnosis: workers vs paging).
+/// Windows: K32GetProcessMemoryInfo + GlobalMemoryStatusEx. Linux: the posix psapi shim + MemAvailable.
+bool prepare_mem_mb(uint64_t* working, uint64_t* peak, uint64_t* avail) {
+    if (working) *working = 0;
+    if (peak) *peak = 0;
+    if (avail) *avail = 0;
+    bool ok = false;
+#if defined(_WIN32) || defined(__linux__)
+    PROCESS_MEMORY_COUNTERS_EX pm{};
+    pm.cb = sizeof pm;
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm)) {
+        if (working) *working = (uint64_t)pm.WorkingSetSize >> 20;
+        if (peak) *peak = (uint64_t)pm.PeakWorkingSetSize >> 20;
+        ok = true;
+    }
+#endif
+#ifdef _WIN32
+    MEMORYSTATUSEX m{sizeof m};
+    if (avail && GlobalMemoryStatusEx(&m)) *avail = (uint64_t)m.ullAvailPhys >> 20, ok = true;
+#elif defined(__linux__)
+    if (avail) {
+        if (FILE* f = fopen("/proc/meminfo", "r")) {
+            char line[128];
+            while (fgets(line, sizeof line, f)) {
+                unsigned long long kb = 0;
+                if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) {
+                    *avail = kb >> 10;
+                    ok = true;
+                    break;
+                }
+            }
+            fclose(f);
+        }
+    }
+#endif
+    return ok;
+}
+
+/// (hookshot) A line every 10 s while the preparation builds pipelines: their count, rate, workers, RSS and an estimate of
+/// the time left. The pipeline steps wrote nothing to the log for 10-30 minutes on some AMD cards, and players pasted a log
+/// whose last lines (the vertex formats) looked like a hang (Discord 2026-11-10, "stuck on preparing shaders"); the Builder's
+/// bar moved, the log did not. The overall ETA alone blew up near the end (done≈total → thousands of minutes): prefer the
+/// recent rate, and say "finishing" when almost done.
 void prepare_progress_log(const char* what, size_t done, size_t total, std::chrono::steady_clock::time_point t0,
-                          std::chrono::steady_clock::time_point& next) {
+                          std::chrono::steady_clock::time_point& next, unsigned workers) {
     const auto now = std::chrono::steady_clock::now();
     if (now < next || !total) return;
     next = now + std::chrono::seconds(10);
     const double s = std::chrono::duration<double>(now - t0).count();
-    const double left = done ? s * (double)(total - std::min(done, total)) / (double)done : 0.0;
-    if (done) logf("vk: %s: %zu of %zu pipelines in %.0f s, about %.0f s left", what, done, total, s, left);
-    else logf("vk: %s: 0 of %zu pipelines in %.0f s (the driver compiles the first ones)", what, total, s);
+    static const char* prev_what = nullptr;
+    static size_t prev_done = 0;
+    static double prev_s = 0;
+    if (prev_what != what) prev_what = what, prev_done = 0, prev_s = 0;
+    const double inst = (s > prev_s + 0.5 && done > prev_done) ? (double)(done - prev_done) / (s - prev_s) : 0.0;
+    const double avg = (done && s > 0.5) ? (double)done / s : 0.0;
+    const double rate = inst > 0.5 ? inst : avg;
+    prev_done = done;
+    prev_s = s;
+    const size_t left_n = total - std::min(done, total);
+    double left = rate > 0.05 ? (double)left_n / rate : (done ? s * (double)left_n / (double)done : 0.0);
+    uint64_t ws = 0, peak = 0, avail = 0;
+    const bool mem = prepare_mem_mb(&ws, &peak, &avail);
+    if (!done) {
+        if (mem)
+            logf("vk: %s: 0 of %zu pipelines in %.0f s on %u workers (RSS %llu MB, peak %llu, avail %llu MB; the driver "
+                 "compiles the first ones)",
+                 what, total, s, workers, (unsigned long long)ws, (unsigned long long)peak, (unsigned long long)avail);
+        else
+            logf("vk: %s: 0 of %zu pipelines in %.0f s on %u workers (the driver compiles the first ones)", what, total, s,
+                 workers);
+        return;
+    }
+    const bool finishing = left_n <= std::max<size_t>(1, workers) || (done * 100 >= total * 99 && left > 600.0);
+    char eta[48];
+    if (finishing) snprintf(eta, sizeof eta, "finishing");
+    else snprintf(eta, sizeof eta, "about %.0f s left", left);
+    if (mem)
+        logf("vk: %s: %zu of %zu pipelines in %.0f s (%.1f/s, %u workers, RSS %llu MB, peak %llu, avail %llu MB), %s", what,
+             done, total, s, rate, workers, (unsigned long long)ws, (unsigned long long)peak, (unsigned long long)avail, eta);
+    else
+        logf("vk: %s: %zu of %zu pipelines in %.0f s (%.1f/s, %u workers), %s", what, done, total, s, rate, workers, eta);
 }
 void precompile_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
@@ -8200,7 +8272,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     };
     std::vector<std::thread> threads;
     const unsigned cpus = usable_cpus();
-    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    const unsigned workers = std::min(cpus, 64u);
+    logf("vk: noted pipelines: building %zu on %u workers (usable %u)", total, workers, cpus);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     static const int stall_s = getenv("RX_VK_PRECOMPILE_STALL_S") ? atoi(getenv("RX_VK_PRECOMPILE_STALL_S")) : 30;
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();
@@ -8209,7 +8283,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     const auto built0 = std::chrono::steady_clock::now();
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load(), total);
-        prepare_progress_log("noted pipelines", done.load(), total, built0, log_at);
+        prepare_progress_log("noted pipelines", done.load(), total, built0, log_at, workers);
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
         const auto now = std::chrono::steady_clock::now();
@@ -8393,7 +8467,9 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     const int faults_before = driver_faults();
     std::vector<std::thread> threads;
     const unsigned cpus = usable_cpus();
-    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    const unsigned workers = std::min(cpus, 64u);
+    logf("vk: predicted pipelines: building %zu on %u workers (usable %u)", predicted_n, workers, cpus);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     // (hookshot) Nothing finished for this long, on any worker (each pipeline counts as it finishes): the run goes on, the stuck
     // workers left in the driver, the rest of the predicted pipelines built in play when first drawn. When:
     // - the driver faulted in this run (driver_faults: caught, and a driver can stop answering after one): wherever the run is;
@@ -8409,7 +8485,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     const auto built0 = std::chrono::steady_clock::now();
     while (next.load() < pre->keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
         if (progress) progress(done.load(), predicted_n);
-        prepare_progress_log("predicted pipelines", done.load(), predicted_n, built0, log_at);
+        prepare_progress_log("predicted pipelines", done.load(), predicted_n, built0, log_at, workers);
         Sleep(100);
         const auto now = std::chrono::steady_clock::now();
         if (done.load() != last_done) last_done = done.load(), last_change = now;
@@ -8430,12 +8506,18 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     }
     if (progress) progress(gone_on ? predicted_n : done.load(), predicted_n);
     const double all_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const double build_s = all_s - decide_s;
+    const double rate = build_s > 0.5 && made.load() ? (double)made.load() / build_s : 0.0;
+    uint64_t ws = 0, peak = 0, avail = 0;
+    prepare_mem_mb(&ws, &peak, &avail);
     logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made, %zu the same pipeline as "
-         "another, in %.1f s (%.1f s deciding them, %.1f s building them on %zu threads); left out as no draw could ask for them: %zu "
-         "by their vertex input types, %zu by their colour output types (%zu program variants with none left; %zu notes whose own "
-         "types do not fit; %zu took a less common layout or targets that fit)%s", predicted_n, notes_n, programs, made.load(),
-         pre->same.load(), all_s, decide_s, all_s - decide_s, threads.size(), left_out.vertex_types, left_out.output_types,
-         left_out.variants_unfit, left_out.notes_unfit, left_out.refit,
+         "another, in %.1f s (%.1f s deciding them, %.1f s building them on %zu threads, %.1f/s; RSS %llu MB, peak %llu, avail "
+         "%llu MB); left out as no draw could ask for them: %zu by their vertex input types, %zu by their colour output types "
+         "(%zu program variants with none left; %zu notes whose own types do not fit; %zu took a less common layout or targets "
+         "that fit)%s",
+         predicted_n, notes_n, programs, made.load(), pre->same.load(), all_s, decide_s, build_s, threads.size(), rate,
+         (unsigned long long)ws, (unsigned long long)peak, (unsigned long long)avail, left_out.vertex_types,
+         left_out.output_types, left_out.variants_unfit, left_out.notes_unfit, left_out.refit,
          gone_on ? " (gone on without the pipelines the driver did not finish)"
          : out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)"
          : prepare_stopped() ? " (stopped: the window was closed; the driver keeps what was built)" : "");

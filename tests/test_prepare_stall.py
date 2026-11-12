@@ -109,7 +109,14 @@ void logf(const char* f, ...) {
 bool prepare_stopped() { return false; }
 int driver_faults() { return faults.load(); }
 void prepare_left_workers_note() { left_noted = true; }
-void prepare_progress_log(const char*, size_t, size_t, std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point&) {}
+void prepare_progress_log(const char*, size_t, size_t, std::chrono::steady_clock::time_point,
+                          std::chrono::steady_clock::time_point&, unsigned) {}
+bool prepare_mem_mb(uint64_t* working, uint64_t* peak, uint64_t* avail) {
+    if (working) *working = 0;
+    if (peak) *peak = 0;
+    if (avail) *avail = 0;
+    return false;
+}
 void ub_thread_off() {}
 void Sleep(unsigned ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
