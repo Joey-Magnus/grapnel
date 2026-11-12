@@ -3053,7 +3053,7 @@ void log_frame_stats() {
     log_slow_frame();
     made_ring[presents % 32] = texture_made();
     made_ring_present = presents;
-    if (programs_life_flag && presents % 600 == 0) programs_census_log("play");
+    if (presents % 600 == 0) programs_census_log("play");
     if (++fps_n == 120) {
         const auto now = std::chrono::steady_clock::now();
         const double secs = std::chrono::duration<double>(now - fps_t).count();
@@ -5021,7 +5021,7 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_texture_released = texture_released_of;
     t.nvn_program_released = program_released_locked;
     t.nvn_program_created = programs_created;
-    programs_life_on();
+    programs_life_on(), programs_load_at_create();
     t.nvn_read_texels = read_texels;
     t.nvn_write_texels = write_texels;
     t.nvn_invalidate = invalidate;

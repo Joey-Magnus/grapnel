@@ -51,7 +51,7 @@ def main():
     functions += "\n" + block(cache_h, "struct Reader {") + ";\n"
     functions += cache[cache.index("void put_bytes("):cache.index("void program_cache_save(")]
     functions += block(cache, "void program_cache_save(") + "\n" + block(cache, "void program_cache_read(") + "\n"
-    functions += cache[cache.index("namespace {\nstruct LightBody {"):cache.index("/// (shader_mu held) the kept variants of key go to its list")]
+    functions += cache[cache.index("namespace {\nstd::mutex light_mu;"):cache.index("/// (shader_mu held) the kept variants of key go to its list")]
     functions += block(cache, "void program_cache_load(").replace("bool keep) {", "bool keep = false) {")
     # the dispatch: a program is made whole before its module is used, in both places
     d = draw[draw.index("void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {"):]

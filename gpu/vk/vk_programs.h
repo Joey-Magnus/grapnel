@@ -6,12 +6,40 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <unordered_set>
+#include <vector>
 
 #include "vk_internal.h"
 
 namespace mkwvk {
 
 struct Program;
+struct PipeNote;
+struct NoteRef;
+
+// ---- the load when the game makes a program (RX_VK_LOAD=create) ----
+/// RX_VK_LOAD: start (the default: every listed program and pipeline kept ready before the title, precompile_run) or create
+/// (nothing kept ready by a list: a program's kept variants and noted pipelines are loaded when the game makes it)
+bool programs_load_at_create();
+/// (precompile_run, before play) what a create call looks its program up in: every note by its place, and the compute
+/// programs the lists name
+void programs_index(std::vector<NoteRef> notes, const std::unordered_set<uint64_t>& compute_keys);
+/// (program_cache_load, shader_mu held) a load queued for that program key is run here if no worker has begun it, or waited for,
+/// and what it read is published before this returns
+void programs_load_wait(uint64_t key);
+
+/// Where a ready pipeline for a program variant and its state comes from, nothing compiled. One source today: the pipeline
+/// cache objects (the start's cache in memory, then the driver's own). Another (pipeline binaries, shader module identifiers)
+/// would be asked first and fall back to this one where the driver lacks it or its key does not match
+struct PipelineSource {
+    virtual ~PipelineSource() = default;
+    virtual const char* name() const = 0;
+    /// The pipeline a note names for its program, or null: this source does not have it
+    virtual VkPipeline graphics(const Program& p, const PipeNote& n) = 0;
+    /// A compute program's pipeline, or null
+    virtual VkPipeline compute(const Program& p) = 0;
+};
+PipelineSource& pipeline_source();
 
 // ---- the game's side (its own threads) ----
 /// The game gave a program its shaders (MkwVkRenderer::nvn_program_created): its stages are in the game's memory now
@@ -44,6 +72,14 @@ struct ProgramCensus {
     std::atomic<int64_t> play_loads{0}, play_load_ns{0};   // (program records read from hookshot_programs.bin in play)
     std::atomic<int64_t> play_pipes_new{0};                // (graphics pipelines play asked for that were not ready)
     std::atomic<int64_t> play_from_driver{0}, play_from_start{0}, play_compiled{0};   // (create_cached, graphics and compute)
+    // the load at create (RX_VK_LOAD=create)
+    std::atomic<int64_t> units_queued{0}, units_loaded{0}, units_nothing{0};   // (nothing: no kept program for those stages)
+    std::atomic<int64_t> units_early{0};        // (create calls before the index was there)
+    std::atomic<int64_t> units_run_by_draw{0}, units_waited{0}, unit_wait_ns{0};   // (a first use ran the job itself, or waited)
+    std::atomic<int64_t> load_programs{0}, load_pipes{0}, load_pipes_cold{0}, load_computes{0}, load_computes_cold{0};
+    std::atomic<int64_t> load_light{0};         // (compute variants read without their code)
+    std::atomic<int64_t> load_ns{0}, load_bytes{0};
+    std::atomic<int64_t> pipes_taken{0};        // (pipelines made at create that a draw then took)
 };
 extern ProgramCensus census;
 /// One line of the census (every 600 presents with RX_VK_LOG_PROGRAM_LIFE=1, and when the window closes)
@@ -58,6 +94,7 @@ struct UseCounters {
     int64_t loads = 0, load_ns = 0;   // (program records read from disk by this thread)
     int64_t pipes_new = 0;            // (pipelines this thread asked for that no one had)
     uint8_t made_how = 0;             // (the last pipeline this thread made: 1 the driver's cache, 2 the start's, 3 compiled)
+    bool background = false;          // (a worker of the load at create: what it reads is not a load a draw paid for)
 };
 extern thread_local UseCounters use_counters;
 /// Around a draw or dispatch: reports the first use of the bound program's serial (once a serial, whichever thread). Costs one

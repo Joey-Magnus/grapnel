@@ -65,6 +65,7 @@
 #include "hookshot_env.h"
 #endif
 #include "vk_programs.h"
+#include "vk_pipelines.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -884,6 +885,10 @@ void play_cache_save() {
 /// pcache grows by it only for a library the warm pass did not leave there (a folder prepared before the warm pass), and
 /// only in memory: it is not written in play for that (pipeline_cache_save) until it has grown 64 MB.
 /// RX_VK_PLAY_ASK_START_FIRST=0: the generation first for the libraries too, as before
+/// The load when the game makes a program (vk_programs.cpp) asks the same way as a stage library, and for the same reason: what
+/// it asks for is what the prepare built into pcache, an in-memory hit there; asked of the generation first, each would come
+/// from the driver's disk cache and be copied into the generation, and a session's play files would hold every pipeline again
+thread_local bool ask_start_first = false;
 template <class CI>
 VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline*), const CI* ci, VkPipeline* pl) {
     PlayCache* g = play_cache.load();
@@ -899,14 +904,16 @@ VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline
     CI ask = *ci;
     ask.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
     static const bool start_first = !getenv("RX_VK_PLAY_ASK_START_FIRST") || atoi(getenv("RX_VK_PLAY_ASK_START_FIRST")) != 0;
-    if (ask_only && (ci->flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) && start_first) {
+    if (ask_only && (((ci->flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) && start_first) || ask_start_first)) {
         VkResult r = create(pcache, &ask, pl);
+        // (the census counts what a draw or dispatch asked for; what the load at create asks for is counted there)
         if (r == VK_SUCCESS) {
-            g->from_start.fetch_add(1), census.play_from_start++, use_counters.made_how = 2;
+            g->from_start.fetch_add(1), census.play_from_start += !ask_start_first, use_counters.made_how = 2;
         } else if (r == VK_PIPELINE_COMPILE_REQUIRED) {
             *pl = VK_NULL_HANDLE;
             r = create(g->cache, &ask, pl);   // (one play compiled into this generation)
-            if (r == VK_SUCCESS) g->built.fetch_add(1), g->from_driver.fetch_add(1), census.play_from_driver++, use_counters.made_how = 1;
+            if (r == VK_SUCCESS)
+                g->built.fetch_add(1), g->from_driver.fetch_add(1), census.play_from_driver += !ask_start_first, use_counters.made_how = 1;
         }
         g->users.fetch_sub(1);
         return r;
@@ -1010,6 +1017,12 @@ struct PipeEntry {
     std::atomic<uint8_t> how{0};   // (the census: how play made it, UseCounters::made_how; 0: before play, or not made)
 };
 std::unordered_map<uint64_t, std::unique_ptr<PipeEntry>> pipelines;   // (the replay thread's)
+// (hookshot) Pipelines made ahead of their first draw by the load at a program's create call (vk_programs.cpp), by their keys.
+// `pipelines` is the replay's own and has no lock outside the parallel replay, so a background job puts what it made here and
+// the draw's lookup takes it the first time it asks for that key (graphics_pipeline)
+std::mutex kept_ready_mu;
+std::unordered_map<uint64_t, VkPipeline> kept_ready;
+std::atomic<size_t> kept_ready_n{0};
 int64_t st_draws, st_skipped, st_dispatches, st_passes, st_mesh, st_pending_skips, st_waits;
 // (hookshot) skips by the line that made them, reported with the frame statistics (draw_skip_report)
 namespace {
@@ -1284,6 +1297,17 @@ std::string pipe_notes_path() {
     std::string dir(exe, n);
     return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_pipelines.bin";
 }
+/// (hookshot) hookshot_pipelines.bin.built: a precompile that got to its end built every note there was into the pipeline cache
+/// (its stamp, and how many). RX_VK_LOAD=create loads pipelines from the caches alone, and only once this says they are there.
+/// What adds notes without building them (state_list_prepare) removes it; a note play adds was built by play, into its cache
+std::string precompile_built_path() { return pipe_notes_path() + ".built"; }
+void precompile_built_write(size_t notes) {
+    if (FILE* f = fopen(precompile_built_path().c_str(), "wb")) {
+        const uint64_t rec[2] = {program_cache_stamp(), (uint64_t)notes};
+        fwrite(rec, 8, 2, f);
+        fclose(f);
+    }
+}
 /// The notes of this build (hookshot_pipelines.bin), each pipeline once
 /// (hookshot) Targets a pipeline can be made with: at most 8 colour targets, a sample count Vulkan has, a topology it has.
 /// The notes and the state list are files: what they say is checked before a pipeline is made from it
@@ -1434,6 +1458,42 @@ void compute_note(uint64_t key) {
         if (compute_note_file && !append) fwrite(kComputesMagic, 1, 8, compute_note_file);
     }
     if (compute_note_file && computes_noted.insert(key).second) fwrite(&key, 8, 1, compute_note_file), fflush(compute_note_file);
+}
+
+// ---- (hookshot) The variants of compute programs play dispatches, each once, in hookshot_compute_variants.bin beside the
+// executable: a program's key and the variant's hash (Program::variant, the hash of its texture answers). A compute program
+// has up to 64 kept variants and which one a dispatch runs is only known from what is bound then; with RX_VK_LOAD=create the
+// variants this install's play ran before get their code and pipeline when the game makes the program (vk_programs.cpp), the
+// others only what a pick needs. Hashes only, this install's own, never sent: a pair that names no kept variant does nothing ----
+constexpr char kComputeVariantsMagic[8] = {'H', 'K', 'C', 'V', 'A', 'R', '1', 0};
+std::mutex compute_variant_mu;
+FILE* compute_variant_file = nullptr;
+std::unordered_set<uint64_t> compute_variants_noted;   // (mix(key, variant))
+std::string compute_variants_path() { return computes_path().substr(0, computes_path().size() - strlen("hookshot_computes.bin")) + "hookshot_compute_variants.bin"; }
+std::vector<std::pair<uint64_t, uint64_t>> compute_variants_read() {
+    std::vector<std::pair<uint64_t, uint64_t>> pairs;
+    if (FILE* f = fopen(compute_variants_path().c_str(), "rb")) {
+        char magic[8] = {};
+        if (fread(magic, 1, 8, f) == 8 && !memcmp(magic, kComputeVariantsMagic, 8))
+            for (uint64_t r[2]; fread(r, 8, 2, f) == 2;) pairs.push_back({r[0], r[1]});
+        fclose(f);
+    }
+    return pairs;
+}
+void compute_variant_note(uint64_t key, uint64_t variant) {
+    static const bool off = env_on("RX_VK_NO_PROGRAM_CACHE");
+    if (off) return;
+    std::lock_guard lk(compute_variant_mu);
+    if (!compute_variant_file) {
+        const auto had = compute_variants_read();
+        for (const auto& [k, v] : had) compute_variants_noted.insert(mix(k, v));
+        compute_variant_file = fopen(compute_variants_path().c_str(), had.empty() ? "wb" : "ab");
+        if (compute_variant_file && had.empty()) fwrite(kComputeVariantsMagic, 1, 8, compute_variant_file);
+    }
+    if (compute_variant_file && compute_variants_noted.insert(mix(key, variant)).second) {
+        const uint64_t r[2] = {key, variant};
+        fwrite(r, 8, 2, compute_variant_file), fflush(compute_variant_file);
+    }
 }
 
 // ---- (hookshot) The pipeline state list: each pipeline the game asks for, by what it is made of and nothing of the game's code
@@ -1752,6 +1812,7 @@ std::string state_list_bytes(bool* present) {
 /// when the program cache lacks it, then noted in hookshot_pipelines.bin for precompile_run to build. RX_VK_NO_STATE_LIST=1: off
 void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_seed = false) {
     if (env_on("RX_VK_NO_STATE_LIST")) return;
+    remove(precompile_built_path().c_str());   // (notes are added here without their pipelines: precompile_run builds them)
     const auto t0 = std::chrono::steady_clock::now();
     int shipped_version = 0;
     // (the shipped list's compute programs are not pipelines to note: precompile_run keeps them ready, computes_plan)
@@ -2105,6 +2166,23 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     if (it != pipelines.end()) return remember(mine[key] = it->second.get());
     pcache_init();
     PipeEntry* e = pipelines.emplace(key, std::make_unique<PipeEntry>()).first->second.get();
+    if (kept_ready_n.load(std::memory_order_acquire)) {   // (made at its program's create call: ready, as one the precompile built)
+        VkPipeline kept = VK_NULL_HANDLE;
+        {
+            std::lock_guard kl(kept_ready_mu);
+            if (const auto k = kept_ready.find(key); k != kept_ready.end()) {
+                kept = k->second;
+                kept_ready.erase(k);
+                kept_ready_n.store(kept_ready.size(), std::memory_order_release);
+            }
+        }
+        if (kept) {
+            e->pipeline = kept;
+            e->ready.store(true, std::memory_order_release);
+            census.pipes_taken++;
+            return remember(e);
+        }
+    }
     use_counters.pipes_new++, census.play_pipes_new++;
     pipeline_note(key, p, s, at, topo, color_types);
     static const bool sync = env_on("RX_VK_SYNC_PIPELINES");
@@ -8192,7 +8270,65 @@ void prepare_progress_log(const char* what, size_t done, size_t total, std::chro
     if (done) logf("vk: %s: %zu of %zu pipelines in %.0f s, about %.0f s left", what, done, total, s, left);
     else logf("vk: %s: 0 of %zu pipelines in %.0f s (the driver compiles the first ones)", what, total, s);
 }
+/// (hookshot, RX_VK_LOAD=create) The start with nothing kept ready by a list: each note is only found, by its place in the file,
+/// and its pipeline is made when the game makes its program (vk_programs.cpp); the compute programs the lists name are only
+/// named. What a start must still do itself is done: the caches and the two lists opened before play, and on a GPU without
+/// mesh shaders the mesh fallback's programs and their compute pipelines, which stay as they were (every one, before the title)
+void precompile_at_create() {
+    const auto t0 = std::chrono::steady_clock::now();
+    pcache_init();
+    std::vector<NoteRef> refs = pipe_notes_refs();
+    if (!env_on("RX_VK_NO_PROGRAM_CACHE")) {
+        std::lock_guard lk(note_mu);
+        if (!note_file) {
+            for (const NoteRef& r : refs) noted.insert(r.key);
+            const std::vector<std::unique_ptr<PipeNote>> none;
+            notes_open_locked(&none);
+        }
+    }
+    if (!env_on("RX_VK_NO_STATE_LIST")) {
+        std::lock_guard lk(state_mu);
+        if (!state_file) state_open_locked();
+    }
+    const ComputePlan plan = computes_plan(getenv("RX_VK_PRECOMPILE_COMPUTES"), !env_on("RX_VK_NO_STATE_LIST"));
+    std::vector<Program*> fallbacks;
+    program_cache_load_some({}, [&](Program& p) {
+        ensure_layout(p);
+        if (p.fallback) fallbacks.push_back(&p);
+    }, false, true);
+    std::atomic<size_t> next{0};
+    const auto worker = [&] {
+        ub_thread_off();
+        for (size_t i; (i = next++) < fallbacks.size() && !prepare_stopped();) {
+            int none = 0;
+            if (fallbacks[i]->compute_state.compare_exchange_strong(none, 1)) {
+                fallback_compute_pipelines(*fallbacks[i]);
+                fallbacks[i]->compute_state.store(2, std::memory_order_release);
+            }
+        }
+    };
+    std::vector<std::thread> threads;
+    for (unsigned i = 0; i < std::min<size_t>(usable_cpus(), fallbacks.size()); i++) threads.emplace_back(worker);
+    for (std::thread& t : threads) t.join();
+    const size_t notes_n = refs.size();
+    programs_index(std::move(refs), plan.none ? std::unordered_set<uint64_t>{} : plan.keys);
+    logf("vk: precompile: load at create (RX_VK_LOAD=create): %zu noted pipelines found, none built; %zu compute programs "
+         "named (%zu in the shipped list, %zu dispatched in play here); %zu mesh fallback programs kept ready; in %.0f ms. No "
+         "program is kept ready by a list: each is loaded when the game makes it",
+         notes_n, plan.keys.size(), plan.shipped, plan.learned, fallbacks.size(),
+         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    predicted_check();
+}
+
 void precompile_run(void (*progress)(size_t done, size_t total)) {
+    // (hookshot, RX_VK_LOAD=create: only once a precompile that got to its end has built every note into the pipeline cache.
+    // The first start after a preparation builds them all, as before, so that a load from the caches alone never meets a
+    // pipeline the prepare should have compiled)
+    if (programs_load_at_create()) {
+        if (precompile_covers_notes()) return precompile_at_create();
+        logf("vk: precompile: RX_VK_LOAD=create, but the notes were not all built into the pipeline cache yet (the first start "
+             "after a preparation): this start keeps them ready, as RX_VK_LOAD=start does");
+    }
     const auto t0 = std::chrono::steady_clock::now();
     // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
     // 542 of 543 and the game close. The file says this step began and did not end: the next start lets the notes go and plays)
@@ -8365,6 +8501,8 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), read_ms);
     logf("vk: precompile: compute pipelines: %zu kept ready (%zu from the pipeline caches, %zu compiled now), %zu not made",
          cs_cached + cs_compiled, cs_cached, cs_compiled, cs_failed);
+    // (every note built, by a run that got to its end: RX_VK_LOAD=create may load them from the caches from the next start on)
+    if (!gone_on && !prepare_stopped()) precompile_built_write(graphics_n);
     predicted_check();
 }
 
@@ -8941,6 +9079,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (taau_stand_in(cmd, s, p)) return void(st_dispatches++);
     if (!p.compute_pipeline) SKIP_HERE();
     dump_ssbos(cmd, p, "before");
+    if (!p.dispatched.load(std::memory_order_relaxed)) compute_variant_note(p.key, p.variant);   // (which variant: this install's own)
     if (!p.dispatched.exchange(true, std::memory_order_relaxed)) compute_note(p.key), state_record_compute(p.key);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.compute_pipeline);
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) SKIP_HERE();
@@ -9196,6 +9335,77 @@ void pipeline_cache_play() {
     play_cache_begin();
     programs_play_begin();   // (the census: what is made from here on is made in play)
 }
+
+// ---- (hookshot) What the programs' loader asks of the pipelines (vk_pipelines.h) ----
+bool precompile_covers_notes() {
+    uint64_t rec[2] = {0, 0};
+    FILE* f = fopen(precompile_built_path().c_str(), "rb");
+    if (!f) return false;
+    const bool ok = fread(rec, 8, 2, f) == 2 && rec[0] == program_cache_stamp();
+    fclose(f);
+    return ok;
+}
+std::string pipe_notes_file() { return pipe_notes_path(); }
+std::vector<NoteRef> pipe_notes_refs() {
+    std::vector<NoteRef> refs;
+    FILE* f = fopen(pipe_notes_path().c_str(), "rb");
+    if (!f) return refs;
+    uint64_t head[2] = {0, 0};
+    if (fread(head, 8, 2, f) == 2 && head[0] == program_cache_stamp() && head[1] == sizeof(PipeNote)) {
+        // (what a reference needs lies in two places of a note: its first words, and the vertex formats inside its state)
+        constexpr size_t kFront = offsetof(PipeNote, s);
+        constexpr size_t kVattr = offsetof(PipeNote, s) + offsetof(NvnState, vattr);
+        static_assert(kFront >= 24 + 5 * 4 + 8 * 4, "a note's first words: its keys, targets and formats");
+        std::unordered_set<uint64_t> seen;
+        uint8_t front[kFront];
+        PipeNote probe{};   // (only its targets are filled in, for note_color_types)
+        for (int64_t at = 16;; at += (int64_t)sizeof(PipeNote)) {
+            NoteRef r;
+            if (_fseeki64(f, at, SEEK_SET) || fread(front, 1, kFront, f) != kFront) break;
+            if (_fseeki64(f, at + (int64_t)kVattr, SEEK_SET) || fread(r.vattr, 4, 16, f) != 16) break;
+            if (_fseeki64(f, at + (int64_t)sizeof(PipeNote) - 1, SEEK_SET) || fgetc(f) == EOF) break;   // (a whole record)
+            std::memcpy((void*)&probe, front, kFront);
+            if (!targets_ok(probe.n, probe.samples, probe.topo) ||
+                !formats_ok(probe.n, probe.color_format, probe.has_depth, probe.depth_format))
+                continue;
+            r.key = probe.key, r.prog = probe.prog, r.variant = probe.variant, r.at = at;
+            note_color_types(probe, r.color_types);
+            if (seen.insert(r.key).second) refs.push_back(r);
+        }
+    }
+    fclose(f);
+    return refs;
+}
+bool pipe_note_at(FILE* f, int64_t at, PipeNote* out) {
+    return f && _fseeki64(f, at, SEEK_SET) == 0 && fread((void*)out, sizeof(PipeNote), 1, f) == 1 && note_sane(*out);
+}
+VkPipeline pipeline_from_caches(const Program& p, const PipeNote& n, bool* cold) {
+    ask_start_first = true;
+    *cold = false;
+    const VkPipeline pl = build_graphics(p, n.s, note_targets(n), (VkPrimitiveTopology)n.topo, -1, cold);
+    ask_start_first = false;
+    return pl;
+}
+VkPipeline compute_pipeline_from_caches(const Program& p) {
+    ask_start_first = true;
+    const VkPipeline pl = compute_pipeline_cached(p, true);
+    ask_start_first = false;
+    return pl;
+}
+bool pipeline_keep_ready(uint64_t key, VkPipeline pl) {
+    if (!pl) return false;
+    {
+        std::lock_guard lk(kept_ready_mu);
+        if (kept_ready.emplace(key, pl).second) {
+            kept_ready_n.store(kept_ready.size(), std::memory_order_release);
+            return true;
+        }
+    }
+    vkDestroyPipeline(dev.device, pl, nullptr);
+    return false;
+}
+void program_layout(Program& p) { ensure_layout(p); }
+std::vector<std::pair<uint64_t, uint64_t>> compute_variants_learned() { return compute_variants_read(); }
 void pipeline_cache_close() {
     try {
         if (play_cache.load()) play_cache_save();

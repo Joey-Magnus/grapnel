@@ -5,17 +5,28 @@
 // census line ("vk: program census ..."). The log answers when the game makes its programs against when it first draws them:
 // whether the work a first draw does today (a program read from hookshot_programs.bin, a pipeline made from the caches) could be
 // done at the create call instead.
+#include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
+
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 #include "vk_internal.h"
 #include "vk_draw.h"
 #include "vk_shader.h"
+#include "vk_progcache.h"
+#include "vk_pipelines.h"
+#include "program_life.h"
 #include "vk_programs.h"
 
 namespace mkwvk {
@@ -26,6 +37,14 @@ bool programs_life_flag = false;
 std::atomic<bool> programs_in_play{false};
 
 namespace {
+/// (the life log) this thread's page faults that waited for the disk so far: what a slow create call was, when it is not ours
+long thread_major_faults() {
+#ifndef _WIN32
+    struct rusage u;
+    if (getrusage(RUSAGE_THREAD, &u) == 0) return u.ru_majflt;
+#endif
+    return 0;
+}
 using Clock = std::chrono::steady_clock;
 const Clock::time_point life_t0 = Clock::now();
 double secs(Clock::time_point t) { return std::chrono::duration<double>(t - life_t0).count(); }
@@ -53,6 +72,332 @@ std::deque<std::pair<Clock::time_point, uint64_t>> freed_serials;   // (let go k
 constexpr double kFreedKeepS = 30.0;
 
 const char* kind_name(const Life& l) { return l.compute ? "compute" : l.mesh ? "mesh" : "graphics"; }
+
+// ---- The load when the game makes a program (RX_VK_LOAD=create) ----
+// The index, made once before play (programs_index) and only read after: the vertex input and colour output types programs
+// were made for (a graphics program's key is its stages and those types, and the create call gives only the stages: each
+// signature is tried, and the keys the program cache holds are the program's), every note by its program, and the compute
+// programs the lists name.
+struct Signature {
+    uint32_t vattr[16];
+    uint8_t color_types[8];
+};
+struct NoteAt {
+    int64_t at;
+    uint64_t variant, key;
+};
+std::vector<Signature> index_signatures;
+std::unordered_map<uint64_t, std::vector<NoteAt>> index_notes;   // by program key
+std::unordered_set<uint64_t> index_computes;
+std::unordered_set<uint64_t> index_kept;   // (every program key hookshot_programs.bin held when the index was made)
+std::unordered_map<uint64_t, std::vector<uint64_t>> index_compute_variants;   // by key: the variants play dispatched before
+std::atomic<bool> index_ready{false};
+
+/// What one create call queues: the kept variants of a program's keys and their noted pipelines, read and made by a background
+/// worker (or by the first draw that needs it, if no worker began it), then published under shader_mu
+struct LoadJob {
+    uint64_t unit = 0;
+    bool compute = false;
+    std::vector<uint64_t> keys;
+    std::atomic<int> state{0};   // 0 queued, 1 running, 2 done
+    std::mutex mu;
+    std::condition_variable cv;
+    std::vector<std::pair<uint64_t, std::unique_ptr<Program>>> made;
+    bool published = false;
+};
+std::mutex jobs_mu;
+std::condition_variable jobs_cv;
+std::deque<std::shared_ptr<LoadJob>> job_queue;
+std::unordered_map<uint64_t, std::shared_ptr<LoadJob>> job_by_key;   // (until published)
+std::atomic<int> jobs_in_flight{0};
+bool workers_started = false;
+program_life::Table table;   // (life_mu)
+std::mutex load_ms_mu;
+std::vector<float> load_ms;   // (each job's time, for the census's median and 99th percentile; the first 65536)
+
+struct CacheSource final : PipelineSource {
+    const char* name() const override { return "pipeline caches"; }
+    VkPipeline graphics(const Program& p, const PipeNote& n) override {
+        bool cold = false;
+        return pipeline_from_caches(p, n, &cold);
+    }
+    VkPipeline compute(const Program& p) override { return compute_pipeline_from_caches(p); }
+};
+
+/// A handle of this thread's own on a file the loads read by position (never closed: a worker's, or the replay's)
+FILE* own_handle(const std::string& path, int which) {
+    static thread_local FILE* f[2];
+    static thread_local bool tried[2];
+    if (!tried[which]) tried[which] = true, f[which] = path.empty() ? nullptr : fopen(path.c_str(), "rb");
+    return f[which];
+}
+
+/// The job's work, with no lock held that a draw holds: the records read by position, modules and layouts made, the noted
+/// pipelines asked of the pipeline source. Nothing is translated and nothing is compiled here
+void load_work(LoadJob& job) {
+    const auto t0 = Clock::now();
+    FILE* in = own_handle(program_cache_path(), 0);
+    FILE* notes_in = own_handle(pipe_notes_file(), 1);
+    PipelineSource& source = pipeline_source();
+    static thread_local std::unique_ptr<PipeNote> note = std::make_unique<PipeNote>();
+    int64_t bytes = 0;
+    for (const uint64_t key : job.keys) {
+        std::vector<DiskRecord> recs = program_cache_records(key);
+        if (recs.empty() || !in) continue;
+        const auto notes = index_notes.find(key);
+        // (one variant, not all: of a key with several kept variants, those a note names. A compute program's are all read:
+        // which one a dispatch takes is only known from what is bound then)
+        if (!job.compute && recs.size() > 1) {
+            std::vector<DiskRecord> named;
+            for (const DiskRecord& d : recs) {
+                uint64_t variant = 0;
+                bool is_named = !program_cache_variant(in, key, d, &variant);   // (a head that does not read that way: read whole)
+                if (!is_named && notes != index_notes.end())
+                    for (const NoteAt& n : notes->second) is_named = is_named || n.variant == variant;
+                if (is_named) named.push_back(d);
+            }
+            recs.swap(named);
+        }
+        recs = program_cache_take(key, recs);
+        std::vector<std::unique_ptr<Program>> made;
+        if (job.compute) {
+            // (each variant with what a pick needs and not its code, vk_progcache.cpp: the dispatch that takes one reads no
+            // variant's head. The variants play ran before, and a program's only variant, are made whole here, with their
+            // pipelines; another is made whole by the dispatch that first takes it, program_cache_complete)
+            const auto learned = index_compute_variants.find(key);
+            for (const DiskRecord& d : recs) {
+                std::unique_ptr<Program> p = program_cache_read_light(in, nullptr, key, d);
+                if (!p) {
+                    program_cache_read(in, nullptr, key, {d}, made);
+                    bytes += (int64_t)d.size;
+                    continue;
+                }
+                bool whole = recs.size() == 1;
+                if (!whole && learned != index_compute_variants.end())
+                    whole = std::find(learned->second.begin(), learned->second.end(), p->variant) != learned->second.end();
+                bytes += (int64_t)(d.size - p->code_words * 4);
+                if (whole) bytes += (int64_t)p->code_words * 4, whole = program_cache_complete_unshared(*p, in);
+                if (!whole && !p->failed) {   // (no module yet, so no pipeline; its layout is made of its descriptors alone)
+                    program_layout(*p);
+                    census.load_programs++, census.load_light++;
+                    job.made.push_back({key, std::move(p)});
+                } else if (whole) {
+                    made.push_back(std::move(p));
+                }
+            }
+        } else {
+            program_cache_read(in, nullptr, key, recs, made);
+            for (const DiskRecord& d : recs) bytes += (int64_t)d.size;
+        }
+        for (auto& p : made) {
+            program_layout(*p);
+            if (p->compute) {
+                if (const VkPipeline pl = source.compute(*p)) {
+                    p->compute_pipeline = pl;
+                    p->compute_state.store(2, std::memory_order_release);
+                    census.load_computes++;
+                } else {
+                    census.load_computes_cold++;   // (its first dispatch asks again, and compiles on a worker: as before)
+                }
+            } else if (notes != index_notes.end()) {
+                for (const NoteAt& n : notes->second) {
+                    if (n.variant != p->variant || !pipe_note_at(notes_in, n.at, note.get())) continue;
+                    bytes += (int64_t)sizeof(PipeNote);
+                    if (const VkPipeline pl = source.graphics(*p, *note)) census.load_pipes += pipeline_keep_ready(n.key, pl);
+                    else census.load_pipes_cold++;   // (its first draw makes it, as before)
+                }
+            }
+            census.load_programs++;
+            job.made.push_back({key, std::move(p)});
+        }
+    }
+    const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+    census.load_ns += ns, census.load_bytes += bytes;
+    if (programs_life_flag && ns >= 10'000'000)   // (the life log: a load of 10 ms or more, with what it was)
+        logf("vk: program life: load unit %016llx t %.3f ms %.2f %s keys %zu programs %zu bytes %lld by %s", (unsigned long long)job.unit,
+             secs(t0), ns / 1e6, job.compute ? "compute" : "graphics", job.keys.size(), job.made.size(), (long long)bytes,
+             use_counters.background ? "worker" : "draw");
+    std::lock_guard lk(load_ms_mu);
+    if (load_ms.size() < 65536) load_ms.push_back((float)(ns / 1e6));
+}
+void load_done(LoadJob& job) {
+    {
+        std::lock_guard lk(job.mu);
+        job.state.store(2, std::memory_order_release);
+    }
+    job.cv.notify_all();
+}
+/// (shader_mu held) what the job read goes to the programs' lists, once; the unit is ready
+void load_publish(const std::shared_ptr<LoadJob>& job) {
+    bool any = false;
+    {
+        std::lock_guard lk(job->mu);
+        if (job->published) return;
+        job->published = true;
+        for (auto& [key, p] : job->made) {
+            programs[key].push_back(std::move(p));
+            any = true;
+        }
+        job->made.clear();
+    }
+    {
+        std::lock_guard lk(life_mu);
+        table.loaded(job->unit, any);
+    }
+    census.units_loaded += any;
+    std::lock_guard lk(jobs_mu);
+    for (const uint64_t key : job->keys)
+        if (const auto it = job_by_key.find(key); it != job_by_key.end() && it->second == job) job_by_key.erase(it);
+    jobs_in_flight.fetch_sub(1, std::memory_order_release);
+}
+/// How many jobs may run at once. In play the workers must not take time from the game's threads (an emulator measured 49
+/// against 60 frames a second with background builds competing): RX_VK_LOAD_WORKERS (2). While no frame has been presented for
+/// kLoadGapMs the game is taken to be loading, and RX_VK_LOAD_WORKERS_LOADING run (the same number unless set: the signal is
+/// not proven enough to lift the cap by default)
+int workers_cap(bool loading) {
+    static const int play = std::clamp(getenv("RX_VK_LOAD_WORKERS") ? atoi(getenv("RX_VK_LOAD_WORKERS")) : 2, 1, 16);
+    static const int load = std::clamp(getenv("RX_VK_LOAD_WORKERS_LOADING") ? atoi(getenv("RX_VK_LOAD_WORKERS_LOADING")) : play, play, 16);
+    return loading ? load : play;
+}
+std::atomic<int> workers_running{0};
+void load_worker(int index) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    ub_thread_off();   // (a background thread: guest memory from the captures only)
+    use_counters.background = true;
+    for (;;) {
+        std::shared_ptr<LoadJob> job;
+        {
+            std::unique_lock lk(jobs_mu);
+            // (a worker past the cap in play sleeps until the game seems to load, looked at again every 20 ms)
+            for (;;) {
+                if (!job_queue.empty() && index < workers_cap(programs_in_load())) break;
+                if (job_queue.empty()) jobs_cv.wait(lk);
+                else jobs_cv.wait_for(lk, std::chrono::milliseconds(20));
+            }
+            job = std::move(job_queue.front());
+            job_queue.pop_front();
+        }
+        int queued = 0;
+        if (!job->state.compare_exchange_strong(queued, 1)) continue;   // (a first use took it)
+        load_work(*job);
+        load_done(*job);
+        std::lock_guard lk(shader_mu);
+        load_publish(job);
+    }
+}
+} // namespace
+
+PipelineSource& pipeline_source() {
+    static CacheSource caches;
+    return caches;
+}
+
+/// The default of RX_VK_LOAD: false, start (every listed program kept ready before the title); true, create
+constexpr bool kLoadAtCreateDefault = false;
+bool programs_load_at_create() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_LOAD");
+        if (e && !strcmp(e, "create")) return true;
+        if (e && !strcmp(e, "start")) return false;
+        return kLoadAtCreateDefault;
+    }();
+    return on;
+}
+
+void programs_index(std::vector<NoteRef> notes, const std::unordered_set<uint64_t>& compute_keys) {
+    const auto t0 = Clock::now();
+    std::unordered_set<uint64_t> seen;
+    for (const NoteRef& n : notes) {
+        index_notes[n.prog].push_back({n.at, n.variant, n.key});
+        // (the types alone make the key: one signature for all the formats of the same types)
+        uint64_t h = 0xCBF29CE484222325ull;
+        for (int i = 0; i < 16; i++) h = (h ^ (uint64_t)attribute_type_of(n.vattr[i])) * 1099511628211ull;
+        for (int i = 0; i < 8; i++) h = (h ^ n.color_types[i]) * 1099511628211ull;
+        if (!seen.insert(h).second) continue;
+        Signature sig;
+        std::memcpy(sig.vattr, n.vattr, sizeof sig.vattr), std::memcpy(sig.color_types, n.color_types, 8);
+        index_signatures.push_back(sig);
+    }
+    index_computes = compute_keys;
+    index_kept = program_cache_kept_keys();
+    for (const auto& [key, variant] : compute_variants_learned()) index_compute_variants[key].push_back(variant);
+    index_ready.store(true, std::memory_order_release);
+    {
+        std::lock_guard lk(jobs_mu);
+        if (!workers_started) {
+            workers_started = true;
+            const int n = workers_cap(true);
+            for (int i = 0; i < n; i++) std::thread(load_worker, i).detach();
+        }
+    }
+    logf("vk: programs: load at create: %zu notes of %zu programs indexed, %zu type signatures, %zu compute programs listed, in "
+         "%.1f ms (%zu kept program keys); %d workers in play, %d while the game loads; pipelines from: %s",
+         notes.size(), index_notes.size(), index_signatures.size(), index_computes.size(), ms_between(t0, Clock::now()), index_kept.size(),
+         workers_cap(false), workers_cap(true), pipeline_source().name());
+}
+
+void programs_load_wait(uint64_t key) {
+    if (!jobs_in_flight.load(std::memory_order_acquire)) return;
+    std::shared_ptr<LoadJob> job;
+    {
+        std::lock_guard lk(jobs_mu);
+        if (const auto it = job_by_key.find(key); it != job_by_key.end()) job = it->second;
+    }
+    if (!job) return;
+    const auto t0 = Clock::now();
+    int queued = 0;
+    if (job->state.compare_exchange_strong(queued, 1)) {   // (no worker began it: urgent means run here, as jobs_wait does)
+        load_work(*job);
+        load_done(*job);
+        census.units_run_by_draw++;
+    } else {
+        std::unique_lock lk(job->mu);
+        job->cv.wait(lk, [&] { return job->state.load(std::memory_order_acquire) == 2; });
+        census.units_waited++;
+    }
+    census.unit_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+    load_publish(job);
+}
+
+namespace {
+/// (the game's thread, at a create call) the program's unit queued if the prepare kept something for its stages
+void load_at_create(const nvn_prog& prog, const CreatedProgram& made) {
+    if (!index_ready.load(std::memory_order_acquire)) return void(census.units_early++);
+    uint64_t unit = made.compute ? 0x5EED : made.mesh ? 0x3E54 : 0x6A;
+    for (const uint64_t c : made.codes) unit = (unit ^ c) * 1099511628211ull;
+    unit |= 1;
+    std::vector<uint64_t> keys;
+    {
+        std::lock_guard lk(life_mu);
+        if (const program_life::Unit* u = table.find(unit); u && u->state != program_life::State::Released) {
+            table.create(prog.serial, unit, false);   // (stages met before: loaded, loading, or nothing kept for them)
+            return;
+        }
+    }
+    if (made.compute) {   // (any kept compute program, listed or not: read without its code, it costs little)
+        if (index_kept.count(made.codes[0])) keys.push_back(made.codes[0]);
+    } else {
+        for (const Signature& sig : index_signatures) {
+            const uint64_t key = program_created_key(prog.serial, sig.vattr, sig.color_types);
+            if (key && index_kept.count(key) && std::find(keys.begin(), keys.end(), key) == keys.end()) keys.push_back(key);
+        }
+    }
+    bool queue;
+    {
+        std::lock_guard lk(life_mu);
+        queue = table.create(prog.serial, unit, !keys.empty());
+        if (queue) table.loading(unit);
+    }
+    if (!queue) return void(census.units_nothing += keys.empty());
+    auto job = std::make_shared<LoadJob>();
+    job->unit = unit, job->compute = made.compute, job->keys = std::move(keys);
+    census.units_queued++;
+    std::lock_guard lk(jobs_mu);
+    for (const uint64_t key : job->keys) job_by_key[key] = job;
+    jobs_in_flight.fetch_add(1, std::memory_order_release);
+    job_queue.push_back(std::move(job));
+    jobs_cv.notify_one();
+}
 } // namespace
 
 bool programs_life_on() {
@@ -88,11 +433,16 @@ void programs_play_begin() {
 }
 
 void programs_created(const nvn_prog* p) {
-    if (!p || !programs_life_on()) return;
+    const bool life = programs_life_on(), load = programs_load_at_create();
+    if (!p || (!life && !load)) return;
     const auto t0 = Clock::now();
     double since = 0;
     const bool in_load = programs_in_load(&since);
+    const long faults0 = life ? thread_major_faults() : 0;
     const CreatedProgram made = program_created_read(*p);
+    const auto t_read = Clock::now();
+    if (load && made.ok) load_at_create(*p, made);
+    if (!life) return;
     Life l;
     l.created = t0, l.frame = game_presents.load(std::memory_order_relaxed), l.since_present = since;
     std::memcpy(l.codes, made.codes, sizeof l.codes);
@@ -101,10 +451,11 @@ void programs_created(const nvn_prog* p) {
     census.created++, census.created_ok += made.ok, census.created_in_load += in_load;
     census.create_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     logf("vk: program life: create serial %llx t %.3f frame %lld since_present_ms %.1f in_load %d kind %s stages %d codes "
-         "%016llx %016llx %016llx %016llx read_us %.0f",
+         "%016llx %016llx %016llx %016llx read_us %.0f queue_us %.0f major_faults %ld",
          (unsigned long long)p->serial, secs(t0), (long long)l.frame, since, (int)in_load, made.ok ? kind_name(l) : "none",
          made.stages, (unsigned long long)l.codes[0], (unsigned long long)l.codes[1], (unsigned long long)l.codes[2],
-         (unsigned long long)l.codes[3], ms_between(t0, t1) * 1000.0);
+         (unsigned long long)l.codes[3], ms_between(t0, t_read) * 1000.0, ms_between(t_read, t1) * 1000.0,
+         thread_major_faults() - faults0);
     std::lock_guard lk(life_mu);
     lives[p->serial] = l;
     created_this_frame.push_back(p->serial);
@@ -112,10 +463,13 @@ void programs_created(const nvn_prog* p) {
 }
 
 void programs_freed(const nvn_prog* p) {
-    if (!p || !p->serial || !programs_life_on()) return;
+    const bool life = programs_life_on(), load = programs_load_at_create();
+    if (!p || !p->serial || (!life && !load)) return;
     const auto now = Clock::now();
     program_created_forget(p->serial);
     std::lock_guard lk(life_mu);
+    if (load) table.free(p->serial);
+    if (!life) return;
     while (!freed_serials.empty() && std::chrono::duration<double>(now - freed_serials.front().first).count() > kFreedKeepS) {
         lives.erase(freed_serials.front().second);
         freed_serials.pop_front();
@@ -198,7 +552,7 @@ void ProgramUse::end() {
 }
 
 void programs_census_log(const char* when) {
-    if (!programs_life_on()) return;
+    if (!programs_life_on() && !programs_load_at_create()) return;
     const ProgramCensus& c = census;
     int64_t skips = 0, waits = 0;
     double wait_ms = 0;
@@ -218,6 +572,31 @@ void programs_census_log(const char* when) {
          n(c.used_codes_differ), n(c.after_16), n(c.after_100), n(c.after_1000), n(c.after_more), n(c.needy), n(c.needy_after_100),
          n(c.needy_in_load), n(c.play_loads), c.play_load_ns.load() / 1e6, n(c.play_pipes_new), n(c.play_from_driver),
          n(c.play_from_start), n(c.play_compiled), (long long)skips, (long long)waits, wait_ms);
+    if (!programs_load_at_create()) return;
+    double median = 0, p99 = 0, worst = 0;
+    {
+        std::lock_guard lk(load_ms_mu);
+        if (!load_ms.empty()) {
+            std::vector<float> v = load_ms;
+            std::sort(v.begin(), v.end());
+            median = v[v.size() / 2], p99 = v[std::min(v.size() - 1, v.size() * 99 / 100)], worst = v.back();
+        }
+    }
+    size_t units = 0, ready = 0, loading = 0, alive = 0;
+    {
+        std::lock_guard lk(life_mu);
+        units = table.units(), ready = table.count(program_life::State::Ready), loading = table.count(program_life::State::Loading);
+        alive = table.programs();
+    }
+    logf("vk: program loads at create (%s): %lld queued, %lld loaded (median %.2f ms, 99th percentile %.2f ms, worst %.2f ms, %.0f "
+         "ms and %.1f MB read in all); %lld programs (%lld of them compute variants without their code), %lld graphics pipelines (%lld not in a cache), %lld compute pipelines (%lld "
+         "not in a cache); a first use ran %lld itself and waited for %lld (%.1f ms); %lld pipelines made at create taken by "
+         "draws; %lld create calls with nothing kept for their stages, %lld before the index; units %zu (%zu ready, %zu "
+         "loading), %zu programs alive",
+         when, n(c.units_queued), n(c.units_loaded), median, p99, worst, c.load_ns.load() / 1e6, c.load_bytes.load() / 1048576.0,
+         n(c.load_programs), n(c.load_light), n(c.load_pipes), n(c.load_pipes_cold), n(c.load_computes), n(c.load_computes_cold),
+         n(c.units_run_by_draw), n(c.units_waited), c.unit_wait_ns.load() / 1e6, n(c.pipes_taken), n(c.units_nothing),
+         n(c.units_early), units, ready, loading, alive);
 }
 
 } // namespace mkwvk
