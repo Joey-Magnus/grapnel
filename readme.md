@@ -910,11 +910,13 @@ are missing while it is set. Off unless set.
 The switches for scripted test runs, screenshots, frame dumps and profiles are in the
 [development guide](docs/development.md#switches-for-testing-and-debugging).
 
-`RX_VK_WB_MAX_KB=<KB>` stops the write-back of written GPU bindings larger than that. OoT writes tens of MB of culling
-lists and per-frame buffers through the GPU that the CPU never reads, and copying them back sat on every submit's
-memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the scene at 45-48 fps.
-`RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
-same scene to 59-60 fps. `0` or unset copies every written binding, as before.
+`RX_VK_WB_MAX_KB=<KB>` (default 1024) is the size from which a written GPU binding may go without its write-back. OoT
+writes tens of MB of culling lists and per-frame buffers through the GPU that the CPU never reads, and copying them back
+sat on every submit's memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the
+scene at 45-48 fps. The CPU does read some large ones, so a binding over the size is left out only after
+`RX_VK_WB_PROBATION` writes (default 8) with no CPU read or write of any part of it, and a range the CPU reads or writes
+keeps its write-back from then on (`gpu/vk/wb_learn.h`). `RX_VK_WB_MAX_KB=0` copies every written binding, as before.
+`RX_VK_LOG_WB_SKIPS=1` lists the ranges left out every 600 submits.
 
 </details>
 
