@@ -44,6 +44,7 @@ int rx_option(int id, int otherwise) {
     return otherwise;
 }
 int hos_oot_player_seen(void) { return player; }
+int hos_oot_restart_continue(void) { return 0; }   /* (not a restart in place's start: tests/test_restart_in_place.py has those) */
 void hos_hid_tap(const char *presses) {
     (void)presses;
     if (taps < (int)(sizeof tap_at / sizeof tap_at[0])) tap_at[taps++] = fake_now_ns / 1000000;

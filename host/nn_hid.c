@@ -954,6 +954,10 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     scripted_input(buttons, stick);
     void hos_oot_autoload_input(void);   /* (host/oot_autoload.c: the Skip title screen row's presses) */
     hos_oot_autoload_input();
+    void hos_oot_restart_input(void);   /* (host/oot_restart.c: the Insert menu's Restart, in place) */
+    hos_oot_restart_input();
+    int hos_oot_autoload_alone(void);   /* (a restart in place's start: its presses alone until Link is back) */
+    if (hos_oot_autoload_alone()) return;
     /* (hookshot) HOS_CONTROL: the control bridge's presses (host/control.c); one that asked to be exclusive keeps the
        player's devices out while it lasts */
     if (hos_control_input(buttons, stick)) return;

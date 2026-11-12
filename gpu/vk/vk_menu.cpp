@@ -910,6 +910,11 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Skip title screen", &opts.skip_title, 0, 1, 1, tx_onoff,
      "Starts a launch with the most recent saved game: presses through the title screen and its file list. Does nothing "
      "until the game has a save. Applies after a restart.", nullptr, true, true},
+    {TAB_GAMEPLAY, "Restart in place", &opts.restart_in_place, 0, 1, 1, tx_onoff,
+     "On: Restart has the game save where you stand first, by its own autosave, then starts it again and loads that save, "
+     "so you are back at the same spot. What the game's save does not hold starts afresh: enemies, things in flight, a "
+     "conversation. Where the game takes no save (a cutscene, a talk, a loading screen), Restart says so and asks again "
+     "before it goes to the title. Off: Restart always goes to the title.", nullptr, false, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
@@ -1037,8 +1042,8 @@ Row rows[] = {
      "or game files go in, and nothing is sent."},
     // (Restart and Quit stay the table's last two: kRestartRow and kQuitRow count back from its end; Bug report is before them)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
-     "Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B "
-     "cancels."},
+     "Starts the game again. With Restart in place on, the game saves where you stand first and you come back there; "
+     "otherwise save your progress first. Press Enter or A twice to restart. Esc or B cancels."},
     {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
      "Save your progress first. Press Enter or A twice to quit. Esc or B cancels."},
 };
@@ -1265,6 +1270,34 @@ std::string restart_list(const char* last) {
     return mr::names(tr_names(), restart_state.n, restart_pending(), ", ", last);
 }
 int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
+
+// ---- (hookshot) Restart with Restart in place on: the game saves first (host/oot_restart.c, which reads place_state through
+// HOS_OPT_RESTART_PLACE and answers through menu_option_set) ----
+// 0 nothing; 1 the game's side is asked and works on it; 2 it takes no save here: Restart once more goes to the title; 3 its
+// word to go on with the restart
+std::atomic<int> place_state{0};
+std::atomic<int> place_word{0};   // (while 1, its last word: HOS_RESTART_SAVING, or HOS_RESTART_WAIT + the seconds until the game saves)
+int64_t place_at = 0;             // (when it was asked: prof_now)
+/// The Restart row's cell while it waits: for its second press, or for the game
+std::string restart_cell() {
+    const int ps = place_state.load(), word = place_word.load();
+    if (ps == 2) return "Press again: to the title";
+    if (ps != 1) return "Press again to confirm";
+    if (word > HOS_RESTART_WAIT) return "Saving in " + std::to_string(word - HOS_RESTART_WAIT) + " s";
+    return word == HOS_RESTART_WAIT ? "Waiting to save" : "Saving...";
+}
+/// The Restart row's help while the game's side works on it, or has refused; null: the row's own
+const char* restart_help() {
+    const int ps = place_state.load();
+    if (ps == 2)
+        return "The game takes no save here: a cutscene, a talk, a loading screen or a pause. Press Enter or A again to restart "
+               "at the title, where progress since your last save is lost. Esc or B cancels: try again in play.";
+    if (ps != 1) return nullptr;
+    if (place_word.load() >= HOS_RESTART_WAIT)
+        return "The game saved a moment ago and takes no other save yet. As soon as it does, it saves where you stand and the "
+               "restart follows. Esc or B cancels.";
+    return "The game is saving where you stand. The restart follows at once. Esc or B cancels.";
+}
 
 /// A row on its tab: the debug tools only with them on; a row for what this PC cannot run not at all (Reflex and Anti-Lag 2
 /// only where the driver has them, the Upscaler only where more than the game's own runs, the DLSS model only where DLSS
@@ -2596,7 +2629,8 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
     } else if (r.cheat >= 0 && *cheat_button_text(r.cheat)) {
         choice_cell(c, va, vb, cheat_button_text(r.cheat), selected, false, false, r.cheat == 9);
     } else if (!r.value) {
-        if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
+        if (pending == &r || (&r == &rows[kRestartRow] && place_state.load()))
+            choice_cell(c, va, vb, &r == &rows[kRestartRow] ? restart_cell() : std::string("Press again to confirm"), selected, false, false);
         else if (is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);   // (an action, not a page)
         else if (&r == &rows[kBugReportRow]) choice_cell(c, va, vb, bug_report_cell(), selected, false, false);   // (how the last report went)
         else {
@@ -2700,14 +2734,16 @@ void draw_options(ui::Ctx& c) {
     const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     const bool after = restart_changed(selr);
+    const char* const place_help = &selr == &rows[kRestartRow] ? restart_help() : nullptr;
+    const char* const sel_help = place_help ? place_help : selr.help;
     if (narrow) {   // (the help over the column's foot, the rows above it: at most half the room, the rows get the rest)
         const float help_h = std::min(22 * s + 32 * s + help_tall + (after ? 30 * s : 0) + (pending_line.empty() ? 0 : 52 * s) + 22 * s,
                                       (bottom - hh) * 0.5f);
         bottom = std::min(bar_top, c.h - c.safe) - help_h - 16 * s;
-        help_box(c, hx0, hx1, bottom + 8 * s, selr.name, selr.help, hint, pending_line.empty() ? nullptr : pending_line.c_str(), help_tall,
+        help_box(c, hx0, hx1, bottom + 8 * s, selr.name, sel_help, hint, pending_line.empty() ? nullptr : pending_line.c_str(), help_tall,
                  after, bottom + 8 * s, bar_top - 10 * s);
     } else {
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), selr.name, selr.help, hint,
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), selr.name, sel_help, hint,
                  pending_line.empty() ? nullptr : pending_line.c_str(), help_tall, after, hh + 18 * s, bar_top - 12 * s);
     }
     const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f;
@@ -3190,7 +3226,8 @@ void draw_ask(ui::Ctx& c) {
     ui::text_mid_centre(c, c.f.heading, 23 * s, (p.x + q.x) * 0.5f, p.y + hb * 0.5f, ui::kBannerInk, "Restart Needed");
     const std::string ask = i18n::tr("Restart to apply ") + restart_list(i18n::tr(" and ")) + "?";
     ui::para(c, c.f.body, 19 * s, ImVec2(p.x + 28 * s, p.y + 64 * s), ui::kInk, ask.c_str(), W - 56 * s);
-    ui::text_mid(c, c.f.body, 16 * s, p.x + 28 * s, p.y + 124 * s, ui::kSoft, "Progress since your last save is lost.");
+    ui::text_mid(c, c.f.body, 16 * s, p.x + 28 * s, p.y + 124 * s, ui::kSoft,
+                 opts.restart_in_place ? "The game saves where you stand first, where it can." : "Progress since your last save is lost.");
     const float bw = 210 * s, bh = 46 * s, gap = 24 * s, by = p.y + 160 * s, x0 = (p.x + q.x) * 0.5f - bw - gap * 0.5f;
     const char* labels[2] = {"Later", "Restart Now"};
     for (int i = 0; i < 2; i++) {
@@ -3782,6 +3819,8 @@ void menu_set_gpu_count(int count) {
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
 bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
+/// (hookshot) Whether the menu's Restart waits for the game's save (HOS_RESTART_SAVE, host/oot_restart.c)
+int menu_restart_place() { return place_state.load() == 1 ? HOS_RESTART_SAVE : 0; }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
 // host's own HOS_OOT_PROTECT_HEARTS)
 int menu_heart_protection() {
@@ -3867,6 +3906,14 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
 // inside menu_tick's frame on the same thread does not lock itself out
 std::recursive_mutex menu_mu;
 void menu_option_set(int id, int value) {
+    if (id == HOS_OPT_RESTART_PLACE) {   // (the game's side on a restart in place, host/oot_restart.c: only while it is asked)
+        int asked = 1;
+        if (value == HOS_RESTART_GO) place_state.compare_exchange_strong(asked, 3);
+        else if (value == HOS_RESTART_REFUSED) place_state.compare_exchange_strong(asked, 2);
+        else if (place_state.load() == 1) place_word = value;
+        menu_refresh = true;
+        return;
+    }
     if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
         if (link_age.exchange(value, std::memory_order_relaxed) != value && page == 0 && cur_tab == TAB_DEBUG) menu_refresh = true;
         return;
@@ -4227,6 +4274,40 @@ void menu_tick() {
         restart_state.choose_later(now);
         open_now = false, page = 0, tune_mode = false, changed = true;
     };
+    // (hookshot) Restart now: the window closes as the player would close it, and the game starts again (host/hos_relaunch.c;
+    // posted without a window too: a headless run's loop serves it, host/posix/display_sdl.c)
+    auto restart_go = [&] {
+        open_now = false, page = 0, tune_mode = false, place_state = 0, changed = true;
+        PostMessageA(app_window(), WM_APP + 9, 0, 0);
+    };
+    // (hookshot) Restart with Restart in place on: the game's side is asked to save first (host/oot_restart.c). The menu
+    // stays, on the Restart row, which shows how far it is; Esc there, another row or closing the menu takes it back
+    auto place_cancel = [&] {
+        for (int from = 1; from <= 2; from++) {
+            int expected = from;
+            if (place_state.compare_exchange_strong(expected, 0)) changed = true;
+        }
+    };
+    auto restart_in_place = [&] {
+        page = 0, cur_tab = TAB_GAMEPLAY, tune_mode = false, changed = true;
+        for (int k = tab_row_count(TAB_GAMEPLAY) - 1; k >= 0; k--)
+            if (tab_row_to_global(TAB_GAMEPLAY, k) == kRestartRow) tab_selected[TAB_GAMEPLAY] = k;
+        pending = &rows[kRestartRow];
+        place_word = 0, place_at = prof_now(), place_state = 1;
+    };
+    if (const int ps = place_state.load()) {
+        if (ps == 3) {   // (the game has saved, or no game is in play: on with the restart)
+            pending = nullptr;
+            restart_go();
+        } else if (ps == 1 && !place_word.load() && prof_now() - place_at > 3000000000LL) {
+            // (the game's side says nothing: it reads no controller now, a start still preparing its shaders for one. Never on
+            // to the title by itself: the player is asked, as after a refusal)
+            int asked = 1;
+            if (place_state.compare_exchange_strong(asked, 2)) logf("menu: restart: no word from the game's side in 3 s"), changed = true;
+        } else if (ps <= 2 && !open_now.load()) {   // (the menu was closed meanwhile)
+            place_cancel();
+        }
+    }
     // (Menu shortcut "Insert, F1 or Esc", the default: Esc on a closed menu opens it, the keyboard's and RX_VK_MENU_SCRIPT's
     // ESC alone (the gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page
     // below; with the compact menu key held it opens the compact bar, as Insert and F1 do (tune_mode). No
@@ -4262,8 +4343,9 @@ void menu_tick() {
             logf("menu: restart now, to apply %s", restart_list(", ").c_str());
             save();
             pipeline_cache_save(true);
-            open_now = false, page = 0, tune_mode = false, changed = true;
-            PostMessageA(app_window(), WM_APP + 9, 0, 0);
+            page = 0, tune_mode = false, changed = true;
+            if (opts.restart_in_place) restart_in_place();
+            else restart_go();
         }
     } else if (open_now.load() && page == 1) {   // (hookshot) the Controls page
         using enum menu_hit::CtlColumn;
@@ -4458,7 +4540,7 @@ void menu_tick() {
         const bool tune_toggle = tune_release || pad(HOS_PAD_WEST);
         if (tune_toggle && listening == 0) tune_mode = !tune_mode, changed = true;
         if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
-        if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
+        if (press[5] && (pending || place_state.load() == 1)) pending = nullptr, place_cancel(), changed = true;   // (a Restart or Quit waiting for its second press, or for the game to save: cancelled)
         else if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false, tune_mode = false;
@@ -4492,19 +4574,24 @@ void menu_tick() {
         static const bool scripted = getenv("RX_VK_MENU_SCRIPT") != nullptr;
         const bool own = mine || scripted;
         if (pending && (pending != &r || !own)) pending = nullptr, changed = true;
+        if (&r != &rows[kRestartRow]) place_cancel();   // (off the Restart row: a restart in place is taken back)
+        const int place = &r == &rows[kRestartRow] ? place_state.load() : 0;
         if (press[7] && confirm_selected) {
             if (own && !press[5]) {
-                if (pending != &r) {
+                if (place == 1) {   // (the game is saving for the restart: nothing more to confirm)
+                } else if (pending != &r && place != 2) {
                     pending = &r, changed = true;
                 } else {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
                     save();
                     pipeline_cache_save(true);
                     pending = nullptr;
                     // (posted without a window too: a headless run has none, and its loop still serves both, display_sdl.c)
-                    if (&r == &rows[kRestartRow]) {   // (the restart question's Restart now: the window closes, then the game starts again)
+                    if (&r == &rows[kRestartRow] && opts.restart_in_place && place != 2) {   // (2: the game takes no save here, and the player said to go on)
+                        logf("menu: restart, in place: the game is asked to save first");
+                        restart_in_place();
+                    } else if (&r == &rows[kRestartRow]) {   // (the restart question's Restart now: the window closes, then the game starts again)
                         logf("menu: restart");
-                        open_now = false, changed = true;
-                        PostMessageA(app_window(), WM_APP + 9, 0, 0);
+                        restart_go();
                     } else {
                         PostMessageA(app_window(), WM_CLOSE, 0, 0);
                     }

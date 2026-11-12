@@ -327,7 +327,13 @@ HLE(_ZN2nn2fs7UnmountEPKc) {
         if (!strcmp(mounts[i].name, gstr(ARG(0)))) { mounts[i] = mounts[--nmounts]; break; }
     ReleaseSRWLockExclusive(&mount_lock);
 }
-HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
+/* (hookshot: files are written in place, so a commit has nothing to do; host/oot_restart.c waits for the game's save's) */
+void hos_oot_restart_file(const char *guest_path);
+void hos_oot_restart_commit(void);
+HLE(_ZN2nn2fs6CommitEPKc) {
+    hos_oot_restart_commit();
+    RET(0);
+}
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
 
 /* ---- files ---------------------------------------------------------------------------------------------------- */
@@ -399,6 +405,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     snprintf(fh->path, sizeof fh->path, "%s", g);
     G64(ARG(0)) = new_handle(fh);
     if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s)", g);
+    if (want_write) hos_oot_restart_file(g);
     RET(0);
 }
 

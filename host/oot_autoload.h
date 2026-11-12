@@ -11,5 +11,9 @@ uint64_t hos_oot_newest_save(const char *user_dir, char *path, size_t size);
    on and a save exists, taps A through the title screen and its file list until the player is running. */
 void hos_oot_autoload_input(void);
 
+/* 1 while those presses run for a start that a restart in place made (host/oot_restart.c): the player's own buttons and
+   sticks are then kept from the game. */
+int hos_oot_autoload_alone(void);
+
 /* (tests) forget the run's state, as after a restart. */
 void hos_oot_autoload_reset(void);

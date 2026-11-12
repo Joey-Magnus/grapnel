@@ -309,7 +309,9 @@ Libertinus, which Hookshot includes.
 The rows marked "after a restart" below are read when the game starts. While one is changed, it is tagged "After
 restart" and the help on the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
 the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your
-choices and starts the game again, so progress since your last save is lost.
+choices and starts the game again. With **Restart in place** on, the game saves where you stand first and you come back
+there; where the game takes no save, or with that row off, it starts at its title and progress since your last save is
+lost.
 
 A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-Lag 2 without a GPU and driver that
 have them, the DLSS model where DLSS does not run. HDR paper white and
@@ -356,6 +358,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
 | | Skip title screen | Off, On (after a restart) | Off |
+| | Restart in place | Off, On | On |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
 | | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
@@ -393,6 +396,13 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Skip title screen** starts the game with your most recent save: Hookshot presses A through the title screen and its
   file list as soon as the game has a save. Until you have saved once, it leaves the title screen alone, so a new game can
   still be started. It applies after a restart; turn it off to watch the intro and use the title.
+- **Restart in place** makes the menu's Restart, and Restart now, bring you back where you stood. The game is asked for
+  its own autosave, the one it makes by itself as you play, and only where it allows one: not during a cutscene, a talk
+  or a loading screen. For some seconds after its last autosave it takes no other; Restart then waits, and its row shows
+  for how long. Once the game has saved, it is started again, the title is passed for you (as Skip title screen does it)
+  and that save loaded. The save holds where you stand and your progress, not the enemies around you or anything in
+  flight. Where the game takes no save, Restart says so and asks once more before it goes to the title. Off: Restart
+  always goes to the title.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins

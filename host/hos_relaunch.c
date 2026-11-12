@@ -9,8 +9,11 @@
      Windows: a new process of this executable (GetModuleFileNameW) with this one's command line (GetCommandLineW), in
      the same folder, with the environment this one started with (kept by hos_relaunch_keep_env before hookshot_env.txt
      was read: the file's lines are read again, and its edits since are taken, not left out as the environment's own);
-     then this one exits. */
+     then this one exits.
+   A restart in place (host/oot_restart.c) adds one variable to that environment, HOS_RESTART_NOTE: the save the game made
+   for it. Every other restart takes the variable out, so a note is never carried to a second start. */
 #include "hos.h"
+#include "oot_restart.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +60,19 @@ static void relaunch(void) {
     swprintf(pid, 16, L"%lu", (unsigned long)GetCurrentProcessId());
     SetEnvironmentVariableW(L"HOS_RESTART_OF", pid);
     wchar_t *env = start_env ? hos_relaunch_env_block(start_env, L"HOS_RESTART_OF", pid) : NULL;   /* (NULL: this one's) */
+    {   /* (a restart in place's note in, an older one out: host/oot_restart.c; the note is ASCII) */
+        const char *note = hos_oot_restart_note();
+        SetEnvironmentVariableA(HOS_RESTART_NOTE, note);   /* (for this one's environment, when there is no block) */
+        wchar_t wide[160];
+        size_t i = 0;
+        for (; note && note[i] && i + 1 < sizeof wide / sizeof *wide; i++) wide[i] = (wchar_t)(unsigned char)note[i];
+        wide[i] = 0;
+        if (env) {
+            wchar_t *with = hos_relaunch_env_block(env, L"" HOS_RESTART_NOTE, note ? wide : NULL);
+            free(env);
+            env = with;   /* (NULL, out of memory: this one's environment, whose note is right) */
+        }
+    }
     if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, env ? CREATE_UNICODE_ENVIRONMENT : 0, env, NULL, &si, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
@@ -81,6 +97,7 @@ static void relaunch(void) {
         hos_log_flush();
         return;
     }
+    hos_relaunch_setenv(&r, HOS_RESTART_NOTE, hos_oot_restart_note());
     /* (every file this process opened closes with it, as at an exit: the new one opens its own) */
     DIR *d = opendir("/proc/self/fd");
     if (d) {

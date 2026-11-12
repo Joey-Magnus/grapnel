@@ -82,6 +82,8 @@ volatile int hos_oot_live_action;
 int hos_oot_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
 void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpected cheat option change"); }
 void hos_oot_autoload_input(void) {}
+void hos_oot_restart_input(void) {}
+int hos_oot_autoload_alone(void) { return 0; }
 """
     # (the host's own presses and stick, for the game's menus' mouse (host/oot_menu.c): none here; the player's input
     # time it hides the mouse by: not looked at)

@@ -73,7 +73,8 @@ static inline int hos_relaunch_command(const char *cmdline, const char *environ_
 
 /* Windows' restart: the environment block the game started with (GetEnvironmentStringsW before hookshot_env.txt was read,
    strings ended by a NUL each and the block by one more), with name=value put in, in place of the same name in any case,
-   at its place in the block's order (by name, case left out, as Windows keeps it). A new block (malloc), or NULL */
+   at its place in the block's order (by name, case left out, as Windows keeps it); value NULL takes the name out (a
+   restart in place's note, host/oot_restart.c). A new block (malloc), or NULL */
 static inline int hos_relaunch_env_cmp(const wchar_t *a, const wchar_t *b) {   /* (two names, each ended by '=' or a NUL) */
     for (;; a++, b++) {
         const wint_t x = *a == L'=' ? 0 : towupper((wint_t)*a), y = *b == L'=' ? 0 : towupper((wint_t)*b);
@@ -88,10 +89,10 @@ static inline wchar_t *hos_relaunch_env_put(wchar_t *o, const wchar_t *name, con
 static inline wchar_t *hos_relaunch_env_block(const wchar_t *saved, const wchar_t *name, const wchar_t *value) {
     size_t total = 0;
     for (const wchar_t *e = saved; e && *e; e += wcslen(e) + 1) total += wcslen(e) + 1;
-    const size_t add = wcslen(name) + 1 + wcslen(value) + 1;
-    wchar_t *out = (wchar_t *)malloc((total + add + 1) * sizeof *out), *o = out;
+    const size_t add = value ? wcslen(name) + 1 + wcslen(value) + 1 : 0;
+    wchar_t *out = (wchar_t *)malloc((total + add + 2) * sizeof *out), *o = out;
     if (!out) return NULL;
-    int put = 0;
+    int put = !value;   /* (NULL: nothing to put in) */
     for (const wchar_t *e = saved; e && *e; e += wcslen(e) + 1) {
         const int c = *e == L'=' ? -1 : hos_relaunch_env_cmp(e, name);   /* (=C: and the like stay first) */
         if (!put && c >= 0) {
@@ -105,5 +106,30 @@ static inline wchar_t *hos_relaunch_env_block(const wchar_t *saved, const wchar_
     }
     if (!put) o = hos_relaunch_env_put(o, name, value);
     *o = 0;
+    if (o == out) o[1] = 0;   /* (an empty block: two NULs) */
     return out;
+}
+
+/* One variable of that environment set to value, or taken out when value is NULL (the process's own environment as it
+   started may hold an older one: a restart in place's note, host/oot_restart.c). The new string is the command's for
+   good. 1, or 0 when out of memory (the variable is then out) */
+static inline int hos_relaunch_setenv(HosRelaunch *r, const char *name, const char *value) {
+    const size_t n = strlen(name);
+    int k = 0;
+    for (int i = 0; i < r->envc; i++)
+        if (strncmp(r->envp[i], name, n) || r->envp[i][n] != '=') r->envp[k++] = r->envp[i];
+    r->envp[k] = NULL, r->envc = k;
+    if (!value) return 1;
+    char *line = (char *)malloc(n + strlen(value) + 2);
+    char **v = (char **)realloc(r->envp, sizeof *v * (size_t)(k + 2));
+    if (v) r->envp = v;
+    if (!line || !v) {
+        free(line);
+        return 0;
+    }
+    memcpy(line, name, n);
+    line[n] = '=';
+    strcpy(line + n + 1, value);
+    r->envp[k] = line, r->envp[k + 1] = NULL, r->envc = k + 1;
+    return 1;
 }

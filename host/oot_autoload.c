@@ -30,6 +30,7 @@ extern int64_t hos_now_ns(void);   /* (host/hos_main.c) */
 extern int rx_option(int id, int otherwise);   /* (host/rx_backend.c) */
 extern int hos_oot_player_seen(void);   /* (host/hos_main.c) */
 extern void hos_hid_tap(const char *presses);   /* (host/nn_hid.c) */
+extern int hos_oot_restart_continue(void);   /* (host/oot_restart.c: this start is a restart in place's) */
 
 /* (the wait before the first press, the gap between presses, and when to give up: the intro and title take about 23 s on
    the supported build, and preparing the shaders comes before it) */
@@ -171,18 +172,26 @@ static int started, active;
 static int64_t start_ms, next_ms;
 static char save_path[MAX_PATH];
 
+static int restarted;   /* (this start is a restart in place's, host/oot_restart.c: the presses whatever the row says) */
+
 void hos_oot_autoload_reset(void) {
-    started = active = 0;
+    started = active = restarted = 0;
     start_ms = next_ms = 0;
     save_path[0] = 0;
 }
+
+/* A restart in place's start, until Link is back: the title gets the host's presses alone (host/nn_hid.c). A stick nudged or
+   a button pressed while the game starts could take the title's cursor off its first choice, and the next press would
+   start something else. (The Skip title screen row on its own leaves the player's input as it is.) */
+int hos_oot_autoload_alone(void) { return active && restarted; }
 
 void hos_oot_autoload_input(void) {
     const int64_t now = hos_now_ns() / 1000000;
     if (!started) {
         started = 1;
         start_ms = now, next_ms = now + kFirstMs;
-        if (!rx_option(HOS_OPT_SKIP_TITLE, 0)) return;
+        restarted = hos_oot_restart_continue();
+        if (!restarted && !rx_option(HOS_OPT_SKIP_TITLE, 0)) return;
         if (!hos_oot_newest_save(hos_user_dir, save_path, sizeof save_path)) {
             hos_log("skip title: no saved game yet: the title screen stays");
             return;
@@ -191,7 +200,7 @@ void hos_oot_autoload_input(void) {
         hos_log("skip title: %s is the most recent save: pressing A from %.0f s", save_path, kFirstMs / 1000.0);
     }
     if (!active) return;
-    if (!rx_option(HOS_OPT_SKIP_TITLE, 0)) {
+    if (!restarted && !rx_option(HOS_OPT_SKIP_TITLE, 0)) {
         hos_log("skip title: the row was turned off while waiting");
         active = 0;
         return;

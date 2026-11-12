@@ -160,7 +160,10 @@ def sources():
                  "const bool own = mine || scripted;", "if (pending && (pending != &r || !own))", "if (own && !press[5]) {"):
         if need not in tick:
             raise SystemExit("menu_tick: the Restart and Quit rows do not work in a scripted run without a window: no " + need)
-    if tick.count("PostMessageA(app_window(), WM_APP + 9, 0, 0);") < 2:
+    # (the Restart row and the restart question both go through restart_go, which posts whether there is a window or not)
+    go = tick[tick.index("auto restart_go = [&] {"):]
+    if "PostMessageA(app_window(), WM_APP + 9, 0, 0);" not in go[:go.index("};")] or tick.count("restart_go();") < 3 or \
+            re.search(r"if \((const HWND window = )?app_window\(\)\)\s*PostMessageA\(\w+(\(\))?, WM_APP \+ 9", tick):
         raise SystemExit("menu_tick: the Restart row is not posted without a window")
     headless = sdl[sdl.index("void hos_display_loop(void) {"):]
     headless = headless[headless.index("if (!sdl_ready) {"):headless.index("HosSdlEvent e;")]

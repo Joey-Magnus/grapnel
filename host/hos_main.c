@@ -14,6 +14,7 @@
 #endif
 #include "hos_paths.h"
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
+#include "oot_restart.h"   /* (the Insert menu's Restart, in place) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
 #include <math.h>
@@ -1247,6 +1248,67 @@ static int oot_flight_moved_away(Ctx *c, uint64_t actor, const float held[3]) {
     return apart > 2.0f * 2.0f;
 }
 
+/* (hookshot) Restart in place (host/oot_restart.c): the game's own autosave, asked as its event node
+   OneShotAutoSaveMgrRequestAutoSave asks. The AutoSaveMgr is component 12 of the system at [[0x84c9e178]] (f_80bc7880
+   (system, index) returns it). f_80bc72d0 (manager, kind, 0, instance) is the game's own check of a request, and f_80bc7730
+   (manager, kind, instance) makes one when that check passes: it sets bit 0 of byte 5 of [manager + 0x130], and the
+   manager's update then saves. Kind 6 is the event node's. After a save the manager counts the float at +0x15c down from
+   1800, one an update, and the check refuses every kind the game uses until it is 0. Kind 0, which the game never passes,
+   is refused by everything but that count: the check is asked about it only to tell "wait" from "no", and kind 0 is never
+   requested. The check does not look at what plays: the game's scripts ask where it is safe, and its own timed autosave
+   (the manager's update) waits until the EventMgr holds no event (+0x68) and no event's name (the text at [+0xc0] empty).
+   The same is asked here before any request. */
+static int oot_events_quiet(Ctx *c) {
+    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+    const uint64_t held = events ? recomp_load64(c, events + 104) : 0, name = events ? recomp_load64(c, events + 0xc0) : 0;
+    const char *text = name ? (const char *)hos_guest_range(name, 32) : NULL;
+    if (events && !held && text && !text[0]) return 1;
+    hos_log("restart: the game's events are not quiet (%s, the name \"%.31s\")", !events ? "no event manager" : held ? "one plays" : "none plays",
+            text ? text : "");
+    return 0;
+}
+
+static void oot_restart_request(Ctx *c, uint64_t actor) {
+    float pos[3], cooldown = 0;
+    for (unsigned i = 0; i < 3; i++) pos[i] = oot_load_float(c, actor + 796 + i * 4);
+    if (!oot_events_quiet(c)) {
+        hos_oot_restart_answer(HOS_RESTART_ANS_EVENT, 0, pos);
+        return;
+    }
+    const uint64_t system = oot_singleton(c, 0x84c9e178ULL);
+    A64Fn component = a64_lookup(0x80bc7880ULL), check = a64_lookup(0x80bc72d0ULL), request = a64_lookup(0x80bc7730ULL);
+    const Ctx saved = *c;
+    uint64_t mgr = 0;
+    if (system && component && check && request) {
+        c->x[0] = system, c->x[1] = 12;
+        component(c);
+        mgr = c->x[0];
+        *c = saved;
+    }
+    if (!mgr) {
+        hos_oot_restart_answer(HOS_RESTART_ANS_NONE, 0, pos);
+        return;
+    }
+    int passes[2];   /* (the check for kind 6, and for kind 0) */
+    for (unsigned i = 0; i < 2; i++) {
+        c->x[0] = mgr, c->x[1] = i ? 0 : 6, c->x[2] = 0, c->x[3] = 0;
+        check(c);
+        passes[i] = (int)(c->x[0] & 1);
+        *c = saved;
+    }
+    cooldown = oot_load_float(c, mgr + 0x15c);
+    if (!passes[0]) {
+        hos_oot_restart_answer(passes[1] ? HOS_RESTART_ANS_COOLDOWN : HOS_RESTART_ANS_REFUSED, cooldown, pos);
+        return;
+    }
+    const uint64_t flags = recomp_load64(c, mgr + 0x130);
+    hos_oot_restart_requesting();
+    c->x[0] = mgr, c->x[1] = 6, c->x[2] = 0;
+    request(c);
+    *c = saved;
+    hos_oot_restart_answer(flags && (recomp_load8(c, flags + 5) & 1) ? HOS_RESTART_ANS_TAKEN : HOS_RESTART_ANS_REFUSED, cooldown, pos);
+}
+
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
     static uint64_t flying_actor, marked_actor, marked_controller;
@@ -1263,6 +1325,12 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     __atomic_store_n(&flight_player_seen, now, __ATOMIC_RELAXED);
     if (marked_actor != actor || now - last_player_tick > 2000000000LL) marked_controller = 0;
     last_player_tick = now;
+    if (hos_oot_restart_continuing()) {   /* (started again by a restart in place: Link is back, and where) */
+        float pos[3];
+        for (unsigned i = 0; i < 3; i++) pos[i] = oot_load_float(c, actor + 796 + i * 4);
+        hos_oot_restart_player(pos);
+    }
+    if (hos_oot_restart_asking()) oot_restart_request(c, actor);
     int action = rx_option(HOS_OPT_CHEAT_ACTION, 0);
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     int bridge_ticket = 0;   /* (the control bridge's teleport, host/control.c: what came of it is kept for its reply) */
