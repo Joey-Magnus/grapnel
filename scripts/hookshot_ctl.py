@@ -314,15 +314,17 @@ def run(a):
             if r.get("sent") is False:
                 show(a, r, lambda r: "Link is the %s already" % plain_text(r["age"]))
             elif r.get("sent") is None:
-                show(a, r, lambda r: "age switch to the %s asked for: wait map to see it reload" % plain_text(r["age"]))
+                show(a, r, lambda r: "age switch to the %s asked for: wait loading_end to see it reload" % plain_text(r["age"]))
             elif not a.arrive:
                 show(a, r, lambda r: "age switch sent: the %s, reloading %s%s" % (
                     plain_text(r["age"]), plain_text(r.get("map") or "-"),
                     "" if r.get("accepted", True) else " (but the game's event manager did not take it)"))
-            else:   # (and until the game is in that map: the reload)
-                w = check(b.request("wait", timeout=a.arrive, event="map", map=r.get("map")))
+            else:   # (and until the reload's load has ended: in a dungeon the map has the same name for both ages, so
+                    # a wait map would be met before the reload; loading_end counts from the ask, so a load already
+                    # started when it is asked is still waited out)
+                w = check(b.request("wait", timeout=a.arrive, event="loading_end"))
                 show(a, dict(r, arrived=w), lambda r: "age switch: the %s, in %s after %d frames (frame %d)" % (
-                    plain_text(r["age"]), plain_text(w["map"]), w["waited"], w["frame"]))
+                    plain_text(r["age"]), plain_text(r.get("map") or "-"), w["waited"], w["frame"]))
         elif a.command == "option":
             if a.action == "get":
                 r = check(b.request("option_get", name=a.name))
@@ -593,7 +595,8 @@ def main(argv=None):
     q = sub.add_parser("age", help="(OoT) the Debug tab's Switch age: child or adult (none: the other age)")
     q.add_argument("to", nargs="?", choices=["child", "adult"])
     q.add_argument("--timeout", type=float, default=10, help="seconds for the game to take it (it does in play)")
-    q.add_argument("--arrive", type=float, metavar="SECS", help="then wait up to SECS until the map has reloaded")
+    q.add_argument("--arrive", type=float, metavar="SECS", help="then wait up to SECS until the map has reloaded (its "
+                   "load ended)")
     q.add_argument("--no-wait", action="store_true", help="reply once asked, without whether the game took it")
     sub.add_parser("saves", help="the save folder the game uses: its files, newest slot first")
     q = sub.add_parser("slots", help="the save slots: last written, sizes, scene; * the newest (Continue's)")

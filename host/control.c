@@ -1311,8 +1311,9 @@ static void cmd_teleport(int ci, const JDoc *d, int req, const char *id) {
 }
 /* ---- (OoT) the Debug tab's Switch age: Link's age flipped and the map reloaded in the other age, as the menu does it,
    taken at the player's next update as a teleport is (the same tickets: a later teleport or age ask replaces one not taken
-   yet). to: "child" or "adult", none the other age; already that age: the reply says so, nothing asked. The reply says
-   whether it was sent (and the map it reloads) or refused (and why), unless "wait": false ---- */
+   yet). to: "child" or "adult", none the other age (from oot_state's sample). The age asked for goes to the game, which
+   checks it when it takes it (the sample can be old): already that age, nothing is done and the reply says so. The reply
+   says whether it was sent (and the map it reloads), not needed, or refused (and why), unless "wait": false ---- */
 static void cmd_age(int ci, const JDoc *d, int req, const char *id) {
     Conn *c = &G.conns[ci];
     if (!G.game->age || !G.game->oot_state || !G.game->teleport_result)
@@ -1328,18 +1329,13 @@ static void cmd_age(int ci, const JDoc *d, int req, const char *id) {
         adult_to = !strcmp(to->s, "adult");
     }
     Buf b = {0};
-    if (adult_to == !child) {   /* (already that age: nothing to do) */
-        reply_start(&b, id, 1);
-        buf_printf(&b, ",\"age\":\"%s\",\"sent\":false", adult_to ? "adult" : "child");
-        return reply_end(c, &b);
-    }
     int bad = 0;
     const int wait = bool_arg(d, req, "wait", 1);
     const int64_t deadline = deadline_arg(d, req, 10, &bad);
     if (bad) return reply_error(c, id, "bad_request", "timeout: seconds");
     Pending *p = wait ? pending_new(ci, id, P_TELEPORT) : NULL;
     if (wait && !p) return reply_error(c, id, "busy", "too many requests waiting");
-    const int ticket = G.game->age();
+    const int ticket = G.game->age(adult_to);
     if (ticket <= 0) {
         if (p) p->used = 0;
         return reply_error(c, id, "unavailable", "the game did not take the age switch");
@@ -1367,7 +1363,12 @@ static int teleport_done(Pending *p, Conn *c, int64_t now) {
                     "(not on the title, the file select, a pause menu or a load)", what);
     } else if (r == -1) reply_error(c, p->id, "refused", "the game refused the %s: %s", what, why[0] ? why : "no reason given");
     else if (r == -2) reply_error(c, p->id, "cancelled", "a later teleport or age switch replaced it before the game took it");
-    else if (p->dest < 0) {
+    else if (r == 2) {   /* (the age switch: Link was that age when the game took it, nothing done) */
+        Buf b = {0};
+        reply_start(&b, p->id, 1);
+        buf_printf(&b, ",\"age\":\"%s\",\"sent\":false", p->adult_to ? "adult" : "child");
+        reply_end(c, &b);
+    } else if (p->dest < 0) {
         Buf b = {0};
         reply_start(&b, p->id, 1);
         buf_printf(&b, ",\"age\":\"%s\",\"sent\":true,\"map\":", p->adult_to ? "adult" : "child");
@@ -2318,7 +2319,7 @@ int hos_oot_destination(int index, const char **child, const char **adult);
 int hos_oot_teleport_ask(int index);
 int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted);
 void hos_oot_teleport_cancel(int ticket);
-int hos_oot_age_ask(void);
+int hos_oot_age_ask(int adult);
 int hos_oot_state(int *event, int *loading, int *child);
 static HosControlGame game = {
     .frame = game_frame, .frame_info = rx_control_frame_info, .shot = rx_control_shot, .setting = rx_control_setting,

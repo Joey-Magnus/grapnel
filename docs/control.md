@@ -289,9 +289,12 @@ next update in play, and does it as the menu does: Link's age flipped and the cu
 (the Market's, when this map has no destination). It uses the teleport's tickets, so a later teleport or age switch
 replaces one not taken yet (`cancelled`), and the replies are the teleport's:
 
-- `"age"` (the age asked for), `"sent": true` and `map`, the map it reloads; `wait map` then tells when it arrived.
-  `accepted` as for a teleport.
-- `"sent": false` when Link is that age already: nothing is asked.
+- `"age"` (the age asked for), `"sent": true` and `map`, the map it reloads; `wait loading_end` then tells when it
+  arrived. Not `wait map`: in a dungeon the map has the same name for both ages (`ForestTemple`), so a wait for it is met
+  before the reload starts. `accepted` as for a teleport.
+- `"sent": false` when Link is that age already: nothing is done. The game checks the age asked for when it takes it, so
+  an old sample of Link's age in `status` (it is read every 250 ms, and not during a load) never flips him the wrong way.
+  With no `to`, the other age is decided from that sample.
 - `refused`, with the game's reason (as a teleport's, and Link's age not found or not written in the game's data);
   `timeout` when the game did not take it (not in play); `unavailable` before a save is loaded (the age is not known).
 

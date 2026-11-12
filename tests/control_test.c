@@ -179,13 +179,14 @@ static int fake_destination(int i, const char **child, const char **adult) {
     *child = dest_child[i], *adult = dest_adult[i];
     return 1;
 }
-/* (the age switch: asked as a teleport is, with teleport_asked = AGE_ASKED; done, Link's age flips and the map reloads in
-   it, as hos_main.c's oot_toggle_age does) */
+/* (the age switch: asked as a teleport is, with teleport_asked = AGE_ASKED + 1 for the adult, + 0 the child; taken, Link
+   that age already: nothing done (result 2), else his age flips and the map reloads in it, as hos_main.c does.
+   stale_age: the state's sample of the age is the other one, as an old sample can be) */
 enum { AGE_ASKED = 100 };
-static volatile int fake_child = 1;
+static volatile int fake_child = 1, stale_age;
 static int fake_state(int *event, int *loading, int *child) {
     if (!fake_map(NULL, 0)) return 0;
-    *event = 0, *loading = 1, *child = __atomic_load_n(&fake_child, __ATOMIC_RELAXED);
+    *event = 0, *loading = 1, *child = __atomic_load_n(&fake_child, __ATOMIC_RELAXED) ^ (stale_age != 0);
     return 1;
 }
 static int fake_teleport(int i) {
@@ -200,17 +201,17 @@ static int fake_teleport_result(int ticket, char *why, size_t why_cap, char *map
     log_lock();
     int r = -2;
     if (tp_done_ticket == ticket) {
-        r = tp_result, *accepted = r > 0;
+        r = tp_result, *accepted = r == 1;
         snprintf(why, why_cap, "%s", r < 0 ? "this destination has no map for the child" : "");
-        snprintf(map, map_cap, "%s", r > 0 ? fake_map_now : "");
+        snprintf(map, map_cap, "%s", r == 1 ? fake_map_now : "");
     } else if (tp_taking == ticket || (tp_ticket == ticket && __atomic_load_n(&teleport_asked, __ATOMIC_RELAXED) >= 0)) r = 0;
     log_unlock();
     return r;
 }
-static int fake_age(void) {
+static int fake_age(int adult) {
     log_lock();
     const int ticket = ++tp_ticket;
-    __atomic_store_n(&teleport_asked, AGE_ASKED, __ATOMIC_RELAXED);
+    __atomic_store_n(&teleport_asked, AGE_ASKED + (adult ? 1 : 0), __ATOMIC_RELAXED);
     log_unlock();
     return ticket;
 }
@@ -241,13 +242,17 @@ static void *game_thread(void *unused) {
             const int ticket = tp_ticket;
             if (t >= 0) tp_taking = ticket;
             log_unlock();
-            if (t == AGE_ASKED) {   /* (the age switch: the current map, reloaded in the other age) */
+            if (t >= AGE_ASKED) {   /* (the age switch: the current map, reloaded in the age asked for; that age already: none) */
                 sleep_ms(20);
                 log_lock();
-                const int child = !__atomic_load_n(&fake_child, __ATOMIC_RELAXED);
-                __atomic_store_n(&fake_child, child, __ATOMIC_RELAXED);
-                snprintf(fake_map_now, sizeof fake_map_now, "%s", child ? dest_child[0] : dest_adult[0]);
-                tp_done_ticket = ticket, tp_result = 1, tp_taking = 0;
+                const int child = t == AGE_ASKED;
+                if (__atomic_load_n(&fake_child, __ATOMIC_RELAXED) == child) tp_result = 2;
+                else {
+                    __atomic_store_n(&fake_child, child, __ATOMIC_RELAXED);
+                    snprintf(fake_map_now, sizeof fake_map_now, "%s", child ? dest_child[0] : dest_adult[0]);
+                    tp_result = 1;
+                }
+                tp_done_ticket = ticket, tp_taking = 0;
                 log_unlock();
             } else if (t >= 0) {
                 sleep_ms(20);
@@ -988,7 +993,7 @@ int main(int argc, char **argv) {
         CHECK(strstr(line, "\"map\":\"KokiriForest_Child\"") &&
               strstr(line, "\"game\":{\"event\":false,\"loading\":true,\"age\":\"child\"}"));
         /* the age switch: none is the other age, and the reply has it and the map it reloads; to the age Link has already:
-           said, nothing asked; anything but child or adult: a bad request */
+           said, nothing done; anything but child or adult: a bad request */
         ask(c, "{\"id\":79,\"cmd\":\"age\",\"to\":\"teen\"}\n", "79", line, sizeof line, 2000);
         CHECK(strstr(line, "\"error\":\"bad_request\""));
         ask(c, "{\"id\":791,\"cmd\":\"age\",\"to\":\"child\"}\n", "791", line, sizeof line, 2000);
@@ -998,6 +1003,17 @@ int main(int argc, char **argv) {
               strstr(line, "\"age\":\"adult\",\"sent\":true,\"map\":\"KokiriForest_Adult\",\"accepted\":true"));
         status_until(c, "793", "\"age\":\"adult\"", NULL, line, sizeof line, 2000);
         CHECK(strstr(line, "\"age\":\"adult\""));
+        /* the bridge's sample of the age old (it says the child, Link is the adult): the game checks the age asked for when
+           it takes it, so "adult" does not flip the adult into the child, and none (the other age by the sample: the
+           adult) neither; both say the adult already */
+        stale_age = 1;
+        ask(c, "{\"id\":7931,\"cmd\":\"age\",\"to\":\"adult\"}\n", "7931", line, sizeof line, 3000);
+        CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"age\":\"adult\",\"sent\":false"));
+        CHECK(__atomic_load_n(&fake_child, __ATOMIC_RELAXED) == 0);
+        ask(c, "{\"id\":7932,\"cmd\":\"age\"}\n", "7932", line, sizeof line, 3000);
+        CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"age\":\"adult\",\"sent\":false"));
+        CHECK(__atomic_load_n(&fake_child, __ATOMIC_RELAXED) == 0);
+        stale_age = 0;
         /* not taken (not in play): a timeout that names the age switch, and the ask is withdrawn; one not taken yet is
            replaced by a later teleport, as a teleport is */
         teleport_held = 1;
