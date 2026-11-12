@@ -71,6 +71,7 @@ struct Pool {
     uint64_t sync_seg = 0;       // (and the parallel replay's segment whose uploads did)
     uint64_t last_value = 0;     // (the newest submission that bound it: its mirror is in use until that one is done)
     uint64_t direct_write_epoch = 0;   // (the part that last wrote it in guest memory, before it had a mirror)
+    uint64_t no_vram_epoch = 0;        // (its mirror found no VRAM in that submission: asked for again 64 submissions on)
     uint64_t retired_value = 0;  // (retired: the submission that may still use it)
     bool was_mirrored = false;   // (its mirror was given back: its pages stay in the captures, for the next one)
     // (EvilOOT) retired with its mirror on: the pool that took it in copies the GPU's contents from it when its own mirror is
@@ -2743,14 +2744,15 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     // before it found the mirror in the page table and read it unfilled (houses, rocks and bushes missing, geometry
     // torn, the more the segments the worse; #994 with RX_VK_PARALLEL). RX_VK_MIRROR_DEFER=1: at the next submission, as before)
     static const bool defer = env_on("RX_VK_MIRROR_DEFER");
-    if (p->mstate == Pool::MIRROR_NONE && !defer && !par && p->direct_write_epoch != mirror_epoch && mirror_make(*p)) {
+    const bool wait = p->no_vram_epoch && mirror_epoch - p->no_vram_epoch < 64;   // (mirror_make found no VRAM a moment ago)
+    if (p->mstate == Pool::MIRROR_NONE && !wait && !defer && !par && p->direct_write_epoch != mirror_epoch && mirror_make(*p)) {
         publish_cap_ranges();
         static int64_t made_now;
         if (++made_now % 200 == 1)
             logf("vk: pool %#llx (%llu MB): mirror made at its first binding (%lld so)", (unsigned long long)p->lo,
                  (unsigned long long)((p->hi - p->lo) >> 20), (long long)made_now);
     }
-    if (p->mstate == Pool::MIRROR_NONE) {   // (made at the next submission's start)
+    if (p->mstate == Pool::MIRROR_NONE && !wait) {   // (made at the next submission's start)
         p->mstate = Pool::MIRROR_WANTED;
         mirror_wanted.push_back(p);
     }
@@ -3049,9 +3051,26 @@ bool mirror_make(Pool& pool) {
                      (unsigned long long)(mirror_budget() >> 20));
             return false;
         }
+        // (no VRAM now is not no VRAM for good: refused for good, a 4 GB card's hottest pool (144 MB, ~2.3 GB bound in
+        // 600 submits) stayed in system memory all of Kokiri Forest whenever the textures and the retired pools' mirrors
+        // had VRAM full at its first binding, 18-22 fps; asked for again 64 submissions on it was mirrored ~70 submissions
+        // later and the GPU read ~0 MB over PCIe, 28-30 fps (RTX A1000 Laptop, 4 GB). RX_VK_MIRROR_NO_RETRY=1: as before)
+        static const bool no_retry = env_on("RX_VK_MIRROR_NO_RETRY");
         if (!create_device_buffer(n, kUsage, p->mirror, p->mirror_alloc)) {
-            p->mstate = Pool::MIRROR_REFUSED;
+            p->mstate = no_retry ? Pool::MIRROR_REFUSED : Pool::MIRROR_NONE;
+            p->no_vram_epoch = mirror_epoch;
+            static int logged;
+            if (logged++ < 8)
+                logf("vk: pool %#llx (%llu MB): no VRAM for its mirror, %s", (unsigned long long)p->lo,
+                     (unsigned long long)(n >> 20), no_retry ? "kept in system memory (RX_VK_MIRROR_NO_RETRY)" : "asked for again 64 submissions on");
             return false;
+        }
+        if (p->no_vram_epoch) {
+            static int logged;
+            if (logged++ < 8)
+                logf("vk: pool %#llx (%llu MB): its mirror made %llu submissions after it found no VRAM", (unsigned long long)p->lo,
+                     (unsigned long long)(n >> 20), (unsigned long long)(mirror_epoch - p->no_vram_epoch));
+            p->no_vram_epoch = 0;
         }
         {   // (hookshot) the page table points at the mirror: what the GPU wrote is there, and guest memory has it only after the write-back
             VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
