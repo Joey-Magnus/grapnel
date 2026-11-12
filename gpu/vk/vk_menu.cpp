@@ -551,9 +551,15 @@ int step_output_choice(int id, int dir) {
     const int at = (int)(std::find(order.begin(), order.end(), output_choice(id)) - order.begin());
     return order[std::clamp(at + dir, 0, (int)order.size() - 1)];
 }
-/// The Output resolution the Aspect ratio row's value v takes: the one chosen when it has that shape; else the screen's own
-/// size when it has it; else the one whose height is nearest the screen's (display_modes.h pick)
+/// The Output resolution the Aspect ratio row's value v takes: the one the game started with at its shape; the one chosen when
+/// it has that shape; else the screen's own size when it has it; else the one whose height is nearest the screen's
+/// (display_modes.h pick)
+int aspect_started = -1;   // (the Aspect ratio row's value at the start, from the size the run started with: outputs_sync)
+int output_started = 0;    // (the Output resolution the run started with)
 int output_for_aspect(int v) {
+    // (back at the shape the game started with: the size it started with, so nothing is left to restart for. A first start on a
+    // 21:9 screen is 21:9 with the game's own size, which ultrawide=1 widens: stepping away and back took 5120x2160 (native))
+    if (v == aspect_started && output_choice(output_started) == output_started) return output_started;
     const std::string name = aspect_shape(v);
     if (dm::ratio_name(size_of(output_at(opts.output_res))) == name) return opts.output_res;
     uint32_t sw = 0, sh = 0;
@@ -563,8 +569,8 @@ int output_for_aspect(int v) {
 }
 /// The picture an Output resolution choice makes: a size not 16:9 (the Aspect ratio row's 21:9, 16:10, 4:3...) takes its own
 /// shape; a 16:9 one, at the monitor's own Aspect ratio, the screen's. Both keep at most hos_wide_max_px() pixels, matching
-/// host/hos_main.c at startup (host/hos_wide_size.h); otherwise the
-/// 16:9 output. The game's own choice (0) as it is (its size comes from the game's graphics scale). *native: the screen's own size
+/// host/hos_main.c at startup (host/hos_wide_size.h); otherwise the 16:9 output. The game's own choice (0) as the game draws it,
+/// its 2048x1152 widened the same way (2728x1152 at a 5120x2160 screen's 21:9). *native: the screen's own size
 Out picture_for(int v, bool* native = nullptr) {
     v = output_choice(v);
     Out o = output_at(v);
@@ -574,7 +580,7 @@ Out picture_for(int v, bool* native = nullptr) {
     screen_size(&sw, &sh);
     uint32_t hw = 0, hh = 0;
     const bool have_host = host_screen_size(&hw, &hh);
-    if (v && !opts.handheld && (own || aspect_follows_host(opts.ultrawide))) {
+    if (!opts.handheld && (own || aspect_follows_host(opts.ultrawide))) {
         const double want = own ? (double)o.w / o.h : have_host ? (double)hw / hh : 0.0;   // (the host's screen: hos_main.c)
         const double game = 16.0 / 9.0;
         if (want > game * 1.01 || (want > 1.0 && want < game * 0.99)) {
@@ -1448,7 +1454,6 @@ const char* cheat_button_text(int i) {
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
 int ultrawide_read = 1;   // (ultrawide= as read: saved again while HOS_OUTPUT_RES holds the Output resolution and the row is as it was)
-int aspect_started = -1;   // (the Aspect ratio row's value at the start, from the size the run started with)
 /// (hookshot) The Aspect ratio and Output resolution rows' ends from the screen's sizes and the player's own (known once the
 /// options and HOS_OUTPUT_RES are read), and the Aspect ratio of the size chosen: a size of a shape of its own is that shape,
 /// a 16:9 one is the monitor's shape or 16:9, as ultrawide= says (menu_init, before restart_init: what the run starts with)
@@ -1460,11 +1465,12 @@ void outputs_sync() {
     }
     ultrawide_read = std::clamp(opts.ultrawide, 0, 1);
     opts.ultrawide = aspect_started = aspect_of_choice(opts.output_res, ultrawide_read);
+    output_started = opts.output_res;
     std::string list;
     for (const dm::Shape& s : shapes) list += (list.empty() ? "" : ", ") + s.name;
-    logf("vk: the Output resolution's sizes: %d (%s), the game's own and %s; shapes %s", custom_index(),
-         getenv("HOS_DISPLAY_MODES") ? "HOS_DISPLAY_MODES" : "the screen's modes",
-         custom_output.w ? "the player's own" : "no other", list.c_str());
+    logf("vk: the Output resolution's sizes: %d (%s, with the common sizes of their shapes, and the game's own)%s; shapes %s",
+         custom_index(), getenv("HOS_DISPLAY_MODES") ? "HOS_DISPLAY_MODES" : "the screen's modes",
+         custom_output.w ? ", and one of the player's own" : "", list.c_str());
 }
 
 int cur_tab = TAB_GRAPHICS;

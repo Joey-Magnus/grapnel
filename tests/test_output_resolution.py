@@ -163,7 +163,34 @@ int main(int argc, char **argv) {
         assert(strcmp(tx_ultrawide(1), "21:9 (monitor's)") == 0 && output_for_aspect(1) == custom_index() + 1);
         if (!opts.handheld) assert(strcmp(tx_output_res(custom_index() + 1), "3440x1440 (native)") == 0);
         output_extras.clear();
-        screen_w = screen_h = 0;
+        // (a 5120x2160 21:9 primary, as tested on #2566: its 21:9 modes, a first start at 21:9 (monitor's) with the game's own
+        // size. The arrows walk the 21:9 modes, the game's own shows what it draws, and back at 21:9 is the size started with)
+        for (const Out m : {Out{2560, 1080}, Out{3408, 1440}, Out{3440, 1440}, Out{3936, 1656}, Out{4352, 1832}, Out{5120, 2160}})
+            output_extras.push_back(m);
+        screen_w = host_w = 5120, screen_h = host_h = 2160;
+        opts.output_res = 0;
+        opts.ultrawide = aspect_of_choice(0, 1);
+        assert(aspect_shape(opts.ultrawide) == "21:9" && strcmp(tx_ultrawide(opts.ultrawide), "21:9 (monitor's)") == 0);
+        if (!opts.handheld) assert(strcmp(tx_output_res(0), "2728x1152 (game's)") == 0);
+        {
+            const unsigned widths[] = {2560, 3408, 3440, 3936, 4352, 5120};
+            int at = 0;
+            for (unsigned w : widths) {
+                at = step_output_choice(at, 1);
+                assert(output_at(at).w == w && display_modes::ratio_name(size_of(output_at(at))) == "21:9");
+            }
+            assert(step_output_choice(at, 1) == at);   // (the end)
+            if (!opts.handheld) assert(strcmp(tx_output_res(at), "5120x2160 (native)") == 0);
+        }
+        aspect_started = opts.ultrawide, output_started = 0;
+        // (to 16:9: the game's own is 16:9 already, kept; then 4K chosen there, and back at 21:9: the game's own, started with)
+        assert(output_for_aspect(aspect_index("16:9")) == 0);
+        opts.output_res = 3;
+        assert(output_at(3).w == 3840 && output_for_aspect(aspect_started) == 0);
+        opts.output_res = 0;
+        aspect_started = -1, output_started = 0;
+        output_extras.clear();
+        screen_w = screen_h = host_w = host_h = 0;
         opts.output_res = was, opts.ultrawide = was_aspect;
     } else {   // (the player's own: its shape listed, and chosen with it)
         assert(output_shapes()[output_shape_of(6)].name == display_modes::ratio_name(size_of(custom_output)));
@@ -205,7 +232,8 @@ int main(int argc, char **argv) {
         assert(strcmp(tx_output_res(3), "6256x1760") == 0);   // (3840x2160 at 32:9: at most 5120x2160's pixels, host/hos_wide_size.h)
         assert(strcmp(tx_output_res(1), "3840x1080") == 0);
         assert(strcmp(tx_output_res(4), "5120x1440 (native)") == 0);   // (32:9 itself)
-        assert(strcmp(tx_output_res(0), "2048x1152 (game's)") == 0);   // (the game's own keeps its name)
+        // (the game's own at the host's 32:9: its 2048x1152 widened as the game draws it, at its height)
+        assert(strcmp(tx_output_res(0), "4096x1152 (game's)") == 0);
         opts.ultrawide = aspect_index("16:9");   // (16:9 on that monitor: the outputs as they are)
         assert(!aspect_is_monitors(opts.ultrawide) && strcmp(tx_output_res(3), "3840x2160") == 0);
         screen_w = 3840, screen_h = 2160;   // (a 16:9 monitor: 16:9 is its own, native named)
