@@ -4209,20 +4209,20 @@ void texture_frame(uint64_t completed) {
 
             // Hard caps based on system RAM
             if (system_ram <= 8ull << 30) {
-                budget = std::min(budget, 1536ull << 20);   // 1.5 GB
+                budget = std::min<uint64_t>(budget, 1536ull << 20);   // 1.5 GB
             } else if (system_ram <= 12ull << 30) {
-                budget = std::min(budget, 2048ull << 20);   // 2 GB
+                budget = std::min<uint64_t>(budget, 2048ull << 20);   // 2 GB
             } else if (system_ram <= 16ull << 30) {
-                budget = std::min(budget, 2560ull << 20);   // 2.5 GB (previous default)
+                budget = std::min<uint64_t>(budget, 2560ull << 20);   // 2.5 GB (previous default)
             } else if (system_ram <= 24ull << 30) {
-                budget = std::min(budget, 3584ull << 20);   // 3.5 GB
+                budget = std::min<uint64_t>(budget, 3584ull << 20);   // 3.5 GB
             } else if (system_ram <= 32ull << 30) {
-                budget = std::min(budget, 4096ull << 20);   // 4 GB
+                budget = std::min<uint64_t>(budget, 4096ull << 20);   // 4 GB
             } else {
-                budget = std::min(budget, 6144ull << 20);   // 6 GB (dGPU max)
+                budget = std::min<uint64_t>(budget, 6144ull << 20);   // 6 GB (dGPU max)
             }
 
-            budget = std::max(budget, 1024ull << 20);  // Minimum 1 GB
+            budget = std::max<uint64_t>(budget, 1024ull << 20);  // Minimum 1 GB
             budget = std::min(budget, driver_budget);  // Don't exceed driver's limit
             own = budget;
 
