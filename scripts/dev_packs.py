@@ -28,6 +28,7 @@ A pack's modules come from the same base as the rest of the runtime, so the game
 (MKWVK_API_VERSION). Two packs that bring the same file are refused: merge their branches and build one pack.
 """
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
@@ -62,7 +63,8 @@ INCLUDE = re.compile(r'#\s*include\s+"([^"]+)"')
 NO_MODULE = ("docs/", "tests/", ".github/", ".claude/")
 HEADERS = (".h", ".hpp", ".hh", ".inc", ".inl")
 SOURCES = (".c", ".cc", ".cpp") + HEADERS
-GENERATED_DIRS = ("prompts/",)   # (what make_game.py generates into the game folder by file: a file the change no longer makes goes)
+# (files the game writes beside itself while it runs, besides the caches: never a build's output, so never "deleted" by a pack)
+WRITTEN_IN_PLAY = ("hookshot_options.ini", "hookshot_log.txt", "hookshot_driver_faults.txt", "hookshot_prepared.bin.warming")
 
 
 def load_make_game(root=ROOT):
@@ -156,18 +158,54 @@ def stamped_may_differ(paths, source):
     return source in paths or any(p.endswith(HEADERS) for p in paths)
 
 
-def link_inputs_changed(paths, lift_files):
-    """A change that reaches the modules besides their objects, which the link lists do not show: an nx2/ file other than the
-    translator's (build.py's flags and link options, the Windows manifest and other resources) or a file under host/, gpu/ or
-    third_party/ that is not C or C++ (libraries, resources, shader sources). The pack then keeps both modules"""
-    return any((p.startswith("nx2/") and p not in lift_files) or
-               (p.startswith(("host/", "gpu/", "third_party/")) and not p.endswith(SOURCES) and p not in lift_files) for p in paths)
+def build_scripts(root):
+    """nx2/build.py and every Python module it imports (as make_game.lift_sources finds the lift's: a64-kit's folders, then nx2/)"""
+    kit = os.path.join(root, "third_party", "a64-kit")
+    path = [os.path.join(kit, d) for d in ("rt", "hos", "tools", "lift")] + [os.path.join(root, "nx2")]
+    todo, seen = [os.path.join(root, "nx2", "build.py")], set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        with open(f, "rb") as src:
+            tree = ast.parse(src.read(), f)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [n.name for n in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                for d in path:
+                    m = os.path.join(d, name.split(".")[0] + ".py")
+                    if os.path.isfile(m):
+                        todo.append(m)
+                        break
+    return {os.path.relpath(f, root).replace(os.sep, "/") for f in seen}
+
+
+def link_inputs_changed(paths, lift_files, build_files):
+    """A change that reaches the modules besides their objects, which the link lists do not show: the build's own scripts
+    (build_files: flags, link options, the Windows manifest, tools such as a64-kit's toolchain.py even when the lift reads them
+    too), a data file under nx2/ that is not the translator's, or a file under host/, gpu/ or third_party/ that is not C or C++
+    (libraries, resources, shader sources). The pack then keeps both modules. Other nx2/ Python (the lift's, make_game.py's)
+    shows in the objects or in the game folder's files"""
+    def reaches(p):
+        if p in build_files:
+            return True
+        if p.startswith("nx2/"):
+            return not p.endswith(".py") and p not in lift_files
+        return p.startswith(("host/", "gpu/", "third_party/")) and not p.endswith(SOURCES) and p not in lift_files
+    return any(reaches(p) for p in paths)
 
 
 def generated_changes(base_game, game):
     """The files of a built game folder that differ from the base's, besides the modules, their maps and the caches: what the
-    build generates (the shader seed, button prompts, files it would write into romfs; romfs files the same as the base's are
-    its hard links, so only new ones are read), and the generated files the base has and this build did not make"""
+    build generates (the shader seed, the shipped pipeline list, button prompts, files it would write into romfs; romfs files the
+    same as the base's are its hard links, so only new ones are read), and the base's files outside romfs that this build did not
+    make (the game folder holds only this build's output: clear_output)"""
     skip = {m for mod in MODULES for m in mod[:2] if m} | set(CACHES)
     changed = []
     for top, dirs, fs in os.walk(game):
@@ -181,12 +219,27 @@ def generated_changes(base_game, game):
             if not (os.path.isfile(q) and same_file(p, q)):
                 changed.append(rel)
     gone = []
-    for d in GENERATED_DIRS:
-        for top, dirs, fs in os.walk(os.path.join(base_game, d)):
-            dirs.sort()
-            gone += [rel for rel in (os.path.relpath(os.path.join(top, f), base_game).replace(os.sep, "/") for f in sorted(fs))
-                     if not os.path.isfile(os.path.join(game, rel))]
+    for top, dirs, fs in os.walk(base_game):
+        dirs[:] = sorted(x for x in dirs if not (top == base_game and x == "romfs"))
+        for f in sorted(fs):
+            rel = os.path.relpath(os.path.join(top, f), base_game).replace(os.sep, "/")
+            if rel in skip or rel in WRITTEN_IN_PLAY or rel.endswith(".log") or os.path.isfile(os.path.join(game, rel)):
+                continue
+            gone.append(rel)
     return changed, gone
+
+
+def clear_output(game):
+    """A game folder that will hold only the next build's output: everything but romfs (hard links, rebuilt for nothing otherwise)
+    goes, so a file an earlier pack's build made and this one does not is not taken for this change's"""
+    for name in os.listdir(game) if os.path.isdir(game) else ():
+        p = os.path.join(game, name)
+        if name == "romfs":
+            continue
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p)
+        else:
+            os.remove(p)
 
 
 def run(cmd, cwd, env=None):
@@ -281,9 +334,10 @@ def cmd_pack(a):
                                                                   "game": "the game (both modules)"}[how]), flush=True)
     t, w, files, extra, gone = time.time(), pack_folders(d), {}, [], []
     lift_files = {os.path.relpath(f, tree).replace(os.sep, "/") for f in load_make_game(tree).lift_sources()}
-    whole = link_inputs_changed(changed, lift_files)
+    whole = link_inputs_changed(changed, lift_files, build_scripts(tree))
     if how == "game":
         link_objects(b["work"], w["game_work"])
+        clear_output(w["game_out"])
         make_game(tree, b, w["game_work"], w["game_out"], {"HOOKSHOT_NO_PREPARE": "1"})
         built, kinds = os.path.join(w["game_work"], "sa", "build"), MODULES
     elif how == "renderer":

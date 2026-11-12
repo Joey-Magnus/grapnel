@@ -102,22 +102,25 @@ def test_module_changed(d):
 
 
 def test_inputs_beside_the_objects():
-    lift = {"nx2/oot_patches.py", "nx2/lift.py", "third_party/a64-kit/tools/x.txt"}
-    lic = lambda *p: packs.link_inputs_changed(list(p), lift)
+    lift = {os.path.relpath(f, ROOT).replace(os.sep, "/") for f in make_game.lift_sources()}
+    build = packs.build_scripts(str(ROOT))
+    for f in ("nx2/build.py", "nx2/win_manifest.py", "nx2/version.py", "third_party/a64-kit/tools/toolchain.py"):
+        check("%s found among the build's scripts (%s)" % (f, sorted(build)), f in build)
+    check("the lift's own scripts are not the build's", "nx2/lift.py" not in build)
+    lic = lambda *p: packs.link_inputs_changed(list(p), lift, build)
     check("a game patch shows in the objects", not lic("nx2/oot_patches.py", "host/hos_thread.c"))
+    check("toolchain.py's link options, though the lift reads it too: both modules", lic("third_party/a64-kit/tools/toolchain.py"))
+    check("make_game.py's own helpers show in the game folder", not lic("nx2/pipeline_states.py"))
     check("the Windows manifest does not: both modules", lic("nx2/win_manifest.py"))
     check("nor build.py's flags", lic("nx2/build.py"))
     check("nor a library", lic("third_party/sdl2/SDL2.lib"))
     check("nor a shader source", lic("gpu/vk/shaders/blit.comp"))
-    check("a translator data file shows in the objects", not lic("third_party/a64-kit/tools/x.txt"))
+    data = sorted(f for f in lift if f.endswith((".txt", ".json")))
+    check("a translator data file shows in the objects (%s)" % data[:1], data and not lic(data[0]))
     md = packs.stamped_may_differ
     check("the version object's own source", md(["host/hos_main.c"], "host/hos_main.c"))
     check("a header it may include (oot_cheat_items.h reaches hos_main.c and vk_menu.cpp)", md(["gpu/vk/oot_cheat_items.h"], "host/hos_main.c"))
     check("another source alone: only the version differs there", not md(["host/nvn_native.c"], "host/hos_main.c"))
-    src = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
-    for d in packs.GENERATED_DIRS:
-        check("make_game.py still generates %s (anchor: 'os.path.join(out, \"%s\")')" % (d, d.rstrip("/")),
-              'os.path.join(out, "%s")' % d.rstrip("/") in src)
 
 
 def test_pack_folders(d):
@@ -155,6 +158,9 @@ def test_generated_and_runtime(d):
     write(game / "hookshot_programs.bin", b"cache")
     write(game / "language.txt", b"en-US")
     write(game / "prompts" / "Common.bntx", b"base prompts")
+    write(game / "hookshot_pipeline_states_shipped.bin", b"shipped")
+    write(game / "hookshot_options.ini", b"[menu]")
+    write(game / "hookshot.map", b"map")
     os.makedirs(out / "romfs" / "a")
     os.link(game / "romfs" / "a" / "data.bin", out / "romfs" / "a" / "data.bin")
     write(out / "romfs" / "prompts" / "icon.bntx", b"new icon")
@@ -163,7 +169,12 @@ def test_generated_and_runtime(d):
     write(out / "language.txt", b"en-US")
     gen, gone = packs.generated_changes(str(game), str(out))
     check("a regenerated file is kept, the same ones, the modules and the caches are not: %s" % gen, gen == ["romfs/prompts/icon.bntx"])
-    check("a generated file the build no longer makes is gone: %s" % gone, gone == ["prompts/Common.bntx"])
+    check("generated files the build no longer makes are gone, the game's own files are not: %s" % gone,
+          gone == ["hookshot_pipeline_states_shipped.bin", "prompts/Common.bntx"])
+    write(out / "stale.bin", b"an earlier pack's")
+    packs.clear_output(str(out))
+    check("the output folder keeps only romfs for the next build", sorted(os.listdir(out)) == ["romfs"])
+    check("...its links intact", os.path.samefile(out / "romfs" / "a" / "data.bin", game / "romfs" / "a" / "data.bin"))
     b = {"commit": "c" * 40, "work": str(base_dir / "work"), "game": str(game), "romfs": "r", "exefs": "e"}
     packs.write_base(str(base_dir), b)
     for name, files, generated, on in (("cpu", {game_mod: "h"}, ["romfs/prompts/icon.bntx"], b["commit"]),
