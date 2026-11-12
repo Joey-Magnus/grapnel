@@ -53,11 +53,6 @@ CHECK = r'''
 #include "hookshot_env.h"
 typedef uintptr_t DWORD_PTR;
 typedef void* HANDLE;
-struct MEMORYSTATUSEX {
-    unsigned long dwLength;
-    unsigned long long ullAvailPhys;
-    unsigned long long ullTotalPhys;
-};
 static unsigned fake_hw = 24;
 static uint64_t fake_mask = 0;
 static bool fake_ok = true;
@@ -68,10 +63,10 @@ static int GetProcessAffinityMask(HANDLE, DWORD_PTR* proc, DWORD_PTR* sys) {
     *proc = (DWORD_PTR)fake_mask, *sys = ~(DWORD_PTR)0;
     return fake_ok;
 }
-static int GlobalMemoryStatusEx(MEMORYSTATUSEX* m) {
-    m->ullAvailPhys = fake_avail_mb << 20;
-    m->ullTotalPhys = fake_total_mb << 20;
-    return 1;
+// (stand-in: the real prepare_ram_mb reads GlobalMemoryStatusEx /proc; here the test drives avail/total)
+void prepare_ram_mb(uint64_t* avail_mb, uint64_t* total_mb) {
+    if (avail_mb) *avail_mb = fake_avail_mb;
+    if (total_mb) *total_mb = fake_total_mb;
 }
 static void clear_overrides() {
 #ifdef _WIN32
@@ -153,11 +148,11 @@ def main():
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     shader = _with_cache(ROOT / "gpu/vk/vk_shader.cpp")
     pieces = [
-        "#include \"hookshot_env.h\"\n",
+        "#include <cstdlib>\n#include \"hookshot_env.h\"\n",
         "enum class PreparePool : unsigned { Translate, Pipelines, Background };\n",
+        "void prepare_ram_mb(uint64_t* avail_mb, uint64_t* total_mb);\n",
         body(shader, "unsigned usable_cpus() {"),
         body(shader, "unsigned half_cpus() {"),
-        body(shader, "void prepare_ram_mb("),
         body(shader, "static unsigned prepare_worker_peak_mb()"),
         body(shader, "static unsigned prepare_reserve_mb("),
         body(shader, "static bool prepare_ram_guard_on()"),
@@ -166,7 +161,7 @@ def main():
     code = "\n".join(pieces).replace("std::thread::hardware_concurrency()", "fake_hw")
     if "fake_hw" not in code:
         raise SystemExit("FAIL: prepare pool helpers no longer read the PC's CPU count")
-    if "prepare_ram_mb(" not in code or "RAM guard" not in code:
+    if "RAM guard" not in code:
         raise SystemExit("FAIL: prepare_pool_workers no longer applies the RAM guard")
 
     for fn in ("bool prepare_run(", "void state_list_prepare(", "bool warm_libraries(", "void predict_run(",
@@ -182,9 +177,10 @@ def main():
         (temp / "hookshot_env.h").write_text(ENV_H.read_text(encoding="utf-8"), encoding="utf-8")
         (temp / "cpus.inc").write_text(code + "\n", encoding="utf-8")
         (temp / "check.cpp").write_text(CHECK, encoding="utf-8")
-        exe = temp / "check.exe"
-        cmd = [a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-I" + str(temp), str(temp / "check.cpp"),
-               "-o", str(exe)]
+        exe = temp / ("check.exe" if os.name == "nt" else "check")
+        # (-D_CRT_SECURE_NO_WARNINGS: MSVC CRT marks getenv deprecated under -Werror on Windows CI)
+        cmd = [a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
+               "-D_CRT_SECURE_NO_WARNINGS", "-I" + str(temp), str(temp / "check.cpp"), "-o", str(exe)]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode:
             print(result.stdout + result.stderr)
