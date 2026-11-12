@@ -386,9 +386,10 @@ void load_at_create(const nvn_prog& prog, const CreatedProgram& made) {
     } else {
         for (const Signature& sig : index_signatures) {
             const uint64_t key = program_created_key(prog.serial, sig.vattr, sig.color_types);
-            // (RX_VK_LOAD_UNLISTED=0: only programs a note names, as RX_VK_LOAD=start keeps ready only those; a kept program
-            // no list has a pipeline of is then read at its first draw, as there)
-            static const bool unlisted = !getenv("RX_VK_LOAD_UNLISTED") || atoi(getenv("RX_VK_LOAD_UNLISTED")) != 0;
+            // (only programs a note names, as RX_VK_LOAD=start keeps ready only those; a kept program no list has a pipeline
+            // of is read at its first draw, as there. RX_VK_LOAD_UNLISTED=1 loads those here too: 680 MB more host heap a
+            // minute into play on the full tour, and no fewer first uses needing work)
+            static const bool unlisted = getenv("RX_VK_LOAD_UNLISTED") && atoi(getenv("RX_VK_LOAD_UNLISTED")) != 0;
             if (key && index_kept.count(key) && (unlisted || index_notes.count(key)) &&
                 std::find(keys.begin(), keys.end(), key) == keys.end())
                 keys.push_back(key);
