@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
     opts.handheld = handheld();
     opts.output_res = opts.handheld ? 0 : parse_output(e ? e : text);
     if (!opts.handheld) assert(opts.output_res == mode);
-    assert(last_output() == 6 && custom_index() == 6);
+    assert(custom_index() == 6);
     assert(output_choice(-1) == 0 && output_choice(5) == 5 && output_choice(7) == 0);
     assert(output_choice(6) == (custom_output.w ? 6 : 0));
     // (each shape's sizes from smallest to largest, by width then height; 16:9: 1920x1080, 2048x1152, 2560x1440, 3840x2160,
@@ -99,35 +99,47 @@ int main(int argc, char **argv) {
         const std::vector<display_modes::Shape> shapes = output_shapes();
         assert(shapes.size() == 2 && shapes[0].name == "16:9" && shapes[1].name == "32:9");
         assert(output_shape_of(0) == 0 && output_shape_of(1) == 0 && output_shape_of(4) == 1 && output_shape_of(5) == 0);
-        // (the Aspect ratio row: the shapes of the sizes offered, narrowest first, 16:9 and 32:9 here; none the monitor's while
-        // the screen is not known)
-        assert(aspect_shape(0) == "16:9" && aspect_shape(1) == "32:9" && aspect_shape(9) == "32:9" && aspect_index("32:9") == 1);
-        assert(aspect_index("21:9") == 0 && monitor_shape().empty() && !aspect_is_monitors(0) && !aspect_is_monitors(1));
-        assert(strcmp(tx_ultrawide(0), "16:9") == 0 && strcmp(tx_ultrawide(1), "32:9") == 0);
+        // (the Aspect ratio row: the shapes of the sizes offered, narrowest first, 16:9 and 32:9 here; the screen not known, so
+        // none is the monitor's and Monitor's shape is a value of its own after them, as on main: 16:9 sizes, ultrawide=1)
+        assert(aspect_shape(0) == "16:9" && aspect_shape(1) == "32:9" && aspect_index("32:9") == 1 && aspect_index("21:9") == 0);
+        assert(monitor_shape().empty() && aspect_monitor_value() == 2 && aspect_last() == 2 && aspect_shape(2) == "16:9");
+        assert(aspect_is_monitors(2) && !aspect_is_monitors(0) && !aspect_is_monitors(1));
+        assert(strcmp(tx_ultrawide(0), "16:9") == 0 && strcmp(tx_ultrawide(1), "32:9") == 0 &&
+               strcmp(tx_ultrawide(2), "Monitor's shape") == 0);
         // (a size of its own shape is that shape; a 16:9 one is 16:9, or the monitor's shape where ultrawide= follows it)
         assert(aspect_of_choice(4, 0) == 1 && aspect_of_choice(4, 1) == 1 && aspect_of_choice(1, 0) == 0 &&
-               aspect_of_choice(1, 1) == 0 && aspect_of_choice(0, 1) == 0);
-        const int was = opts.output_res;
+               aspect_of_choice(1, 1) == 2 && aspect_of_choice(0, 1) == 2);
+        // (the control bridge's way to a size: its own shape, 16:9 for a 16:9 one)
+        assert(aspect_for_choice(4) == 1 && aspect_for_choice(1) == 0 && aspect_for_choice(5) == 0);
+        const int was = opts.output_res, was_aspect = opts.ultrawide;
         opts.output_res = 4;
-        // (with no screen size known: the largest of the shape)
-        assert(output_for_aspect(1) == 4 && output_for_aspect(0) == 5);
-        screen_w = 2560, screen_h = 1440;   // (a 16:9 screen: 16:9 is the monitor's, at the screen's own size)
-        assert(monitor_shape() == "16:9" && aspect_is_monitors(0) && !aspect_is_monitors(1));
+        // (with no screen size known: the largest of the shape; Monitor's shape, 16:9's sizes)
+        assert(output_for_aspect(1) == 4 && output_for_aspect(0) == 5 && output_for_aspect(2) == 5);
+        screen_w = 2560, screen_h = 1440;   // (a 16:9 screen: 16:9 is the monitor's, at the screen's own size; no value of its own)
+        assert(monitor_shape() == "16:9" && aspect_monitor_value() == -1 && aspect_last() == 1);
+        assert(aspect_is_monitors(0) && !aspect_is_monitors(1));
         assert(strcmp(tx_ultrawide(0), "16:9 (monitor's)") == 0 && strcmp(tx_ultrawide(1), "32:9") == 0);
         assert(output_for_aspect(0) == 2 && aspect_of_choice(1, 1) == 0);
-        screen_w = 1920, screen_h = 1080;   // (a 1080p screen: 16:9 at its own size; 32:9 has none that low, its smallest)
+        screen_w = 1920, screen_h = 1080;   // (a 1080p screen: 16:9 at its own size; 32:9 has none that low, the nearest)
         assert(output_for_aspect(0) == 1 && output_for_aspect(1) == 4);
         opts.output_res = 1;   // (a 16:9 size chosen keeps itself at 16:9)
         assert(output_for_aspect(0) == 1 && output_for_aspect(1) == 4);
         screen_w = 5120, screen_h = 1440;   // (a 32:9 screen: 32:9 is the monitor's, and a 16:9 size following it is 32:9)
         assert(monitor_shape() == "32:9" && strcmp(tx_ultrawide(1), "32:9 (monitor's)") == 0 && strcmp(tx_ultrawide(0), "16:9") == 0);
         assert(aspect_of_choice(1, 1) == 1 && aspect_of_choice(1, 0) == 0 && output_for_aspect(1) == 4);
-        screen_w = 3440, screen_h = 1440;   // (a 21:9 screen whose shape is not offered here: none marked, ultrawide= kept)
-        assert(monitor_shape().empty() && aspect_of_choice(1, 1) == 0);
-        opts.output_res = 4;   // (16:9 no taller than the screen: 2560x1440, not 5120x2880)
+        // (the bridge from the monitor's 32:9 to a 16:9 size: the row goes to 16:9, not the monitor's shape)
+        assert(aspect_for_choice(2) == 0);
+        // (a 16:9 size kept from before at the monitor's shape: the arrows walk the monitor's own sizes, the row's list)
+        opts.ultrawide = 1;
+        assert(step_shape(1) == "32:9" && step_output_choice(1, 1) == 4 && step_output_choice(1, -1) == 1);
+        opts.ultrawide = 0;
+        assert(step_shape(1) == "16:9" && step_output_choice(1, 1) == 0);
+        screen_w = 3440, screen_h = 1440;   // (a 21:9 screen whose shape is not offered here: Monitor's shape as a value)
+        assert(monitor_shape().empty() && aspect_monitor_value() == 2 && aspect_of_choice(1, 1) == 2);
+        opts.output_res = 4;   // (16:9 nearest the screen's height: 2560x1440, not 5120x2880)
         assert(output_for_aspect(0) == 2);
         screen_w = screen_h = 0;
-        opts.output_res = was;
+        opts.output_res = was, opts.ultrawide = was_aspect;
     } else {   // (the player's own: its shape listed, and chosen with it)
         assert(output_shapes()[output_shape_of(6)].name == display_modes::ratio_name(size_of(custom_output)));
     }

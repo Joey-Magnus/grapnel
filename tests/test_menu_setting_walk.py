@@ -59,6 +59,8 @@ bool screen_size(uint32_t*, uint32_t*) { return false; }   // (the main screen: 
 #define CHECK(x, ...) do { if (!(x)) { std::fprintf(stderr, "FAIL %d: %s: ", __LINE__, #x); std::fprintf(stderr, __VA_ARGS__); std::fputc('\n', stderr); failed = 1; } } while (0)
 /* OUTPUTS */
 dm::Size size_of(Out o) { return {o.w, o.h}; }   // (vk_menu.cpp's, after the part cut out)
+// (the shape the arrows walk: the size's own; the monitor's shape for a 16:9 size kept at it is test_output_resolution's)
+std::string step_shape(int id) { return dm::ratio_name(size_of(output_at(id))); }
 /* STEP_OUTPUT */
 /* WALK */
 
@@ -89,7 +91,7 @@ bool set(Row& r, int want) {   // (menu_setting_set's call)
     const auto shape = [](int v) { return display_modes::ratio_name(size_of(output_at(v))); };
     if (r.value == &output && output_choice(want) == want && shape(want) != shape(output)) {
         int to = -1;
-        for (int v = 0; v <= last_output(); v++)
+        for (int v = 0; v <= custom_index(); v++)
             if (output_choice(v) == v && shape(v) == shape(want) &&
                 (to < 0 || (uint64_t)output_at(v).w * output_at(v).h > (uint64_t)output_at(to).w * output_at(to).h)) to = v;
         output = to;
@@ -107,10 +109,10 @@ int main() {
     // (the output sizes: every size from every size, with and without a size of the player's own)
     for (int custom = 0; custom < 2; custom++) {
         custom_output = custom ? Out{3440, 1440} : Out{0, 0};
-        Row r{&output, 0, last_output()};
-        for (int from = 0; from <= last_output(); from++) {
+        Row r{&output, 0, custom_index()};
+        for (int from = 0; from <= custom_index(); from++) {
             if (output_choice(from) != from) continue;
-            for (int want = 0; want <= last_output(); want++) {
+            for (int want = 0; want <= custom_index(); want++) {
                 output = from;
                 const bool ok = set(r, want);
                 if (output_choice(want) == want) CHECK(ok && output == want, "custom %d: %d to %d gave %d", custom, from, want, output);
@@ -190,7 +192,7 @@ def fixture(source):
     outputs_to = menu.index("dm::Size size_of(Out o)", outputs_from)
     # (a size of another shape than the one chosen: menu_setting_set moves the Aspect ratio to its shape before the walk)
     setter_text = definition(menu, "int menu_setting_set")
-    if "aspect_of_choice(want" not in setter_text:
+    if "aspect_for_choice(want)" not in setter_text:   # (its shape: test_output_resolution checks aspect_for_choice)
         raise SystemExit("menu_setting_set no longer moves the Aspect ratio to a size of another shape before the walk")
     walk = re.search(r"template <class State, class At, class Step>\s*bool walk_to\(", menu)
     if not walk:

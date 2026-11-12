@@ -55,7 +55,7 @@ void outputs_sync() {}   // (the rows' ends and the Aspect ratio from the sizes 
 // (the main screen: not known here, so no shape is the monitor's and ultrawide= is saved as read)
 bool screen_size(uint32_t*, uint32_t*) { return false; }
 std::string monitor_shape() { return {}; }
-int ultrawide_started = 1;
+int ultrawide_read = 1, aspect_started = -1;
 bool aspect_is_monitors(int) { return false; }
 #ifdef _WIN32
 static int setenv(const char* name, const char* value, int) { return _putenv_s(name, value); }
