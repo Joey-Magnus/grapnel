@@ -38,6 +38,7 @@
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
+#include "vk_framegen.h"   // (Frame generation by: who makes the frames now, framegen_maker)
 #include "vk_bug_report.h"   // (the Gameplay tab's Bug report: what it writes, and how)
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
@@ -694,11 +695,51 @@ const char* hn_framegen(int v, int variant) {
     return b[std::clamp(v, 2, 8)];
 }
 MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
-const char* tx_framegen_by(int v) { return v ? "Built-in" : "Auto"; }
-MENU_HINTS(hn_framegen_by, 0,
-           "NVIDIA DLSS Frame Generation where it runs (RTX 40 and newer, with the Upscaler's depth and motion), else the "
-           "built-in one.",
-           "The renderer's own: made from the finished picture alone.")
+/// (hookshot) Who made the made frames lately (vk_framegen.cpp framegen_maker), with Frame generation on; nullptr: none made.
+/// One name each, "<engine> FG", on the Frame generation by row and the FPS counter alike
+const char* framegen_maker_name() {
+    if (opts.framegen < 1) return nullptr;
+    switch (framegen_maker()) {
+    case FgMaker::Dlss: return "DLSS FG";
+    case FgMaker::Fsr3: return "FSR 3.1 FG";
+    case FgMaker::BuiltIn: return "Built-in FG";
+    default: return nullptr;
+    }
+}
+/// Frame generation by: at Auto, who makes the frames now, so a player sees whether DLSS Frame Generation runs
+const char* tx_framegen_by(int v) {
+    const char* who = v ? nullptr : framegen_maker_name();
+    if (!who) return v ? "Built-in FG" : "Auto";
+    static char b[40];
+    snprintf(b, sizeof b, "Auto: %s", who);
+    return b;
+}
+/// Its line: at Auto with another than DLSS-G making the frames, why (the Auto multiplier, or DLSS-G's own reason,
+/// vk_dlss.cpp dlss_fg_why_not). Variants (every one): Auto's, Built-in's, the Auto multiplier's, then each of DLSS-G's
+const char* hn_framegen_by(int v, int variant) {
+    static const char* const t[] = {
+        "NVIDIA DLSS Frame Generation where it runs (RTX 40 and newer, with the Upscaler's depth and motion), else the "
+        "built-in one.",
+        "The renderer's own: made from the finished picture alone.",
+        "Not DLSS FG now: DLSS Frame Generation makes a fixed 2x to 8x, not Frame generation's Auto.",
+    };
+    if (v != 0) return variant <= 0 ? t[1] : nullptr;
+    static char b[8][400];
+    if (variant >= 0) {
+        if (variant == 0 || variant == 1) return t[variant == 0 ? 0 : 2];
+        const char* why = variant - 2 < 8 ? dlss_fg_why_not(variant - 2) : nullptr;
+        if (!why) return nullptr;
+        snprintf(b[variant - 2], sizeof b[0], "Not DLSS FG now: %s", why);
+        return b[variant - 2];
+    }
+    const FgMaker m = opts.framegen >= 1 ? framegen_maker() : FgMaker::None;
+    if (m != FgMaker::BuiltIn && m != FgMaker::Fsr3) return t[0];
+    if (opts.framegen == 1) return t[2];
+    const char* why = dlss_fg_why_not();
+    if (!why) return t[0];
+    snprintf(b[7], sizeof b[7], "Not DLSS FG now: %s", why);
+    return b[7];
+}
 const char* tx_vsync(int v) {
     static const char* const t[] = {"Auto", "On", "Off"};
     return t[std::clamp(v, 0, 2)];
@@ -4545,7 +4586,10 @@ void menu_tick() {
         if (fps_take(now, shown_frames.load(), game_frames.load(), &next, &last_shown, &last_game, &shown, &game)) {
             snprintf(fps_text, sizeof fps_text, "%.0f", shown);
             fps_rate_now = opts.framegen >= 1 ? game : shown;   // (the game's own against its cap, with frame generation too)
-            if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
+            // (the game's own rate, "Base", and who makes the frames: DLSS FG, FSR 3.1 FG or Built-in FG)
+            const char* who = framegen_maker_name();
+            if (opts.framegen >= 1 && who) snprintf(fps_sub, sizeof fps_sub, "Base %.0f, %s", game, who);
+            else if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "Base %.0f", game);
             else fps_sub[0] = 0;
         }
         static int64_t texts_next = 0;   // (the lines past the number: four times a second, each over the last half second)

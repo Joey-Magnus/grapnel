@@ -33,6 +33,10 @@ struct TemporalFrame;
 /// Whether it is asked for now: the Insert menu's Frame generation by row (Auto), RX_VK_DLSS_FG=0 / 1 over it (and the build
 /// has it)
 bool dlss_fg_wanted();
+/// (hookshot) Why the last set it was asked for went to the renderer's own frame generation, for the Insert menu's Frame
+/// generation by row: nullptr when DLSS-G made it (or nothing is known). variant 0, 1, ...: every line it can be, until nullptr
+/// (the menu keeps the height of the tallest)
+const char* dlss_fg_why_not(int variant = -1);
 /// Whether it makes the sets of `frames` made frames (the multiplier less 1) as far as is known: asked for, on a device DLSS
 /// runs on, NGX's answer not a no, its feature not given up and its runtime making that many (an older one makes 1 at the
 /// most, so 3x and 4x are the renderer's own). The swapchain's present mode follows it: vk_main.cpp swapchain_dlssg
