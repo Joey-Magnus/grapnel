@@ -162,8 +162,7 @@ Code read_code(const nvn_stage_data& sd) {
     if (!sd.control || !sd.data || !host->gpu_read(sd.control, ctl, sizeof ctl) || !control_end(ctl, &end)) return Code{};
     std::vector<uint8_t> area(end);
     if (!host->gpu_read(sd.data, area.data(), end)) return Code{};
-    static const char* const dump_stages = getenv("RX_VK_DUMP_STAGES");   // (read once: every code read asked)
-    if (const char* dir = dump_stages) {   // (hookshot, RX_VK_DUMP_STAGES=<folder>: control and code as the game has them)
+    if (const char* dir = getenv("RX_VK_DUMP_STAGES")) {   // (hookshot, RX_VK_DUMP_STAGES=<folder>: control and code as the game has them)
         char path[512];
         snprintf(path, sizeof path, "%s/%016llx.bin", dir, (unsigned long long)code_key(ctl, area.data(), end));
         if (FILE* f = fopen(path, "wb")) fwrite(ctl, 1, sizeof ctl, f), fwrite(area.data(), 1, end, f), fclose(f);
