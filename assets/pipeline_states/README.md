@@ -2,7 +2,9 @@
 
 **These are not Nintendo files, and they hold no game code or game data.** Each is a list of Vulkan pipelines that
 Hookshot's renderer made while someone played on their own PC, written by Hookshot itself. Keep it that way: only lists
-written by Hookshot and this folder's tool go in here.
+written by Hookshot and this folder's tool go in here. The lists named `contrib/pmwork-personal-fritchii-recipe*` are converted
+instead: made from the pipeline records another emulator ships for the game (hashes and draw state, no code), matched to
+Hookshot's shader hashes; their notes say how. They hold the same records as any other list and nothing more.
 
 - **What a record is:** one pipeline the game asked for. Each record holds:
   - the hashes of its shaders and of the program variant
@@ -38,6 +40,16 @@ a pipeline again, the merge keeps it once.
 
 ## Contributing a list
 
+Players without a clone send their list to the [Submit your pipelines](https://github.com/NotRexed/Hookshot/issues/2034)
+issue: **Save my pipeline list** (the game's menu, Debug tab, or the builders' launcher page; readme, *Send your
+pipeline list*) zips the game folder's `hookshot_pipeline_states.bin` with a filled-in report
+(`hookshot_pipeline_report.txt`: the version, OS, GPU and driver, settings and mods), and nothing else. A maintainer then
+adds it as below, with the report's lines as `--gpu`, `--build`, `--settings` and `--route`. The zip is made by
+`gpu/vk/pipeline_share.h` in the game and `nx2/pipeline_share.py` in the builders, after the same checks as
+`nx2/pipeline_states.py --check`.
+
+With a clone:
+
 1. Build the game from current `main`. A list from an older build may hold pipelines the current build no longer asks
    for.
 2. Move the game folder's `hookshot_pipeline_states.bin` aside if there is one. Play: every pipeline the game makes in
@@ -59,9 +71,12 @@ a pipeline again, the merge keeps it once.
 
 **A list depends on the settings it was recorded with.** A record holds the target formats and draw state, so a list
 recorded at 1440p with DLSS shares few pipelines with one recorded at 360p with no upscaler. Say the settings in the
-note, and record at settings that many players use. A list for a GPU- and settings-neutral format (`HKSTATE2`) is in
-progress separately. When the record format changes, each list here is converted to the new format (or recorded
-again) in place, and the layout stays the same.
+note, and record at settings that many players use. Builds from now on write version 2 lists (`HKSTATE2`): they hold
+the game's own NVN formats and mesh draws, which each GPU maps to its own formats and to its mesh shaders or the mesh
+fallback, so a list recorded on one GPU and at one upscaler, HDR mode or output size prepares the pipelines of the
+others. The lists here are still version 1; the merge converts them as soon as one source is version 2
+(`nx2/pipeline_states.py --v2` converts a list on its own). When the record format changes, each list here is
+converted to the new format (or recorded again) in place, and the layout stays the same.
 
 ## The tour's list
 

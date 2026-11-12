@@ -22,6 +22,9 @@
 #include "../display_pointer.h"
 #include <math.h>
 #include <limits.h>
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../../gpu/vk/compat/hookshot_env.h"
+#endif
 
 int rx_start(void *hwnd);
 void rx_resize(int width, int height);
@@ -174,19 +177,22 @@ static volatile int close_asked;             /* (the Insert menu's Quit: likewis
 /* PostMessageA to the window (host/posix/win32_posix.c): WM_APP + 7, the Insert menu's Fullscreen row, WM_APP + 8 the
    menu opened or closed, WM_APP + 9 its Restart now, WM_CLOSE its Quit (host/display.c's) */
 __attribute__((visibility("default"))) void hos_posix_post_message(uint32_t msg, uintptr_t wp, intptr_t lp) {
-    (void)lp;
     if (msg == WM_APP + 7) __atomic_store_n(&fullscreen_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
-    if (msg == WM_APP + 8) __atomic_store_n(&menu_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
+    if (msg == WM_APP + 8) {
+        /* Keep the opening reason in the same atomic as the requested state. */
+        __atomic_store_n(&menu_asked, !wp ? 0 : 1 + (lp != 0), __ATOMIC_RELEASE);
+    }
     if (msg == WM_APP + 9) __atomic_store_n(&restart_asked, 1, __ATOMIC_RELEASE);
     if (msg == WM_CLOSE) __atomic_store_n(&close_asked, 1, __ATOMIC_RELEASE);
 }
 /* the menu opened: the mouse let go (its capture kept for later); closed: the capture back, if the window still has the focus */
 static int captured_before_menu;
-static void menu_mouse(int open) {
+static void menu_mouse(int request) {
+    const int open = request != 0;
     if (open == menu_open) return;
     menu_open = open;
     if (open) {
-        captured_before_menu = (int)mouse_captured || esc_had_capture;   /* (opened by Esc, which let it go) */
+        captured_before_menu = (int)mouse_captured || (request == 2 && esc_had_capture);   /* (opened by Esc, which let it go) */
         esc_had_capture = 0;
         mouse_capture(0);
         hos_pointer_reset(&pointer);
@@ -201,14 +207,21 @@ int hos_display_owns_sdl(void) { return sdl_ready; }   /* (controllers stay on t
 
 /* main(), before the game: SDL's video on this, the main, thread; the screen's size for GetSystemMetrics.
    Returns 1 when ready, 0 for explicit headless, -1 for startup failure. */
+static const char *window_title(const char *fallback) {
+    const char *e = getenv("HOS_WINDOW_TITLE");
+    return (e && e[0]) ? e : fallback;
+}
+
 int hos_display_init(void) {
-    if (getenv("HOS_HEADLESS")) return 0;
+    if (env_on("HOS_HEADLESS")) return 0;
     if (!hos_sdl_load()) {
         hos_log("display: no SDL: no window");
         fprintf(stderr, "display: no SDL: no window\n");
         return -1;
     }
-    hos_sdl_identity("Hookshot", HOS_APP_ID);
+    const char *env_class = getenv("HOS_WM_CLASS");
+    const char *app_id = (env_class && env_class[0]) ? env_class : HOS_APP_ID;
+    hos_sdl_identity(window_title("Hookshot"), app_id);
     hos_sdl_hint("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0");
     hos_sdl_hint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
     /* (bundled SDL tries x11 before wayland. NVIDIA's X11 surface has no mailbox, and an immediate
@@ -237,7 +250,7 @@ int hos_display_init(void) {
 
 /* the game's thread, when NVN is up (hos_main.c): the window is made on the main thread, which waits for this */
 void hos_display_start(void) {
-    if (getenv("HOS_HEADLESS") || !sdl_ready) {   /* no window: the renderer still draws, offscreen (screenshots) */
+    if (env_on("HOS_HEADLESS") || !sdl_ready) {   /* no window: the renderer still draws, offscreen (screenshots) */
         rx_start(NULL);
         return;
     }
@@ -259,7 +272,7 @@ void hos_display_loop(void) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
     }
-    window = hos_sdl_window(HOS_GAME_TITLE, win_w, win_h);
+    window = hos_sdl_window(window_title(HOS_GAME_TITLE), win_w, win_h);
     if (!window) {
         hos_log("display: SDL_CreateWindow: %s: no window", hos_sdl_error());
         fprintf(stderr, "display: SDL_CreateWindow: %s: no window\n", hos_sdl_error());
@@ -307,6 +320,7 @@ void hos_display_loop(void) {
                     break;
                 case HOS_SDL_EV_FOCUS_LOST:
                     hos_posix_window[0] = 0;
+                    esc_had_capture = 0;
                     mouse_capture(0);
                     ptr_in = 0, ptr_held = 0;
                     break;

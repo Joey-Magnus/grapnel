@@ -1,8 +1,9 @@
 """The uniform-buffer snapshot default, game-free: the actual selection code from gpu/vk/vk_draw.cpp, compiled.
 
-Without buffer mirrors (integrated GPUs such as the Steam Deck) a uniform buffer bound in place is the game's own memory,
-which it rewrites right after the submit; the copy as submitted is the default there. With mirrors it stays in place.
-RX_VK_UB_SNAPSHOT=1 / present-but-empty forces the copy, RX_VK_UB_SNAPSHOT=0 forces the pool.
+On an integrated GPU (or Intel) whose buffer pools have no VRAM mirror, a uniform buffer bound in place is the game's own
+memory, which it rewrites right after the submit; the copy as submitted is the default there. With mirrors, or on a
+discrete GPU without them (GCN since #2343, RX_VK_MIRROR=0), it stays in place. Set, RX_VK_UB_SNAPSHOT reads as env_on does
+(gpu/vk/compat/hookshot_env.h): 1, on, true, yes force the copy; 0, off, false, no, empty force the pool.
 
     python -I -B tests/test_ub_snapshot_default.py [--cxx g++]
 """
@@ -28,15 +29,20 @@ FIXTURE = r'''
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+enum { VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU = 1, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU = 2 };
+static struct { struct { uint32_t vendorID; int deviceType; } props; } dev;
 static bool mirrors;
 static char logged[256];
-[[maybe_unused]] static bool memory_mirrors_on() { return mirrors; }
+[[maybe_unused]] static bool pools_mirrored() { return mirrors; }
 static void logf(const char* f, ...) { std::snprintf(logged, sizeof logged, "%s", f); }
 static bool pick() { return SELECTION; }
 int main(int argc, char** argv) {
-    if (argc != 3) return 2;
+    if (argc != 5) return 2;
     mirrors = argv[1][0] == '1';
-    if (std::strcmp(argv[2], "unset")) setenv("RX_VK_UB_SNAPSHOT", argv[2], 1); else unsetenv("RX_VK_UB_SNAPSHOT");
+    dev.props.deviceType = argv[2][0] == 'i' ? VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU : VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+    dev.props.vendorID = (uint32_t)std::strtoul(argv[3], nullptr, 16);
+    if (std::strcmp(argv[4], "unset")) setenv("RX_VK_UB_SNAPSHOT", argv[4], 1); else unsetenv("RX_VK_UB_SNAPSHOT");
     const bool on = pick();
     if (!std::strstr(logged, "uniform buffers")) return 3;
     std::puts(on ? "copy" : "pool");
@@ -44,8 +50,16 @@ int main(int argc, char** argv) {
 }
 '''
 
-CASES = [("0", "unset", "copy"), ("1", "unset", "pool"), ("1", "1", "copy"), ("1", "", "copy"),
-         ("0", "0", "pool"), ("1", "0", "pool")]
+# (mirrors, integrated or discrete, vendor, RX_VK_UB_SNAPSHOT, expected)
+CASES = [("0", "i", "1002", "unset", "copy"),    # (an AMD APU, the Steam Deck: no mirrors)
+         ("0", "i", "8086", "unset", "copy"),    # (an Intel iGPU, #2464)
+         ("0", "d", "8086", "unset", "copy"),    # (an Intel discrete card without mirrors, #2464)
+         ("0", "d", "1002", "unset", "pool"),    # (GCN, mirrorless since #2343: not measured)
+         ("1", "d", "10de", "unset", "pool"), ("1", "i", "1002", "unset", "pool"),
+         ("0", "d", "1002", "1", "copy"), ("0", "d", "1002", "on", "copy"), ("0", "d", "1002", "yes", "copy"),
+         ("1", "d", "10de", "true", "copy"),
+         ("0", "i", "1002", "0", "pool"), ("0", "i", "1002", "off", "pool"), ("0", "i", "1002", "no", "pool"),
+         ("0", "i", "1002", "false", "pool"), ("0", "i", "1002", "", "pool")]
 
 
 def main():
@@ -57,13 +71,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ub-snapshot-") as tmp:
         cpp, exe = Path(tmp) / "t.cpp", Path(tmp) / "t"
         cpp.write_text(code, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Werror", "-Wno-format-security", str(cpp), "-o", str(exe)],
+        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Werror", "-Wno-format-security",
+                        "-include", str(ROOT / "gpu" / "vk" / "compat" / "hookshot_env.h"), str(cpp), "-o", str(exe)],
                        check=True)
-        for mirrors, value, want in CASES:
-            got = subprocess.run([str(exe), mirrors, value], capture_output=True, text=True, check=True).stdout.strip()
+        for mirrors, kind, vendor, value, want in CASES:
+            got = subprocess.run([str(exe), mirrors, kind, vendor, value], capture_output=True, text=True,
+                                 check=True).stdout.strip()
             if got != want:
-                raise SystemExit("mirrors=%s RX_VK_UB_SNAPSHOT=%r: %s, expected %s" % (mirrors, value, got, want))
-    print("PASS: uniform buffers copied without mirrors by default; the switch forces either way")
+                raise SystemExit("mirrors=%s %s vendor %s RX_VK_UB_SNAPSHOT=%r: %s, expected %s" %
+                                 (mirrors, kind, vendor, value, got, want))
+    print("PASS: uniform buffers copied by default on integrated GPUs (and Intel) without mirrors; the switch forces either way")
 
 
 if __name__ == "__main__":
