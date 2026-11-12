@@ -4,10 +4,10 @@
 #include <utility>
 #include <vector>
 
-/// An integer key's value, kept in one array: open addressing, linear probing, at most half full, the slot from a
+/// An integer key's value, kept in one array: open addressing, linear probing, at most 3/4 full, the slot from a
 /// multiplicative hash. For the replay's per-thread caches, searched on every draw: std::unordered_map divided by a prime
-/// and followed a node pointer per lookup. No erase of one key (those caches are only cleared whole), and a clear keeps the
-/// array. An insert can move every entry: no reference or pointer is held across one.
+/// and followed a node pointer per lookup. No erase of one key (those caches are only cleared whole). A clear keeps a small
+/// array and gives a large one back. An insert can move every entry: no reference or pointer is held across one.
 template <class K, class V>
 class FlatMap {
 public:
@@ -29,7 +29,7 @@ public:
 
     V& operator[](K key) {
         if (Slot* s = find(key)) return s->second;
-        if ((count_ + 1) * 2 > slots_.size()) grow();
+        if ((count_ + 1) * 4 > slots_.size() * 3) grow();
         return place(key).second;
     }
 
@@ -37,12 +37,19 @@ public:
 
     void clear() {
         if (!count_) return;
+        count_ = 0;
+        if (slots_.size() > kKeptSlots) {   // (a cache cleared at its size limit: its memory goes back too)
+            std::vector<Slot>().swap(slots_);
+            mask_ = 0, shift_ = 64;
+            return;
+        }
         for (Slot& s : slots_)
             if (s.used) s = Slot{};
-        count_ = 0;
     }
 
 private:
+    static constexpr size_t kKeptSlots = 4096;
+
     size_t index(K key) const { return (size_t)((uint64_t)key * 0x9E3779B97F4A7C15ull >> shift_); }
 
     Slot& place(K key) {
