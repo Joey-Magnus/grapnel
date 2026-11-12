@@ -26,6 +26,7 @@
 #include <thread>
 #include <string>
 #include <map>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1771,7 +1772,50 @@ void bench_frame(int64_t presents) {
     logf("%s", line);
 }
 
-/// A slow submit (over 15 ms): what took its time, logged (60 of them). The stalls in it are exact (PROF, PROF_EXACT); the
+/// (hookshot) Slow submits and presents after the load, ranked by the replay phase that took their time.
+/// The per-event lines stop at 80; this keeps counting and prints a rollup on the first and every 10, so a session
+/// still says whether the hitches were uploads, pipelines or memory sync. Measure only.
+void hitch_note(const char* what, double ms, const double phase[PROF_COUNT]) {
+    struct Acc {
+        int n = 0, submits = 0, presents = 0;
+        double ms = 0;
+        double phase[PROF_COUNT]{};
+    };
+    static Acc hitch;
+    static std::mutex mu;
+    int n = 0, submits = 0, presents = 0;
+    double total = 0, top = 0, second = 0;
+    int top_i = -1, second_i = -1;
+    double phases[PROF_COUNT]{};
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        hitch.n++;
+        hitch.ms += ms;
+        if (what && !strcmp(what, "present")) hitch.presents++;
+        else hitch.submits++;
+        for (int i = 2; i < PROF_COUNT; i++) hitch.phase[i] += phase[i];
+        if (hitch.n != 1 && hitch.n % 10 != 0) return;
+        n = hitch.n, submits = hitch.submits, presents = hitch.presents, total = hitch.ms;
+        std::memcpy(phases, hitch.phase, sizeof phases);
+    }
+    static const char* names[PROF_COUNT] = {"submit", "present", "draw", "descriptors", "texture lookups",
+                                            "uploads", "pipelines", "programs", "commands", "dispatch",
+                                            "memory sync", "queue submit", "slot wait"};
+    for (int i = 2; i < PROF_COUNT; i++) {
+        if (phases[i] > top) second = top, second_i = top_i, top = phases[i], top_i = i;
+        else if (phases[i] > second) second = phases[i], second_i = i;
+    }
+    if (top_i < 0 || top < 1.0)
+        logf("vk: hitch rollup: %d slow (%d submits, %d presents), %.0f ms, no phase over 1 ms", n, submits, presents, total);
+    else if (second_i >= 0 && second >= 1.0)
+        logf("vk: hitch rollup: %d slow (%d submits, %d presents), %.0f ms, mostly %s (%.0f ms), then %s (%.0f ms)",
+             n, submits, presents, total, names[top_i], top, names[second_i], second);
+    else
+        logf("vk: hitch rollup: %d slow (%d submits, %d presents), %.0f ms, mostly %s (%.0f ms)",
+             n, submits, presents, total, names[top_i], top);
+}
+
+/// A slow submit (over 15 ms): what took its time, logged (80 of them). The stalls in it are exact (PROF, PROF_EXACT); the
 /// per-draw phases' cheap part is sampled, one draw in eight (PROF_HOT): an estimate, exact with RX_VK_PROF_ALL=1
 struct SlowWatch {
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -1785,8 +1829,12 @@ struct SlowWatch {
     }
     ~SlowWatch() {
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (ms < 15.0 || presents_now < 600) return;   // (after the first load)
+        double phase[PROF_COUNT]{};
+        for (int i = 2; i < PROF_COUNT; i++) phase[i] = (prof_ns[i] - prof0[i]) / 1e6;
+        hitch_note(what, ms, phase);
         static int logged;
-        if (ms < 15.0 || logged >= 80 || presents_now < 600) return;   // (after the first load)
+        if (logged >= 80) return;
         logged++;
         static const char* names[PROF_COUNT] = {"submit", "present", "draw", "descriptors", "texture lookups",
                                                 "uploads", "pipelines", "programs", "commands", "dispatch",
@@ -1794,8 +1842,7 @@ struct SlowWatch {
         char line[600];
         int k = snprintf(line, sizeof line, "vk: slow %s: %.1f ms:", what, ms);
         for (int i = 2; i < PROF_COUNT; i++) {
-            const double d = (prof_ns[i] - prof0[i]) / 1e6;
-            if (d >= 1.0) k += snprintf(line + k, sizeof line - k, " %s %.1f", names[i], d);
+            if (phase[i] >= 1.0) k += snprintf(line + k, sizeof line - k, " %s %.1f", names[i], phase[i]);
         }
         {   // (hookshot: which part of "memory sync" it was: the pools' refresh [and its lock waits], the capture, the written pages collected.
             // Counted across threads, so a part another thread spent meanwhile shows too)
