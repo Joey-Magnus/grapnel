@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 
@@ -330,6 +331,112 @@ def _pack(base_dir, b, name, meta):
     return [name]
 
 
+def fake_base(d, predict_s=0):
+    """A base with a game folder: romfs, both modules, two caches"""
+    base_dir, game = d / "base", d / "base" / "game"
+    write(game / "romfs" / "a" / "data.bin", b"romfs")
+    write(game / packs.GAME, b"base game")
+    write(game / packs.RENDERER, b"base renderer")
+    write(game / "hookshot_programs.bin", b"programs")
+    write(game / "mkw_vk_pipelines.bin", b"pipelines")
+    packs.write_base(str(base_dir), {"commit": "c" * 40, "work": str(base_dir / "work"), "game": str(game), "romfs": "r",
+                                     "exefs": "e", "predict_s": predict_s})
+    return base_dir, game
+
+
+def test_predict_budget(d):
+    """--predict-s reaches make_game.py's environment (and the runtime's own prepare), and 0 leaves it out"""
+    check("no budget by default", packs.base_env(0) == {})
+    check("a budget is RX_VK_PREDICT_S", packs.base_env(60) == {"RX_VK_PREDICT_S": "60"})
+    seen = []
+    real_run = packs.run
+    packs.run = lambda cmd, cwd, env=None: seen.append(env)
+    try:
+        packs.make_game(str(ROOT), {"romfs": "r", "exefs": "e"}, str(d / "w"), str(d / "g"), packs.base_env(60))
+    finally:
+        packs.run = real_run
+    check("make_game.py gets the budget (%s)" % seen, seen and seen[0].get("RX_VK_PREDICT_S") == "60"
+          and seen[0].get("HOOKSHOT_KEEP_BUILD_FILES") == "1")
+    # (base itself, its git and its build stood in for: the budget it hands make_game.py, and the budget base.json keeps)
+    got = {}
+
+    def fake_make_game(tree, b, work, game, env):
+        got.update(env)
+        for m in packs.MODULES:
+            write(Path(game) / m[0], b"built")
+            if m[1]:
+                write(Path(work) / "sa" / "build" / m[1], b"map")
+    saved = packs.make_game, packs.changed_files, packs.git
+    packs.make_game, packs.changed_files, packs.git = fake_make_game, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
+    try:
+        packs.main(["base", str(d / "b60"), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT), "--predict-s", "60"])
+    finally:
+        packs.make_game, packs.changed_files, packs.git = saved
+    check("base hands make_game.py the budget (%s)" % got, got.get("RX_VK_PREDICT_S") == "60")
+    check("base.json keeps it", json.loads((d / "b60" / "base.json").read_text()).get("predict_s") == 60)
+    base_dir, game = fake_base(d, predict_s=45)
+    p = base_dir / "packs" / "tr"
+    write(p / packs.RENDERER, b"new renderer")
+    (p / "pack.json").write_text(json.dumps({"base": "c" * 40, "files": {packs.RENDERER: "h"}, "generated": [], "deleted": [],
+                                             "prepare": True}))
+    envs = []
+    real = packs.subprocess.run
+    packs.subprocess.run = lambda argv, **kw: envs.append(kw.get("env")) or packs.subprocess.CompletedProcess(argv, 0)
+    try:
+        packs.main(["rt", str(base_dir), str(d / "rt-tr"), "tr"])
+    finally:
+        packs.subprocess.run = real
+    if packs.CROSS:
+        check("a cross-built runtime prepares nothing", envs == [])
+    else:
+        check("the runtime's prepare gets the base's budget (%s)" % [e and e.get("RX_VK_PREDICT_S") for e in envs],
+              len(envs) == 1 and envs[0].get("RX_VK_PREDICT_S") == "45")
+
+
+def test_warm(d):
+    """warm plays a runtime with no pack, copies back the caches play made or grew and nothing else, and deletes the runtime"""
+    base_dir, game = fake_base(d)
+    play = d / "play.py"
+    play.write_text("import sys, os\n"
+                    "rt = sys.argv[1]\n"
+                    "open(os.path.join(rt, 'hookshot_programs.bin'), 'ab').write(b' and more')\n"
+                    "open(os.path.join(rt, 'mkw_vk_pipelines_play_1.bin'), 'wb').write(b'played')\n"
+                    "open(os.path.join(rt, 'hookshot_log.txt'), 'w').write('a log')\n"
+                    "open(os.path.join(rt, %r), 'wb').write(b'not a cache')\n" % packs.GAME)
+    cmd = '"%s" -I "%s" "{runtime}"' % (sys.executable.replace("\\", "/"), str(play).replace("\\", "/"))
+    packs.main(["warm", str(base_dir), "--run", cmd])
+    check("a grown cache comes back", (game / "hookshot_programs.bin").read_bytes() == b"programs and more")
+    check("a new play file comes back", (game / "mkw_vk_pipelines_play_1.bin").read_bytes() == b"played")
+    check("an unchanged cache stays", (game / "mkw_vk_pipelines.bin").read_bytes() == b"pipelines")
+    check("a log is not a cache", not (game / "hookshot_log.txt").exists())
+    check("a module is never copied back", (game / packs.GAME).read_bytes() == b"base game")
+    check("the warm-up's runtime is gone", not (base_dir / "warm-runtime").exists())
+    b = json.loads((base_dir / "base.json").read_text())
+    check("base.json records the warm-up (%s)" % b.get("warmed"),
+          b.get("warmed", {}).get("files") == ["hookshot_programs.bin", "mkw_vk_pipelines_play_1.bin"])
+    check("the busy marker is gone after the job", not (base_dir / packs.BUSY).exists())
+    packs.main(["rt", str(base_dir), str(base_dir / "warm-runtime")])
+    packs.main(["warm", str(base_dir), "--run", cmd])
+    check("a runtime made beforehand by rt is warmed and deleted", not (base_dir / "warm-runtime").exists())
+    packs.main(["rt", str(base_dir), str(base_dir / "warm-runtime")])
+    p = base_dir / "packs" / "x"
+    write(p / packs.GAME, b"pack game")
+    (p / "pack.json").write_text(json.dumps({"base": "c" * 40, "files": {packs.GAME: "h"}, "generated": [], "deleted": [],
+                                            "prepare": False}))
+    (base_dir / "warm-runtime" / "dev_packs.json").write_text(json.dumps({"base": "c" * 40, "packs": ["x"]}))
+    refused("warming a runtime with a pack in it", ["warm", str(base_dir), "--run", cmd], "not this base's runtime with no pack")
+
+
+def test_busy(d):
+    """A second job on a busy base is refused, and the other job's marker is left alone"""
+    base_dir, game = fake_base(d)
+    (base_dir / packs.BUSY).write_text("1234 pack 2026-11-12T12:00:00Z")
+    refused("a runtime while the base is busy", ["rt", str(base_dir), str(d / "rt-x")], "busy")
+    refused("a warm-up while the base is busy", ["warm", str(base_dir), "--run", "x"], "busy")
+    check("nothing made", not (d / "rt-x").exists() and not (base_dir / "warm-runtime").exists())
+    check("the other job's marker is untouched", (base_dir / packs.BUSY).read_text() == "1234 pack 2026-11-12T12:00:00Z")
+
+
 def main():
     test_route()
     test_stamp_matches_build()
@@ -340,7 +447,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hookshot-dev-packs-") as d:
         d = Path(d)
         for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime),
-                        ("guard", test_guards), ("inside", test_resolves_inside)):
+                        ("guard", test_guards), ("inside", test_resolves_inside), ("predict", test_predict_budget), ("warm", test_warm), ("busy", test_busy)):
             (d / name).mkdir()
             t(d / name)
     print("test_dev_packs: ok")

@@ -280,6 +280,9 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
 - **`base`** builds a checkout at the commit to compare against (with `HOOKSHOT_KEEP_BUILD_FILES=1`).
   `--seed` copies an older game folder's shader caches first, as an update keeps them: the caches are stamped
   by the shader translator, so the prepare redoes only what changed instead of starting cold.
+  `--predict-s N` stops building the whole game's predicted pipelines after N seconds (`RX_VK_PREDICT_S`); the
+  rest are built in play when first drawn, so warm the base for the scenes you test (below). For development
+  only, never for a player's build: 0, the default, builds them all.
 - **`pack`** needs a checkout whose history contains the base's commit (rebase it first). Its commits, its
   uncommitted changes and its untracked files all count.
   - **How it builds:** a change to renderer files alone (`gpu/vk/`, `imgui`, FidelityFX) that the game is not
@@ -308,6 +311,10 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
   copied (the game writes its caches), and the packs' files over them. Two packs that bring the same file are
   refused (merge the branches and build one pack); a pack built on another base is refused too, so the game and
   the renderer always come from one base (`MKWVK_API_VERSION`).
+- **`warm`** plays a runtime with no pack once per `--run` command (`{runtime}` in it is the runtime's folder),
+  copies the caches play made or grew (pipelines, play files, programs) back into the base's game folder, and
+  deletes the runtime, so every later runtime starts warm for those scenes. Only cache files are copied.
+- **One job at a time per base:** `base`, `pack`, `rt` and `warm` hold `<base>/dev_packs.busy` while they run.
 
 For numbers, compare the runtime with one made by `rt` from no pack: same base, same caches, one difference.
 

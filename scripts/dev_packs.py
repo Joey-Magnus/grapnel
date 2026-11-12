@@ -2,10 +2,16 @@
 from a copy of that base. For development and A/B tests only: it calls nx2/make_game.py and nx2/build.py as they are and
 changes nothing in what players build (docs/development.md, *Testing a change against a base*).
 
-    python -I scripts/dev_packs.py base <dir> --romfs <romfs> --exefs <exefs> [--seed <game folder>]
+    python -I scripts/dev_packs.py base <dir> --romfs <romfs> --exefs <exefs> [--seed <game folder>] [--predict-s N]
         Build this checkout (no uncommitted or untracked sources: a base is a commit) into <dir>/game, keeping its work folder
         <dir>/work. --seed copies the shader caches of an earlier game folder first, as a player's update keeps them: they are
-        stamped by the shader translator, so the prepare redoes only what changed instead of starting cold.
+        stamped by the shader translator, so the prepare redoes only what changed instead of starting cold. --predict-s N
+        (development only; 0, the default, builds them all) stops building the whole game's predicted pipelines after N
+        seconds (RX_VK_PREDICT_S): the rest are built in play when first drawn, so warm the base for the scenes you test.
+    python -I scripts/dev_packs.py warm <dir> --run "<command with {runtime}>" [--run ...]
+        Play a runtime with no pack once per --run command (split as a POSIX shell would; {runtime} is its folder; it uses
+        <dir>/warm-runtime when rt made it there beforehand), copy the caches play made or grew back into the base's game
+        folder, and delete the runtime: every later runtime starts warm for those scenes.
     python -I scripts/dev_packs.py adopt <dir> --work <work> --game <game> --romfs <romfs> --exefs <exefs>
         Use a full build of this checkout's commit that already exists (built with HOOKSHOT_KEEP_BUILD_FILES=1) as the base.
     python -I scripts/dev_packs.py pack <dir> <name> [--tree <checkout>] [--prepare | --no-prepare]
@@ -25,7 +31,8 @@ changes nothing in what players build (docs/development.md, *Testing a change ag
     python -I scripts/dev_packs.py ls <dir>
 
 A pack's modules come from the same base as the rest of the runtime, so the game and the renderer always match
-(MKWVK_API_VERSION). Two packs that bring the same file are refused: merge their branches and build one pack.
+(MKWVK_API_VERSION). Two packs that bring the same file are refused: merge their branches and build one pack. base, pack, rt
+and warm hold <dir>/dev_packs.busy while they run, so a second job on the same base is refused.
 """
 import argparse
 import ast
@@ -34,6 +41,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -47,6 +55,8 @@ CROSS = WINDOWS and os.name != "nt"   # (the Windows game built on Linux: it can
 # not used, so a base can start from an older base's)
 CACHES = ("hookshot_programs.bin", "hookshot_programs.idx", "hookshot_pipelines.bin", "hookshot_pipelines.bin.predicted",
           "hookshot_computes.bin", "hookshot_pipeline_states.bin", "hookshot_prepared.bin", "mkw_vk_pipelines.bin")
+PLAY_FILES = re.compile(r"mkw_vk_pipelines_play_[0-9]+\.bin")   # (what play adds to the pipeline cache: gpu/vk/vk_draw.cpp play_path)
+BUSY = "dev_packs.busy"   # (in a base's folder while a job builds, warms or copies from it)
 SEED = "hookshot_shaders.bin"   # (the shader list the prepare goes through: a new one is prepared again)
 # (module, its map, its link list in sa/build, the object that holds the version: nx2/build.py gives hos_main.c and vk_menu.cpp
 # nx2/version.py's describe(), a fingerprint of every source, so those two objects differ in every build of another tree)
@@ -256,6 +266,13 @@ def run(cmd, cwd, env=None):
     subprocess.run(cmd, cwd=cwd, check=True, env=dict(os.environ, **(env or {})))
 
 
+def base_env(predict_s):
+    """make_game.py's environment for a base. predict_s > 0: the preparation stops building the predicted pipelines (the whole
+    game's, about 51,000) after that many seconds and leaves the rest to be built in play when first drawn (gpu/vk/vk_draw.cpp,
+    RX_VK_PREDICT_S). For development only: a player's build prepares them all. 0 (the default) changes nothing"""
+    return {"RX_VK_PREDICT_S": str(predict_s)} if predict_s > 0 else {}
+
+
 def make_game(tree, b, work, game, env):
     run([sys.executable, "-I", "nx2/make_game.py", "--romfs", b["romfs"], "--exefs", b["exefs"], "--work", work, "--out", game,
          "--language", b.get("language", "en-US")], tree, dict(env, HOOKSHOT_KEEP_BUILD_FILES="1"))
@@ -350,9 +367,9 @@ def cmd_base(a):
             if os.path.isfile(os.path.join(a.seed, c)) and not os.path.exists(os.path.join(game, c)):
                 shutil.copy2(os.path.join(a.seed, c), os.path.join(game, c))
     b = {"commit": git(tree, "rev-parse", "HEAD"), "work": work, "game": game, "romfs": os.path.abspath(a.romfs),
-         "exefs": os.path.abspath(a.exefs), "seeded_from": a.seed, "language": a.language}
+         "exefs": os.path.abspath(a.exefs), "seeded_from": a.seed, "language": a.language, "predict_s": a.predict_s}
     t = time.time()
-    make_game(tree, b, work, game, {})
+    make_game(tree, b, work, game, base_env(a.predict_s))
     b["build_s"] = round(time.time() - t)
     b["outputs"] = build_outputs(game)
     for m in MODULES:   # (the maps beside the modules, for profilers)
@@ -518,16 +535,90 @@ def cmd_rt(a):
         print("the shaders were not prepared now (a Windows game built on Linux): the game prepares them at its first start", flush=True)
     elif prepare:   # (as make_game.py prepares: the game's own environment, without the build's switches)
         print("+ %s --prepare-shaders" % GAME, flush=True)
-        subprocess.run([os.path.join(rt, GAME), "--prepare-shaders"], cwd=rt, check=True, env=load_make_game().game_env())
+        subprocess.run([os.path.join(rt, GAME), "--prepare-shaders"], cwd=rt, check=True,
+                       env=dict(load_make_game().game_env(), **base_env(b.get("predict_s", 0))))
     with open(os.path.join(rt, "dev_packs.json"), "w", encoding="utf-8") as f:
         json.dump({"base": b["commit"], "packs": a.packs, "modules": {m[0]: sha(os.path.join(rt, m[0])) for m in MODULES}}, f, indent=1)
     print("%s: the base %s%s" % (rt, b["commit"][:8], "".join(", %s from %s" % (m, over[m][0]) for m in (GAME, RENDERER) if m in over)))
 
 
+def is_cache(name):
+    return name in CACHES or bool(PLAY_FILES.fullmatch(name))
+
+
+def cmd_warm(a):
+    """A runtime with no pack, played once by each --run command ({runtime} in it is the runtime's folder; split as a POSIX
+    shell would), then the caches play made or grew copied into the base's game folder, and the runtime deleted: every
+    later runtime starts warm for those scenes. Only cache files are copied, through a temporary file moved into place"""
+    d = os.path.abspath(a.dir)
+    b = read_base(d)
+    rt = os.path.join(d, "warm-runtime")
+    if os.path.exists(rt):   # (made beforehand by `rt <dir> <dir>/warm-runtime`, so the copy can run under a lock of its own)
+        try:
+            with open(os.path.join(rt, "dev_packs.json"), encoding="utf-8") as f:
+                made = json.load(f)
+        except (OSError, ValueError):
+            made = {}
+        if made.get("base") != b["commit"] or made.get("packs"):
+            sys.exit("%s exists and is not this base's runtime with no pack (an earlier warm-up stopped?): look at it, delete "
+                     "it and run again" % rt)
+        print("warming the runtime already made in %s" % rt, flush=True)
+    else:
+        cmd_rt(argparse.Namespace(dir=d, runtime=rt, packs=[]))
+    for cmd in a.run:
+        argv = [x.replace("{runtime}", rt) for x in shlex.split(cmd)]
+        print("+ " + " ".join(argv), flush=True)
+        subprocess.run(argv, check=True)
+    copied = []
+    for name in sorted(os.listdir(rt)):
+        src, dst = os.path.join(rt, name), os.path.join(b["game"], name)
+        if os.path.isfile(src) and is_cache(name) and not (os.path.isfile(dst) and same_file(src, dst)):
+            shutil.copy2(src, dst + ".tmp")
+            os.replace(dst + ".tmp", dst)
+            copied.append(name)
+    b["warmed"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "runs": a.run, "files": copied}
+    write_base(d, b)
+    shutil.rmtree(rt)
+    print("the base's caches warmed by %d runs: %s" % (len(a.run), ", ".join(copied) or "nothing grew"))
+
+
+class Busy:
+    """dev_packs.busy in a base's folder while a job builds, warms or copies from it: a second job on the same base is refused
+    (game packs share one work folder; a warm-up writes the base's caches). A marker left by a stopped job is deleted by hand"""
+    def __init__(self, d, what):
+        self.path, self.what = os.path.join(d, BUSY), what
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                with open(self.path, encoding="utf-8") as f:
+                    held = f.read().strip()
+            except OSError:
+                held = "?"
+            sys.exit("the base is busy (%s): wait for that job, or delete %s if it is no longer running" % (held, self.path))
+        self.token = "%d %s %s" % (os.getpid(), self.what, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(self.token)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                mine = f.read().strip() == self.token
+            if mine:
+                os.remove(self.path)
+        except OSError:
+            pass
+
+
 def cmd_ls(a):
     d = os.path.abspath(a.dir)
     b = read_base(d)
-    print("base %s: %s" % (b["commit"][:8], b["game"]))
+    print("base %s: %s%s%s" % (b["commit"][:8], b["game"], "; predicted pipelines for %d s" % b["predict_s"] if b.get("predict_s") else "",
+                             "; warmed %s" % b["warmed"]["at"] if b.get("warmed") else ""))
     packs = os.path.join(d, "packs")
     for p in sorted(os.listdir(packs)) if os.path.isdir(packs) else ():
         try:
@@ -551,6 +642,8 @@ def main(argv=None):
         if name == "base":
             s.add_argument("--seed")
             s.add_argument("--language", default="en-US")
+            s.add_argument("--predict-s", type=int, default=0,
+                           help="development only: stop building predicted pipelines after this many seconds (0: build all)")
         else:
             s.add_argument("--work", required=True)
             s.add_argument("--game", required=True)
@@ -564,10 +657,18 @@ def main(argv=None):
     s.add_argument("dir")
     s.add_argument("runtime")
     s.add_argument("packs", nargs="*")
+    s = sub.add_parser("warm")
+    s.add_argument("dir")
+    s.add_argument("--run", action="append", required=True, help="a command that plays the runtime once; {runtime} is its folder")
     s = sub.add_parser("ls")
     s.add_argument("dir")
     a = ap.parse_args(argv)
-    {"base": cmd_base, "adopt": cmd_adopt, "pack": cmd_pack, "rt": cmd_rt, "ls": cmd_ls}[a.cmd](a)
+    job = {"base": cmd_base, "adopt": cmd_adopt, "pack": cmd_pack, "rt": cmd_rt, "warm": cmd_warm, "ls": cmd_ls}[a.cmd]
+    if a.cmd in ("base", "pack", "rt", "warm"):
+        with Busy(os.path.abspath(a.dir), a.cmd):
+            job(a)
+    else:
+        job(a)
 
 
 if __name__ == "__main__":
