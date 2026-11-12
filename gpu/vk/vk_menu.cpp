@@ -684,11 +684,12 @@ const char* tx_output_res(int v) {
 }
 /// The Aspect ratio row (ultrawide=): the shapes of the sizes offered, narrowest first, the monitor's own named so
 const char* tx_ultrawide(int v) {
-    static std::string b;
+    static char b[48];
     if (v == aspect_monitor_value()) return "Monitor's shape";   // (the monitor's own not known: as on main)
-    b = aspect_shape(v);
-    if (aspect_is_monitors(v)) b += " (monitor's)";
-    return b.c_str();
+    // (printed from a format, so menu_i18n.h's "%s (monitor's)" translates it: vk_menu_i18n.cpp match_format)
+    if (aspect_is_monitors(v)) snprintf(b, sizeof b, "%s (monitor's)", aspect_shape(v).c_str());
+    else snprintf(b, sizeof b, "%s", aspect_shape(v).c_str());
+    return b;
 }
 /// The Aspect ratio: the monitor's own shape, the game's 16:9, or another shape, wider or narrower than 16:9
 const char* hn_ultrawide(int v, int variant) {
