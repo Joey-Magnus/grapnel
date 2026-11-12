@@ -561,6 +561,8 @@ constexpr VkResult VK_SUCCESS = 0, VK_PIPELINE_COMPILE_REQUIRED = 1000297000;
 constexpr uintptr_t VK_NULL_HANDLE = 0;
 constexpr int VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO = 10, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO = 11;
 constexpr int VK_SHADER_STAGE_COMPUTE_BIT = 12, VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT = 0x100;
+constexpr int VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT = 0x1;
+static bool env_on(const char*) { return false; }
 struct VkComputePipelineCreateInfo {
     int sType;
     struct { int sType = 0, stage = 0; uintptr_t module = 0; const char* pName = nullptr; } stage;
@@ -626,7 +628,10 @@ int main() {
 
 def check_arm(draw, cxx):
     arm = block(block(draw, "void precompile_run("), "if (i < computes.size()) {")
-    fixture = (ARM_HEAD + "\nstatic void actual_arm(Program& program, Pre* pre) {\n    std::vector<Program*> computes{&program};\n"
+    # (what the arm makes a compute pipeline from and how it asks the caches: the functions every maker of one goes through)
+    helpers = (block(draw, "VkComputePipelineCreateInfo compute_pipeline_info(const Program& q, bool noopt) {") + "\n" +
+               block(draw, "VkPipeline compute_pipeline_cached(const Program& q, bool noopt) {") + "\n")
+    fixture = (ARM_HEAD + helpers + "\nstatic void actual_arm(Program& program, Pre* pre) {\n    std::vector<Program*> computes{&program};\n"
                "    size_t i = 0;\n    " + arm + "\n}\n" + ARM_MAIN)
     with tempfile.TemporaryDirectory(prefix="state-computes-arm-") as tmp:
         source, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture.exe"

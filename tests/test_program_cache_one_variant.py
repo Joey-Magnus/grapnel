@@ -58,7 +58,12 @@ def main():
     d = d[:d.index("\n}\n")]
     first = "const bool fresh = p.compute_state.compare_exchange_strong(none, 1) &&\n" \
             "                           (program_cache_complete(p) || (p.compute_state.store(2, std::memory_order_release), false));"
-    uses = [i for i in range(len(d)) if d.startswith("stages[0].module", i)]
+    # (the module is read where the pipeline's create info is made: compute_pipeline_info, and compute_pipeline_cached through it)
+    uses = sorted(i for m in ("compute_pipeline_cached(p, true)", "compute_pipeline_info(p, true)")
+                  for i in range(len(d)) if d.startswith(m, i))
+    info = draw[draw.index("VkComputePipelineCreateInfo compute_pipeline_info(const Program& q, bool noopt) {"):]
+    if "ci.stage.module = q.stages[0].module;" not in info[:info.index("\n}\n")] or "stages[0].module" in d:
+        raise SystemExit("a compute pipeline's module is not read in compute_pipeline_info alone")
     done = [i for i in range(len(d)) if d.startswith("program_cache_complete(p)", i)]
     if first not in d or len(uses) != 2 or len(done) != 2 or not (done[0] < uses[0] < done[1] < uses[1]):
         raise SystemExit("dispatch() uses a compute program's module before program_cache_complete made it")

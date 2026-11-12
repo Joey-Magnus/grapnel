@@ -1211,6 +1211,29 @@ VkResult cached_graphics(const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl)
 VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
     return create_cached(guarded_compute, ci, pl);
 }
+/// (hookshot) What a compute program's pipeline is made from: its one stage, pinned to 32 lanes where the GPU can, and its
+/// layout (ensure_layout first). noopt: RX_VK_NOOPT is followed, as play's builds follow it (the precompile's do not)
+VkComputePipelineCreateInfo compute_pipeline_info(const Program& q, bool noopt) {
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = q.stages[0].module;
+    ci.stage.pName = "main";
+    pin_subgroup(ci.stage, q.workgroup[0]);
+    ci.layout = q.layout;
+    static const bool noopt_on = env_on("RX_VK_NOOPT");
+    if (noopt && noopt_on) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    return ci;
+}
+/// (hookshot) That pipeline asked of the caches without compiling (create_cached: the driver's own, then the start's): null when
+/// neither has it, and where the driver cannot be asked that way
+VkPipeline compute_pipeline_cached(const Program& q, bool noopt) {
+    if (!dev.vk13.pipelineCreationCacheControl) return VK_NULL_HANDLE;
+    VkComputePipelineCreateInfo asked = compute_pipeline_info(q, noopt);
+    asked.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+    VkPipeline cached = VK_NULL_HANDLE;
+    return cached_compute(&asked, &cached) == VK_SUCCESS ? cached : VK_NULL_HANDLE;
+}
 /// (a graphics pipeline made with the cache chosen for it: pcache through the play caches, another or none as it is)
 VkResult graphics_with(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
     return cache && cache == pcache ? cached_graphics(ci, pl) : guarded_graphics(cache, ci, pl);
@@ -8253,21 +8276,10 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
             if (i >= total) return;
             if (i < computes.size()) {
                 Program& p = *computes[i];
-                VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-                ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-                ci.stage.module = p.stages[0].module;
-                ci.stage.pName = "main";
-                pin_subgroup(ci.stage, p.workgroup[0]);
-                ci.layout = p.layout;
-                VkPipeline made = VK_NULL_HANDLE;
+                const VkComputePipelineCreateInfo ci = compute_pipeline_info(p, false);
                 // (asked of the caches first, as a dispatch asks: the prepare left it there, and the log's line can then say how
                 // many were compiled now. Where the driver cannot say, each is just made, and counted as compiled)
-                if (dev.vk13.pipelineCreationCacheControl) {
-                    VkComputePipelineCreateInfo asked = ci;
-                    asked.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
-                    if (cached_compute(&asked, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
-                }
+                VkPipeline made = compute_pipeline_cached(p, false);
                 if (made) pre->computes_cached++;
                 else if (cached_compute(&ci, &made) == VK_SUCCESS && made) pre->computes_compiled++;
                 else made = VK_NULL_HANDLE, pre->computes_failed++;
@@ -8793,27 +8805,12 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             // (issue 496: one at a time on Intel. RX_VK_COMPUTE_SERIAL=1 or 0 says so on any GPU)
             static const bool serial = getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1'
                                                                      : dev.props.vendorID == 0x8086;
-            const auto info = [](const Program& q) {
-                VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-                ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-                ci.stage.module = q.stages[0].module;
-                ci.stage.pName = "main";
-                pin_subgroup(ci.stage, q.workgroup[0]);
-                ci.layout = q.layout;
-                static const bool noopt = env_on("RX_VK_NOOPT");
-                if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
-                return ci;
-            };
             // (one the prepare left in our cache is only asked for here: it comes back at once. Queued, it waited for a worker
             // behind their graphics builds, and its dispatch was left out)
-            VkComputePipelineCreateInfo asked = info(p);
-            asked.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
-            VkPipeline cached = VK_NULL_HANDLE;
-            if (dev.vk13.pipelineCreationCacheControl && cached_compute(&asked, &cached) != VK_SUCCESS) cached = VK_NULL_HANDLE;
-            auto build = [job, info] {
+            const VkPipeline cached = compute_pipeline_cached(p, true);
+            auto build = [job] {
                 Program& q = const_cast<Program&>(*job);
-                VkComputePipelineCreateInfo ci = info(q);
+                VkComputePipelineCreateInfo ci = compute_pipeline_info(q, true);
                 const auto t0 = std::chrono::steady_clock::now();
                 VkPipeline made = VK_NULL_HANDLE;
                 if (const VkResult r = cached_compute(&ci, &made); r != VK_SUCCESS || !made) {
@@ -8865,17 +8862,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (!p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
         if (!program_cache_complete(p)) SKIP_HERE();   // (read without its code: see above)
         pcache_init();
-        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        ci.stage.module = p.stages[0].module;
-        ci.stage.pName = "main";
-        pin_subgroup(ci.stage, p.workgroup[0]);
-        ci.layout = p.layout;
-        {   // (local) RX_VK_NOOPT=1, as for graphics pipelines above
-            static const bool noopt = env_on("RX_VK_NOOPT");
-            if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
-        }
+        VkComputePipelineCreateInfo ci = compute_pipeline_info(p, true);   // (RX_VK_NOOPT=1, as for graphics pipelines above)
         const auto t0 = std::chrono::steady_clock::now();
         {   // (EvilOOT, 11-07: a freeze after Load was the driver's compiler on one compute pipeline, here, on the submit's thread)
             static std::atomic<int> told{0};
