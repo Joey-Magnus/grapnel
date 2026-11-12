@@ -1003,6 +1003,7 @@ std::atomic<uint64_t> cap_view_gen{1};   // (bumped when a capture is published 
 void cap_view_bump() { cap_view_gen.fetch_add(1, std::memory_order_release); }
 double st_tk_all, st_tk_stamp, st_tk_copy, st_tk_late, st_tk_lock;   // (memory_take_capture's parts, ms)
 std::atomic<int64_t> st_cap_part_done{0};   // (pages a capture did not take as late: their part had written them back)
+int64_t st_tk_late_value;   // (and those of them that waited for the submission's value: a page in place, or no part known)
 int64_t st_tk_late_n;   // (the takes that waited for the GPU for their late pages)   // (a capture was ever made: the replay thread's; without it nothing owns pages)
 
 // ---- texture storage in the capture ----
@@ -1726,10 +1727,20 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         // RX_VK_MIRROR_MB=1024 on an 8 GB card it was most of a capture's 2.4-3 ms, six submits a frame: Hyrule Field at
         // 35-45 fps instead of 55, issue 995)
         const auto tw = std::chrono::steady_clock::now();
-        if (!(c->late_part && vk_part_wait(c->late_part)))   // (the part that writes them back, LateWait; else the value)
-            vk_timeline_wait(c->late_value);
-        st_tk_late += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tw).count();
+        const bool by_part = c->late_part && vk_part_wait(c->late_part);   // (the part that writes them back, LateWait)
+        if (!by_part) vk_timeline_wait(c->late_value);   // (else the value)
+        const double late_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tw).count();
+        st_tk_late += late_ms;
         st_tk_late_n++;
+        st_tk_late_value += !by_part;
+        {   // (RX_VK_LOG_CAPTURE_LATE=1: each take that waited, 200 lines, and every one over 10 ms)
+            static const bool log_late = env_on("RX_VK_LOG_CAPTURE_LATE");
+            static int logged;
+            if (log_late && (late_ms > 10 || logged < 200) && logged++ < 400)
+                logf("vk: capture late wait %.2f ms: %zu pages, value %llu, part %llu (%s), completed %llu now", late_ms, c->late.size(),
+                     (unsigned long long)c->late_value, (unsigned long long)c->late_part, by_part ? "waited for" : "the value waited for",
+                     (unsigned long long)vk_timeline_completed());
+        }
         uint8_t* const base = (uint8_t*)host->guest_base();
         for (uint32_t i : c->late)
             guarded_copy((uint8_t*)c->map + (uint64_t)i * 4096, base + ((uint64_t)c->pages[i] << kPageShift), 4096);
@@ -1839,13 +1850,14 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         st_tk_stamp += std::chrono::duration<double, std::milli>(tk1 - tk_locked).count();
         st_tk_all += std::chrono::duration<double, std::milli>(tk2 - tk0).count();
         if (++n % 600 == 0) {
-            logf("vk: a capture taken (ms): all %.3f; GPU wait for late pages %.3f (%lld of 600 takes), pools lock %.3f, retires "
+            logf("vk: a capture taken (ms): all %.3f; GPU wait for late pages %.3f (%lld of 600 takes, %lld for a whole submission), pools lock %.3f, retires "
                  "and stamps %.3f, bytes copied %.3f; %zu kept (%llu MB), %zu spare buffers, %zu texture pages copied (%llu MB), "
                  "%lld pages not late (their part had written them back)",
-                 st_tk_all / 600, st_tk_late / 600, (long long)st_tk_late_n, st_tk_lock / 600, st_tk_stamp / 600, st_tk_copy / 600,
+                 st_tk_all / 600, st_tk_late / 600, (long long)st_tk_late_n, (long long)st_tk_late_value, st_tk_lock / 600, st_tk_stamp / 600, st_tk_copy / 600,
                  cap_bufs.size(), (unsigned long long)(cap_bytes >> 20), cap_free.size(), shadow_n.load(std::memory_order_relaxed),
                  (unsigned long long)(shadow_n.load(std::memory_order_relaxed) >> 8), (long long)st_cap_part_done.exchange(0));
             st_tk_all = st_tk_stamp = st_tk_copy = st_tk_late = st_tk_lock = 0, st_tk_late_n = 0;
+            st_tk_late_value = 0;
         }
     }
     return true;

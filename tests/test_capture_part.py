@@ -161,7 +161,8 @@ def main():
     # (take_capture: the part when the capture has one, else the value; then the late pages are copied again, as before)
     take = block(memory, "bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed) {")
     late = block(take, "if (c->late_value && c->map)")
-    need("if (!(c->late_part && vk_part_wait(c->late_part)))" in late and
+    need("const bool by_part = c->late_part && vk_part_wait(c->late_part);" in late and
+         "if (!by_part) vk_timeline_wait(c->late_value);" in late and
          late.index("vk_part_wait(c->late_part)") < late.index("vk_timeline_wait(c->late_value);") < late.index("for (uint32_t i : c->late)"),
          "take_capture does not wait for the part first, the value otherwise, before it copies the late pages again")
     # (a page's part is the part of its newest write-back: replaced with the value by every note)
