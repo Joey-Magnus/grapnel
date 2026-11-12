@@ -284,9 +284,12 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
     game's dependencies, and what those include.
   - **What it keeps:** a module when one of the objects it is linked from differs from the base's (its link list,
     `objs.rsp` / `vk_objs.rsp`). Bytes can't tell: both modules hold the version, a fingerprint of every source
-    (`nx2/version.py`), which changes the code around it, so the object holding it counts only when its own source
-    changed. It also keeps every other file of the built game folder that differs from the base's (the button
-    prompts, the shader seed).
+    (`nx2/version.py`), which changes the code around it, so the object holding it (`hos_main.c`, `vk_menu.cpp`)
+    counts only when its own source or a header changed. Both modules are kept when something reaches them besides
+    their objects: an `nx2/` file other than the translator's (flags, link options, the Windows manifest) or a
+    non-C file under `host/`, `gpu/` or `third_party/`. It also keeps every other file of the built game folder
+    that differs from the base's (the shader seed, the button prompts), and a generated prompt the change no longer
+    makes is removed from the runtime.
   - **Prepare:** the runtime prepares again when the shader translator (`gpu/vk/{eden,sirit,compat}/`,
     `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, `vk_api.h`: what `build.py` stamps the shader caches with) or the
     shader seed changed; `--prepare` / `--no-prepare` decide instead.

@@ -60,10 +60,13 @@ TRANSLATOR = tuple("gpu/vk/%s/" % d for d in STAMP_DIRS) + tuple("gpu/vk/" + f f
 RENDERER_ONLY = ("gpu/vk/", "third_party/imgui/", "third_party/fidelityfx")
 INCLUDE = re.compile(r'#\s*include\s+"([^"]+)"')
 NO_MODULE = ("docs/", "tests/", ".github/", ".claude/")
+HEADERS = (".h", ".hpp", ".hh", ".inc", ".inl")
+SOURCES = (".c", ".cc", ".cpp") + HEADERS
+GENERATED_DIRS = ("prompts/",)   # (what make_game.py generates into the game folder by file: a file the change no longer makes goes)
 
 
-def load_make_game():
-    spec = importlib.util.spec_from_file_location("make_game_for_packs", os.path.join(ROOT, "nx2", "make_game.py"))
+def load_make_game(root=ROOT):
+    spec = importlib.util.spec_from_file_location("make_game_for_packs", os.path.join(root, "nx2", "make_game.py"))
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
@@ -133,25 +136,40 @@ def link_list(build, rsp):
         return {os.path.basename(line.strip().strip('"')): line.strip().strip('"') for line in f if line.strip()}
 
 
-def module_changed(base_build, build, rsp, stamped, stamped_source_changed):
+def module_changed(base_build, build, rsp, stamped, stamped_may_differ):
     """Whether a module differs from the base's beyond the version it names: another set of objects, an object that differs, or
-    the object that holds the version when its own source changed. Its bytes cannot say it: the version (a fingerprint of all
-    the sources) moves the rest of that object's code. True when the base kept no link list to compare with"""
+    the object that holds the version when it may differ for more than that (stamped_may_differ: its source or a header
+    changed). Its bytes cannot say it: the version (a fingerprint of all the sources) moves the rest of that object's code. True
+    when the base kept no link list to compare with"""
     try:
         mine, theirs = link_list(build, rsp), link_list(base_build, rsp)
     except OSError:
         return True
     if set(mine) != set(theirs):
         return True
-    return any(not same_file(mine[o], theirs[o]) for o in mine if o != stamped or stamped_source_changed)
+    return any(not same_file(mine[o], theirs[o]) for o in mine if o != stamped or stamped_may_differ)
+
+
+def stamped_may_differ(paths, source):
+    """Whether the object holding the version may differ for more than the version: its own source changed, or a header (any
+    header: following every include path of every module is not worth the risk of missing one)"""
+    return source in paths or any(p.endswith(HEADERS) for p in paths)
+
+
+def link_inputs_changed(paths, lift_files):
+    """A change that reaches the modules besides their objects, which the link lists do not show: an nx2/ file other than the
+    translator's (build.py's flags and link options, the Windows manifest and other resources) or a file under host/, gpu/ or
+    third_party/ that is not C or C++ (libraries, resources, shader sources). The pack then keeps both modules"""
+    return any((p.startswith("nx2/") and p not in lift_files) or
+               (p.startswith(("host/", "gpu/", "third_party/")) and not p.endswith(SOURCES) and p not in lift_files) for p in paths)
 
 
 def generated_changes(base_game, game):
     """The files of a built game folder that differ from the base's, besides the modules, their maps and the caches: what the
-    build generates (button prompts, the shader seed, files it writes into romfs). romfs files the same as the base's are its
-    hard links, so only new ones are read"""
+    build generates (the shader seed, button prompts, files it would write into romfs; romfs files the same as the base's are
+    its hard links, so only new ones are read), and the generated files the base has and this build did not make"""
     skip = {m for mod in MODULES for m in mod[:2] if m} | set(CACHES)
-    out = []
+    changed = []
     for top, dirs, fs in os.walk(game):
         dirs.sort()
         for f in sorted(fs):
@@ -161,8 +179,14 @@ def generated_changes(base_game, game):
                 continue
             q = os.path.join(base_game, rel)
             if not (os.path.isfile(q) and same_file(p, q)):
-                out.append(rel)
-    return out
+                changed.append(rel)
+    gone = []
+    for d in GENERATED_DIRS:
+        for top, dirs, fs in os.walk(os.path.join(base_game, d)):
+            dirs.sort()
+            gone += [rel for rel in (os.path.relpath(os.path.join(top, f), base_game).replace(os.sep, "/") for f in sorted(fs))
+                     if not os.path.isfile(os.path.join(game, rel))]
+    return changed, gone
 
 
 def run(cmd, cwd, env=None):
@@ -255,7 +279,9 @@ def cmd_pack(a):
     os.makedirs(pack)
     print("%d files changed since the base: %s" % (len(changed), {None: "nothing to build", "renderer": "the renderer alone",
                                                                   "game": "the game (both modules)"}[how]), flush=True)
-    t, w, files, extra = time.time(), pack_folders(d), {}, []
+    t, w, files, extra, gone = time.time(), pack_folders(d), {}, [], []
+    lift_files = {os.path.relpath(f, tree).replace(os.sep, "/") for f in load_make_game(tree).lift_sources()}
+    whole = link_inputs_changed(changed, lift_files)
     if how == "game":
         link_objects(b["work"], w["game_work"])
         make_game(tree, b, w["game_work"], w["game_out"], {"HOOKSHOT_NO_PREPARE": "1"})
@@ -268,27 +294,29 @@ def cmd_pack(a):
     else:
         built, kinds = None, ()
     for (mod, mp, rsp, stamped), source in zip(kinds, STAMPED_SOURCES[-len(kinds):] if kinds else ()):
-        if module_changed(os.path.join(b["work"], "sa", "build"), built, rsp, stamped, source in changed):
+        if whole or module_changed(os.path.join(b["work"], "sa", "build"), built, rsp, stamped,
+                                   stamped_may_differ(changed, source)):
             for f in (mod, mp):
                 if f:
                     shutil.copy2(os.path.join(built, f), os.path.join(pack, f))
             files[mod] = sha(os.path.join(pack, mod))
     if how == "game":
-        for rel in generated_changes(b["game"], w["game_out"]):
+        extra, gone = generated_changes(b["game"], w["game_out"])
+        for rel in extra:
             dst = os.path.join(pack, "files", rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(os.path.join(w["game_out"], rel), dst)
-            extra.append(rel)
     prepare = any(p.startswith(TRANSLATOR) for p in changed) or SEED in extra
     if a.prepare is not None:
         prepare = a.prepare
     with open(os.path.join(pack, "pack.json"), "w", encoding="utf-8") as f:
         json.dump({"base": b["commit"], "tree": tree, "head": git(tree, "rev-parse", "HEAD"), "changed": sorted(changed),
-                   "route": how, "files": files, "generated": extra, "prepare": prepare,
+                   "route": how, "files": files, "generated": extra, "deleted": gone, "prepare": prepare,
                    "build_s": round(time.time() - t)}, f, indent=1)
-    print("pack %s: %s%s%s, in %d s" % (a.name, ", ".join(files) or "no module differs from the base's",
-                                        "; %d generated files" % len(extra) if extra else "", "; prepares" if prepare else "",
-                                        time.time() - t))
+    print("pack %s: %s%s%s%s, in %d s" % (a.name, ", ".join(files) or "no module differs from the base's",
+                                          "; %d generated files" % len(extra) if extra else "",
+                                          "; %d generated files gone" % len(gone) if gone else "", "; prepares" if prepare else "",
+                                          time.time() - t))
 
 
 def cmd_rt(a):
@@ -296,7 +324,7 @@ def cmd_rt(a):
     b = read_base(d)
     if os.path.exists(rt):
         sys.exit("%s exists: delete it first" % rt)
-    over, prepare = {}, False   # (a file in the runtime -> the pack and the path it comes from)
+    over, prepare = {}, False   # (a file in the runtime -> the pack and the path it comes from, or None: the pack removes it)
     for p in a.packs:
         pdir = os.path.join(d, "packs", p)
         with open(os.path.join(pdir, "pack.json"), encoding="utf-8") as f:
@@ -307,6 +335,7 @@ def cmd_rt(a):
         mine.update({m[1]: os.path.join(pdir, m[1]) for m in MODULES
                      if m[0] in meta["files"] and m[1] and os.path.isfile(os.path.join(pdir, m[1]))})
         mine.update({rel: os.path.join(pdir, "files", rel) for rel in meta["generated"]})
+        mine.update({rel: None for rel in meta.get("deleted", ())})
         for rel, src in mine.items():
             if rel in over:
                 sys.exit("packs %s and %s both bring %s: merge their branches and build one pack" % (over[rel][0], p, rel))
@@ -328,8 +357,9 @@ def cmd_rt(a):
         dst = os.path.join(rt, rel)
         if os.path.exists(dst):
             os.remove(dst)   # (a romfs hard link: replaced, never written through to the base)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copy2(src, dst)
+        if src:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
     if prepare:   # (as make_game.py prepares: the game's own environment, without the build's switches)
         print("+ %s --prepare-shaders" % GAME, flush=True)
         subprocess.run([os.path.join(rt, GAME), "--prepare-shaders"], cwd=rt, check=True, env=load_make_game().game_env())

@@ -101,6 +101,25 @@ def test_module_changed(d):
     check("no link list in the base: the pack's", packs.module_changed(str(d / "none"), str(mine), "objs.rsp", "host_hos_main.o", False))
 
 
+def test_inputs_beside_the_objects():
+    lift = {"nx2/oot_patches.py", "nx2/lift.py", "third_party/a64-kit/tools/x.txt"}
+    lic = lambda *p: packs.link_inputs_changed(list(p), lift)
+    check("a game patch shows in the objects", not lic("nx2/oot_patches.py", "host/hos_thread.c"))
+    check("the Windows manifest does not: both modules", lic("nx2/win_manifest.py"))
+    check("nor build.py's flags", lic("nx2/build.py"))
+    check("nor a library", lic("third_party/sdl2/SDL2.lib"))
+    check("nor a shader source", lic("gpu/vk/shaders/blit.comp"))
+    check("a translator data file shows in the objects", not lic("third_party/a64-kit/tools/x.txt"))
+    md = packs.stamped_may_differ
+    check("the version object's own source", md(["host/hos_main.c"], "host/hos_main.c"))
+    check("a header it may include (oot_cheat_items.h reaches hos_main.c and vk_menu.cpp)", md(["gpu/vk/oot_cheat_items.h"], "host/hos_main.c"))
+    check("another source alone: only the version differs there", not md(["host/nvn_native.c"], "host/hos_main.c"))
+    src = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+    for d in packs.GENERATED_DIRS:
+        check("make_game.py still generates %s (anchor: 'os.path.join(out, \"%s\")')" % (d, d.rstrip("/")),
+              'os.path.join(out, "%s")' % d.rstrip("/") in src)
+
+
 def test_pack_folders(d):
     """The lift key hashes the work and game folders' paths (make_game passes them to the lift as OOT_WORK and OOT_DUMP): a game
     pack reuses a translation only when every pack of a base builds in the same two folders"""
@@ -135,14 +154,16 @@ def test_generated_and_runtime(d):
     write(game / vk_mod, b"base renderer")
     write(game / "hookshot_programs.bin", b"cache")
     write(game / "language.txt", b"en-US")
+    write(game / "prompts" / "Common.bntx", b"base prompts")
     os.makedirs(out / "romfs" / "a")
     os.link(game / "romfs" / "a" / "data.bin", out / "romfs" / "a" / "data.bin")
     write(out / "romfs" / "prompts" / "icon.bntx", b"new icon")
     write(out / game_mod, b"built game")
     write(out / "hookshot_programs.bin", b"other cache")
     write(out / "language.txt", b"en-US")
-    gen = packs.generated_changes(str(game), str(out))
+    gen, gone = packs.generated_changes(str(game), str(out))
     check("a regenerated file is kept, the same ones, the modules and the caches are not: %s" % gen, gen == ["romfs/prompts/icon.bntx"])
+    check("a generated file the build no longer makes is gone: %s" % gone, gone == ["prompts/Common.bntx"])
     b = {"commit": "c" * 40, "work": str(base_dir / "work"), "game": str(game), "romfs": "r", "exefs": "e"}
     packs.write_base(str(base_dir), b)
     for name, files, generated, on in (("cpu", {game_mod: "h"}, ["romfs/prompts/icon.bntx"], b["commit"]),
@@ -152,7 +173,8 @@ def test_generated_and_runtime(d):
             write(p / m, b"pack " + name.encode())
         for rel in generated:
             write(p / "files" / rel, b"new icon")
-        (p / "pack.json").write_text(json.dumps({"base": on, "files": files, "generated": generated, "prepare": False}))
+        (p / "pack.json").write_text(json.dumps({"base": on, "files": files, "generated": generated, "prepare": False,
+                                                 "deleted": ["prompts/Common.bntx"] if name == "cpu" else []}))
     rt = d / "rt"
     packs.main(["rt", str(base_dir), str(rt), "cpu"])
     check("the pack's game", (rt / game_mod).read_bytes() == b"pack cpu")
@@ -161,6 +183,8 @@ def test_generated_and_runtime(d):
     check("the caches copied, not linked (the game writes them)", not os.path.samefile(rt / "hookshot_programs.bin", game / "hookshot_programs.bin"))
     check("the pack's generated file", (rt / "romfs" / "prompts" / "icon.bntx").read_bytes() == b"new icon")
     check("...not written through the base's hard link", (game / "romfs" / "prompts" / "icon.bntx").read_bytes() == b"base icon")
+    check("the pack's deleted file is not in the runtime", not (rt / "prompts" / "Common.bntx").exists())
+    check("...and still in the base", (game / "prompts" / "Common.bntx").exists())
     for asked, what in ((["cpu", "cpu2"], "two packs with the same module"), (["old"], "a pack on another base")):
         try:
             packs.main(["rt", str(base_dir), str(d / ("rt-" + asked[-1])), *asked])
@@ -176,6 +200,7 @@ def main():
     test_renderer_files_the_game_reads()
     test_stamped_objects_match_build()
     test_caches_named_in_renderer()
+    test_inputs_beside_the_objects()
     with tempfile.TemporaryDirectory(prefix="hookshot-dev-packs-") as d:
         d = Path(d)
         for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime)):
