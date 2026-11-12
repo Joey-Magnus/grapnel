@@ -613,7 +613,12 @@ constexpr int kVramMinimumOnly = 1;   // (2.2 GB: set by the Minimum (4GB) prese
 constexpr int kVramTextureMb[kVramBudgets] = {0, 2200, 3600, 4800, 6144, 7500, 9216, 11000};
 constexpr int kVramMirrorMb[kVramBudgets] = {0, 256, 512, 1024, 1536, 2048, 2560, 3072};
 int preset_vram_budget(int p) {
-    static const int of[] = {0, 1, 2, 3, 5, 7};   // (none: Auto; Minimum 2.2 GB, Low 3.6, Balanced 4.8, High 7.5, Ultra 11)
+    // (none: Auto; Minimum 2.2 GB, Low and Balanced 3.6, High and Ultra 6 GB: each the row's stop nearest above what Auto gives the
+    // preset's card (45% of what the driver allows on 8 GB or less, 70% above, at most 6 GB: vk_texture.cpp texture_frame). The
+    // stops they had, 4.8, 7.5 and 11 GB, were past that rule: 4.8 GB on an 8 GB card is the 5.1 GB that paged an RTX 3060 Ti and
+    // #1400's RTX 4050, 11 GB on a 16 GB card the fill-up of #105. Minimum keeps 2.2 GB: #1358 measured Auto's 1.5 GB too small
+    // for Kokiri Forest on a 4 GB card)
+    static const int of[] = {0, 1, 2, 2, 4, 4};
     return of[std::min(std::max(p, 0), 5)];
 }
 void vram_budget_sync() {
@@ -626,8 +631,8 @@ const char* tx_vram_budget(int v) {
     return t[std::min(std::max(v, 0), kVramBudgets - 1)];
 }
 MENU_HINTS(hn_vram_budget, 0, "Set from what the driver allows: 70% of it, 45% on cards of 8 GB or less, at most 6 GB.",
-           "For 4 GB cards.", "For 6 GB cards.", "For 8 GB cards.", "The most Auto ever sets.", "For 12 GB cards.", nullptr,
-           "For 16 GB cards.")
+           "For 4 GB cards.", "For 6 and 8 GB cards.", "More than Auto gives an 8 GB card.", "The most Auto ever sets.",
+           "Past Auto's cap, for a 12 GB card.", nullptr, "Past Auto's cap, for a 16 GB card.")
 /// a preset's budgets (0: none, Auto): the VRAM budget row set to them
 void sync_preset_budgets(int p) {
     opts.vram_budget = preset_vram_budget(p);
@@ -640,28 +645,30 @@ void env_release(const int* value);   // (below: a row the environment held, set
 void apply_preset(int p) {
     // (the rows it sets are the preset's from now on, even at the value the environment forced: save writes them)
     if (p > 0)
-        for (const int* v : {&opts.resolution, &opts.upscale, &opts.sharpness, &opts.pace, &opts.realtime, &opts.handheld})
+        for (const int* v : {&opts.resolution, &opts.upscale, &opts.sharpness, &opts.pace, &opts.realtime})
             env_release(v);
     switch (p) {
+    // (the Profile is the player's: Minimum and Low set the handheld profile, which gave a GTX 1050 a black picture (Discord
+    // 2026-11-10), so the first start already kept docked. The Render resolution and the memory budget are what lighten the card)
     case 1: // Minimum (4GB VRAM / iGPU)
         opts.resolution = 4; opts.upscale = 2; opts.sharpness = 30;
-        opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
+        opts.pace = 1;    opts.realtime = 1;
         break;
     case 2: // Low (6GB VRAM)
         opts.resolution = 2; opts.upscale = 2; opts.sharpness = 30;
-        opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
+        opts.pace = 1;    opts.realtime = 1;
         break;
     case 3: // Balanced (8GB VRAM)
         opts.resolution = 1; opts.upscale = 1; opts.sharpness = 30;
-        opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        opts.pace = 1;    opts.realtime = 1;
         break;
     case 4: // High (12GB VRAM)
         opts.resolution = 1; opts.upscale = 2; opts.sharpness = 40;
-        opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        opts.pace = 1;    opts.realtime = 1;
         break;
     case 5: // Ultra (16GB+ VRAM)
         opts.resolution = 1; opts.upscale = 2; opts.sharpness = 50;
-        opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        opts.pace = 1;    opts.realtime = 1;
         break;
     default:
         break;
@@ -674,11 +681,11 @@ void apply_preset(int p) {
 }
 
 MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom; the VRAM budget row keeps its value.",
-           "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
-           "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
-           "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 30%.",
-           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%.",
-           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%.")
+           "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, VRAM budget 2.2 GB.",
+           "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 30%, VRAM budget 3.6 GB.",
+           "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 30%, VRAM budget 3.6 GB.",
+           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%, VRAM budget 6 GB.",
+           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%, VRAM budget 6 GB.")
 MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
 /// Frame generation: how many frames are made for each of the game's
 const char* hn_framegen(int v, int variant) {
@@ -808,7 +815,7 @@ Row rows[] = {
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
      hn_output_res, true, true},
     {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
-     "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true},
+     "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true, true},   // (no preset sets it)
     {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
      hn_upscaler},
     {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
@@ -3729,7 +3736,7 @@ void menu_init() {
 
 /// (hookshot) The first start (no options file yet), once the card is chosen: the Quality preset for its memory, so an older or
 /// smaller card does not start at the docked 2048 x 1152 with the full-size memory budget. A GTX 1050 (4 GB) lost the device at
-/// the first scene that way (Discord 2026-11-10); the Minimum preset's handheld picture and budget are what such cards run.
+/// the first scene that way (Discord 2026-11-10); the Minimum preset's picture and budget are what such cards run.
 /// An integrated GPU or a card of up to 4.5 GB: Minimum, with the plain scale (as RX_VK_LOW_SPEC=1); up to 6.5 GB: Low; larger:
 /// the defaults, as before. Docked either way (the handheld profile gave a GTX 1050 a black picture). Options already saved are never changed. RX_VK_AUTO_PRESET=0: off
 void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceMemoryProperties& mem) {
@@ -3749,9 +3756,7 @@ void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkP
     apply_preset(preset);
     sync_preset_budgets(preset);
     if (preset == 1) opts.upscale = 0, opts.sharpness = 0;
-    // (docked kept: the presets' handheld profile is what a player chooses; on the GTX 1050 above it gave a black picture.
-    // The Render resolution and the memory budget are what lighten the card)
-    opts.handheld = 0;
+    // (docked: no preset sets the Profile (apply_preset); on the GTX 1050 above the handheld one gave a black picture)
     restart_init();   // (what this run starts with)
     save();   // (host/nn_applet.c reads handheld_profile from the file when the game first asks its mode, after this)
     logf("vk: first start on %s (%s, %llu MB of VRAM): the %s preset", props.deviceName, integrated ? "integrated" : "dedicated",

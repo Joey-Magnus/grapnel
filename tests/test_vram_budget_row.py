@@ -121,8 +121,8 @@ static void restart(bool write_memory_budget) {
 }
 int main() {
     (void)kVramMinimumOnly;   // (TABLES carries it, the row's step that reads it does not come along: clang's -Wunused-const-variable)
-    // (each preset's budgets as before the row: 2200/256, 3600/512, 4800/1024, 7500/2048, 11000/3072)
-    const int texture[] = {0, 2200, 3600, 4800, 7500, 11000}, mirror[] = {0, 256, 512, 1024, 2048, 3072};
+    // (each preset's budgets: the row's stop nearest above Auto's rule for its card; 2200/256, 3600/512, 3600/512, 6144/1536, 6144/1536)
+    const int texture[] = {0, 2200, 3600, 3600, 6144, 6144}, mirror[] = {0, 256, 512, 512, 1536, 1536};
     for (int p = 1; p <= 5; p++) {
         opts.preset = opts.budget = p;
         sync_preset_budgets(p);
@@ -139,7 +139,7 @@ int main() {
     card_bytes = 16ull << 30;
     opts.preset = opts.budget = 4;
     sync_preset_budgets(4);
-    CHECK(!preset_caps_memory());   // (High's 7.5 GB on a 16 GB card: the card's own, as before)
+    CHECK(!preset_caps_memory());   // (High's 6 GB on a 16 GB card: the card's own, as before)
     opts.budget = 0;                // (the row set by the player: the handler)
     opts.vram_budget = 3;
     vram_budget_sync();
@@ -160,9 +160,9 @@ int main() {
     CHECK(opts.vram_mb == 4800 && preset_caps_memory());
     // (a file from before memory_budget, High on: the preset's budgets, as before)
     opts.preset = 4;
-    opts.vram_budget = 5;
+    opts.vram_budget = 4;   // (High's stop, 6 GB)
     restart(false);
-    CHECK(opts.budget == 4 && opts.vram_mb == 7500);
+    CHECK(opts.budget == 4 && opts.vram_mb == 6144);
     std::printf("PASS: the VRAM budget row sets the budgets, the presets give theirs as before, a restart keeps the row's\n");
     return 0;
 }

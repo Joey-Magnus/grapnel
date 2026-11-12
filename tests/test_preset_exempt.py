@@ -1,7 +1,7 @@
 """A menu row that no Quality preset sets leaves the preset alone when it changes.
 
 set_row turns the Quality preset to Custom when a row without preset_exempt changes. That is right for the rows a preset
-sets (the resolution, the filter, sharpness, frame pacing, game speed, the profile) and wrong for the others: changing
+sets (the resolution, the filter, sharpness, frame pacing, game speed) and wrong for the others: changing
 Anisotropic filtering or Reflex said Custom although every row the preset sets was still the preset's. Read the rows
 table and apply_preset from gpu/vk/vk_menu.cpp and check that the two agree. No game or GPU is needed.
 """
@@ -59,7 +59,7 @@ def main():
     menu = (args.source / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     preset = block(menu, menu.index("void apply_preset(int p)"))
     set_by_preset = set(re.findall(r"opts\.(\w+)\s*=(?!=)", preset))
-    if not {"resolution", "pace", "realtime", "handheld"} <= set_by_preset:
+    if not {"resolution", "pace", "realtime"} <= set_by_preset or "handheld" in set_by_preset:   # (the Profile is the player's)
         raise SystemExit("apply_preset: the rows it sets were not found (%s)" % sorted(set_by_preset))
 
     table = block(menu, menu.index("Row rows[] = {"))
