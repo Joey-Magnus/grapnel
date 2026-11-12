@@ -41,7 +41,7 @@ FIXTURE = r'''
 namespace mkwvk {
 static uint32_t handles[3]{};
 static uint8_t answers[4]{0,2,2,2};
-uint32_t driver_bank_word(const NvnState&, int, int, uint32_t offset) { return handles[offset/8]; }
+uint32_t driver_bank_word(const NvnState&, int bank, int, uint32_t offset) { return bank == 2 ? handles[offset/8] : 0xbadu; }   // (the picks' sources read c2)
 uint32_t stage_cbuf_word(const NvnState&, const Stage&, uint32_t, uint32_t offset) { return handles[offset/8]; }
 uint32_t stage_handle(const NvnState&, const Stage&, uint32_t) { std::abort(); }
 uint8_t texture_answer(uint32_t h) { return h ? answers[h] : 0xff; }
@@ -49,6 +49,17 @@ uint32_t texture_slot_version(int id) { return 10+id; }
 #include MATCHER_FUNCTIONS
 static unsigned failed=0,checked=0;
 static void check(bool b,const char* what){checked++;if(!b){failed++;fprintf(stderr,"FAIL: %s\n",what);}}
+#ifdef HAVE_PICK_SOURCES
+// (the picks' flat sources, vk_shader.cpp pick_handles: the same handles and versions as the program's own descriptors give, and
+// the same verdict from them as still_valid's)
+static void picks_agree(const NvnState& s,const Program& p,const char* what){
+ Pick pk;pk.p=&p;answer_sources(p,pk.sources);std::vector<uint32_t> a,b,whole;answer_handles(s,p,a);pick_handles(s,pk,b,whole);
+ check(pk.sources.size()==p.answers.size()&&whole.size()==p.answers.size(),what);check(a==b,what);
+ check(still_valid_handles(p,whole.data())==still_valid(s,p),what);
+}
+#else
+static void picks_agree(const NvnState&,const Program&,const char*){}
+#endif
 static void unbind(){handles[0]=handles[1]=handles[2]=0;answers[1]=answers[2]=answers[3]=2;}
 static void bind(){handles[0]=1;handles[1]=2;handles[2]=3;}
 static std::unique_ptr<Program> image(Shader::ImageFormat fmt,bool integer=true){
@@ -74,6 +85,8 @@ int main(int argc, char** argv){using namespace mkwvk;auto s=std::make_unique<Nv
   answers[1]=3;check(!still_valid(*s,*d),"strict depth changed raw bit still rejects");
   unbind();auto f=sampled(false);f->stages[0].info.texture_descriptors[0].type_fixed=true;record_answers(*f,*s);bind();
   answers[1]=2;check(!still_valid(*s,*f),"strict instruction-typed compare remains raw");
+  unbind();auto q=image(Shader::ImageFormat::R32_UINT);record_answers(*q,*s);picks_agree(*s,*q,"strict: the pick's sources, unbound");
+  bind();picks_agree(*s,*q,"strict: the pick's sources, bound");answers[3]=130;picks_agree(*s,*q,"strict: the pick's sources, integer image");
   printf("strict checks=%u failures=%u\n",checked,failed);return failed?1:0;
  }
 
@@ -107,6 +120,28 @@ int main(int argc, char** argv){using namespace mkwvk;auto s=std::make_unique<Nv
  unbind();auto fixed_depth=sampled(true);fixed_depth->stages[0].info.texture_descriptors[0].type_fixed=true;record_answers(*fixed_depth,*s);bind();
  answers[1]=130;check(still_valid(*s,*fixed_depth),"instruction-typed float depth accepts dimension and integer-bit change");
  unbind();auto counted=image(Shader::ImageFormat::R32_UINT);for(auto& d:counted->stages[0].info.texture_descriptors)d.count=2;counted->stages[0].info.image_descriptors[0].count=2;record_answers(*counted,*s);check(counted->answers.empty()&&counted->variant==0,"count!=1 descriptors still omitted");
+ // (hookshot) The picks keep where each answer's handle is read (answer_sources) and read it there (pick_handles): the same handles,
+ // versions and verdicts as through the program, bound or not, for every kind of answer.
+ for(auto fmt:{Shader::ImageFormat::R32_UINT,Shader::ImageFormat::Typeless})for(bool integer:{false,true}){
+  unbind();auto p=image(fmt,integer);record_answers(*p,*s);picks_agree(*s,*p,"image program's sources, unbound");
+  bind();picks_agree(*s,*p,"image program's sources, bound");answers[3]=130;picks_agree(*s,*p,"image program's sources, integer image");
+  answers[1]=130;picks_agree(*s,*p,"image program's sources, integer texture");handles[1]=0;picks_agree(*s,*p,"image program's sources, one slot unbound");
+ }
+ for(bool dep:{false,true}){
+  unbind();auto p=sampled(dep);record_answers(*p,*s);picks_agree(*s,*p,"sampled program's sources, unbound");bind();picks_agree(*s,*p,"sampled program's sources, bound");
+  answers[1]=131;picks_agree(*s,*p,"sampled program's sources, integer array");answers[1]=8;picks_agree(*s,*p,"sampled program's sources, rectangle");
+ }
+#ifdef HAVE_PICK_SOURCES
+ {unbind();auto p=sampled(false);auto& d=p->stages[0].info.texture_descriptors[0];d.has_secondary=true;d.secondary_cbuf_index=2;d.secondary_cbuf_offset=8;d.shift_left=1;d.secondary_shift_left=0;
+  record_answers(*p,*s);bind();Pick pk;pk.p=p.get();answer_sources(*p,pk.sources);std::vector<uint32_t> ids,whole;pick_handles(*s,pk,ids,whole);
+  check(pk.sources[0].direct&&pk.sources[0].has_secondary&&whole[0]==((1u<<1)|2u),"a secondary handle word in c2 is read with its shifts");picks_agree(*s,*p,"a secondary handle word in c2");
+  d.secondary_cbuf_index=3;answer_sources(*p,pk.sources);check(!pk.sources[0].direct,"a secondary word in another bank is asked of the program");picks_agree(*s,*p,"a secondary word in another bank");
+  d.has_secondary=false;d.cbuf_index=3;answer_sources(*p,pk.sources);check(!pk.sources[0].direct,"a handle in another bank is asked of the program");picks_agree(*s,*p,"a handle in another bank");
+  d.cbuf_index=2;p->stages[0].nvn_stage=kNvnStages;answer_sources(*p,pk.sources);check(!pk.sources[0].direct,"a stage outside NVN's is asked of the program");
+  p->stages[0].nvn_stage=0;d.handle_program=0;answer_sources(*p,pk.sources);check(!pk.sources[0].direct,"a handle program is asked of the program");d.handle_program=~0u;
+  auto im=image(Shader::ImageFormat::R32_UINT);record_answers(*im,*s);im->stages[0].info.image_descriptors[0].cbuf_index=4;answer_sources(*im,pk.sources);
+  check(pk.sources.size()==3&&pk.sources[0].direct&&pk.sources[1].direct&&!pk.sources[2].direct,"an image handle in another bank is asked of the program");}
+#endif
  // Hash-only callers (seed/census cache readers) have no stage metadata; do not change their contract.
  Program hash_only;hash_only.answers={{0,0,2,false},{0,1,2,false},{0,0,128,true}};check(answers_hash(hash_only)!=0,"answers_hash remains usable without module Info");
  printf("checks=%u failures=%u\n",checked,failed);return failed?1:0;
@@ -140,6 +175,14 @@ def main():
     markers += ['uint64_t answers_hash(', 'size_t generated_stage(', 'std::vector<Program::Answer> answers_here(', 'void record_answers(', 'bool still_valid(',
                 'void answer_handles(', 'uint32_t answer_stage_mask(']
     functions = '\n\n'.join(block(source, marker) for marker in markers)
+    # (hookshot) the picks' flat sources (the baseline has none: nothing to hold to the program's own reads)
+    if 'void pick_handles(' in source:
+        functions += '\n#define HAVE_PICK_SOURCES 1\n' + '\n'.join(block(source, m) + ';' for m in ('struct AnswerSource {', 'struct Pick {'))
+        functions += '\n\n' + '\n\n'.join(block(source, m) for m in ('void answer_sources(', 'void pick_handles(', 'bool still_valid_handles('))
+        pick = block(source, 'const Program* program_for(')
+        for needed in ('pick_handles(s, pk, now, whole)', 'still_valid_handles(*pk.p, whole.data())', 'answer_sources(*picked, pk.sources)'):
+            if needed not in pick:
+                raise SystemExit('program_for does not read its picks through their sources: ' + needed)
     if 'd.type_fixed' in functions:   # (the baseline has no such rule: nothing to hold the pass to)
         texture_pass = (vk / 'eden/shader_recompiler/ir_opt/texture_pass.cpp').read_text(encoding='utf-8')
         for needed in ('.type_fixed = !type_asked,', '].type_fixed &= desc.type_fixed;'):

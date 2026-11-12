@@ -3,7 +3,7 @@
 A graphics program's answers (the types its translation was told of the bound textures) are read from c2 of its stages: nothing else
 in the bindings can change them, so the pair of last picks (prog_fast) need not wait for bind_gen, which every uniform buffer moves. A
 handle program (it reads uniform memory), another bank, a secondary handle in another bank, a compute or a task / mesh program keeps
-the old condition.
+the old condition. The mask is kept with the pick (Pick::amask), not worked out again at each one.
 python -I -B tests/test_pick_tex_gen.py
 """
 from pathlib import Path
@@ -35,8 +35,15 @@ def main():
     if "f.tex_gen[k] != s.tex_gen[k]" not in pick or "f.amask >> k & 1" not in pick:
         raise SystemExit("the stages' textures are not compared")
     keep = pick[pick.index("auto keep = "):]
-    if "f.amask = compute ? ~0u : answer_stage_mask(*p)" not in keep or "f.tex_gen, s.tex_gen" not in keep:
+    if "f.amask = amask" not in keep or "f.tex_gen, s.tex_gen" not in keep:
         raise SystemExit("a kept pick does not remember its stages' textures")
+    # (the mask is worked out once, when the pick is made, and kept with it: every keep is given the pick's own)
+    if "pk.amask = picked_amask = compute ? ~0u : answer_stage_mask(*picked)" not in keep:
+        raise SystemExit("a pick's mask is not answer_stage_mask of its program")
+    if keep.count("keep(pk.p, pk.amask)") != 3 or "return keep(picked, picked_amask)" not in keep or "keep(pk.p)" in keep:
+        raise SystemExit("a kept pick is not given its own program's mask")
+    if keep.index("picks.clear()") < keep.index("pk.amask = picked_amask"):
+        raise SystemExit("the pick's mask is read after the picks were cleared")
     for field in ("serial", "stages", "reg", "ub", "nvattr", "vattr", "ct"):
         if f"f.{field}" not in pick[: pick.index("auto keep = ")]:
             raise SystemExit(f"the last pick is taken without comparing its {field}")

@@ -1686,9 +1686,22 @@ namespace {
 /// Picks by program and inputs (the replay thread's): draws mostly use programs seen a moment ago with the same
 /// inputs; the variant search runs again only when those changed, and a variant chosen for its textures' types is
 /// kept while the handles it was checked against are the same
+/// (hookshot) Where an answer's handle is read, kept with the pick: a handle word in c2 of the answer's own stage (nearly all of them)
+/// is the stage's bound textures and images, read from the state alone. Asked of the program each time, every answer of every
+/// pick went through the program, its stage and the stage's descriptor list: three cold cache lines an answer, which was most
+/// of what a pick cost (a profile's hottest instructions in answer_handle were those loads). Anything else (a handle program,
+/// another bank) is still asked of the program
+struct AnswerSource {
+    bool direct = false, has_secondary = false;
+    int8_t stage = 0;                 // (the NVN stage)
+    uint8_t shift = 0, shift2 = 0;    // (Eden's TexturePair: primary << shift | secondary << shift2)
+    uint32_t offset = 0, offset2 = 0;
+};
 struct Pick {
     const Program* p = nullptr;
     std::vector<uint32_t> handles;   // (at its answers' descriptors: their slots and the slots' versions)
+    std::vector<AnswerSource> sources;   // (one an answer of p, in their order)
+    uint32_t amask = ~0u;                // (answer_stage_mask of p, ~0 for a compute program)
 };
 thread_local std::unordered_map<uint64_t, Pick> picks;   // (each recording thread's: program_pick has its own lock)
 uint64_t pick_inputs(const NvnState& s, const uint8_t color_types[8]) {
@@ -1706,6 +1719,58 @@ void answer_handles(const NvnState& s, const Program& p, std::vector<uint32_t>& 
         out.push_back(id);
         out.push_back(texture_slot_version((int)id));
     }
+}
+/// (hookshot) The sources of p's answers (descriptor_handle's own reads, for the ones it reads from c2 of the stage)
+void answer_sources(const Program& p, std::vector<AnswerSource>& out) {
+    out.clear();
+    for (const Program::Answer& a : p.answers) {
+        const Stage& st = p.stages[a.stage];
+        AnswerSource src;
+        if (st.nvn_stage >= 0 && st.nvn_stage < kNvnStages) {
+            src.stage = (int8_t)st.nvn_stage;
+            if (a.image) {
+                const auto& d = st.info.image_descriptors[a.desc];
+                src.direct = d.handle_program == ~0U && d.cbuf_index == 2;
+                src.offset = d.cbuf_offset;
+            } else {
+                const auto& d = st.info.texture_descriptors[a.desc];
+                src.direct = d.handle_program == ~0U && d.cbuf_index == 2 && (!d.has_secondary || d.secondary_cbuf_index == 2) &&
+                             d.shift_left < 32 && d.secondary_shift_left < 32;
+                src.offset = d.cbuf_offset;
+                if (d.has_secondary)
+                    src.has_secondary = true, src.shift = (uint8_t)d.shift_left, src.offset2 = d.secondary_cbuf_offset,
+                    src.shift2 = (uint8_t)d.secondary_shift_left;
+            }
+        }
+        out.push_back(src);
+    }
+}
+/// (hookshot) answer_handles through the pick's sources, and the whole handles beside them (still_valid_handles asks those): each
+/// handle is worked out once a pick, where a pick of other textures worked every one out twice (answer_handles, then still_valid)
+void pick_handles(const NvnState& s, const Pick& pk, std::vector<uint32_t>& out, std::vector<uint32_t>& whole) {
+    out.clear(), whole.clear();
+    for (size_t i = 0; i < pk.sources.size(); i++) {
+        const AnswerSource& src = pk.sources[i];
+        uint32_t h;
+        if (src.direct) {
+            h = driver_bank_word(s, 2, src.stage, src.offset);
+            if (src.has_secondary) h = h << src.shift | driver_bank_word(s, 2, src.stage, src.offset2) << src.shift2;
+        } else {
+            h = answer_handle(s, *pk.p, pk.p->answers[i]);
+        }
+        whole.push_back(h);
+        out.push_back(h & 0xFFFFF);
+        out.push_back(texture_slot_version((int)(h & 0xFFFFF)));
+    }
+}
+/// (hookshot) still_valid for handles already read (handles[i]: answer i's)
+bool still_valid_handles(const Program& p, const uint32_t* handles) {
+    for (size_t i = 0; i < p.answers.size(); i++) {
+        const Program::Answer& a = p.answers[i];
+        const uint32_t h = handles[i];
+        if (h && canonical_answer(p, a, answer_of(h, a.image)) != canonical_answer(p, a, a.type)) return false;
+    }
+    return true;
 }
 } // namespace
 
@@ -1843,40 +1908,45 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
     }
     const uint64_t key = (compute ? 0x5EED : pick_inputs(s, color_types)) * 1099511628211ull ^ s.prog.serial;
     Pick& pk = picks[key];
-    auto keep = [&](const Program* p) {
+    // (amask: answer_stage_mask of p, which the pick keeps: worked out here for every pick, it walked the program's answers and
+    // their descriptors again)
+    auto keep = [&](const Program* p, uint32_t amask) {
         if (!p || !p->ready.load(std::memory_order_acquire) || p->failed) return p;
         if (!(prog_fast[0].on && prog_fast[0].p == p)) prog_fast[1] = prog_fast[0];
         ProgFast& f = prog_fast[0];
         f.on = true, f.kind = (int)kind, f.serial = s.prog.serial, f.stages = stages, f.bind = bind, f.reg = reg, f.ub = ub;
         f.nvattr = s.nvattr, f.p = p;
-        f.amask = compute ? ~0u : answer_stage_mask(*p);
+        f.amask = amask;
         std::memcpy(f.tex_gen, s.tex_gen, sizeof f.tex_gen);
         std::memcpy(f.vattr, s.vattr, sizeof f.vattr);
         std::memcpy(f.ct, color_types, sizeof f.ct);
         return p;
     };
+    static thread_local std::vector<uint32_t> now, whole;
     if (pk.p && pk.p->ready.load(std::memory_order_acquire) && !pk.p->failed) {
-        if (pk.p->answers.empty()) return st_hit++, keep(pk.p);
-        static thread_local std::vector<uint32_t> now;
-        answer_handles(s, *pk.p, now);
-        if (now == pk.handles) return st_hit++, keep(pk.p);
+        if (pk.sources.empty()) return st_hit++, keep(pk.p, pk.amask);   // (no answers)
+        pick_handles(s, pk, now, whole);
+        if (now == pk.handles) return st_hit++, keep(pk.p, pk.amask);
         st_differ++;
-        if (still_valid(s, *pk.p)) {   // (other textures of the same types: the same variant)
+        if (still_valid_handles(*pk.p, whole.data())) {   // (other textures of the same types: the same variant)
             pk.handles.swap(now);
-            return keep(pk.p);
+            return keep(pk.p, pk.amask);
         }
     } else {
         st_none++;
     }
     const Program* picked = program_pick(s, kind, color_types);
+    uint32_t picked_amask = ~0u;
     if (picked && picked->ready.load(std::memory_order_acquire) && !picked->failed) {
         pk.p = picked;
+        answer_sources(*picked, pk.sources);
         answer_handles(s, *picked, pk.handles);
+        pk.amask = picked_amask = compute ? ~0u : answer_stage_mask(*picked);
     } else {
         pk.p = nullptr;
     }
-    if (picks.size() > 65536) picks.clear();
-    return keep(picked);
+    if (picks.size() > 65536) picks.clear();   // (pk is gone with them: picked_amask is its copy)
+    return keep(picked, picked_amask);
 }
 
 const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]) {
