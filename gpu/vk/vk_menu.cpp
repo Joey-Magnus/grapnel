@@ -714,31 +714,56 @@ const char* tx_framegen_by(int v) {
     snprintf(b, sizeof b, "Auto: %s", who);
     return b;
 }
-/// Its line: at Auto with another than DLSS-G making the frames, why (the Auto multiplier, or DLSS-G's own reason,
-/// vk_dlss.cpp dlss_fg_why_not). Variants (every one): Auto's, Built-in's, the Auto multiplier's, then each of DLSS-G's
+/// Why DLSS-G does not make the frames now (vk_dlss.h FgSkip, and the Auto multiplier's FG_SKIP_COUNT), the row's line after
+/// "Not DLSS FG now: ". most: its runtime's most made frames, for FG_SKIP_TOO_MANY
+const char* framegen_skip_text(int why, unsigned most) {
+    switch (why) {
+    case FG_SKIP_OFF: return "DLSS Frame Generation is turned off for this run (RX_VK_DLSS_FG=0).";
+    case FG_SKIP_DEVICE: return "NVIDIA DLSS does not run on this GPU.";
+    case FG_SKIP_START:
+        return "NVIDIA's runtime did not start DLSS Frame Generation: it needs an RTX 40 or newer, and nvngx_dlssg.dll in the "
+               "game's ngx folder (the builder's NVIDIA DLSS tick).";
+    case FG_SKIP_TOO_MANY: {
+        static char b[160];
+        snprintf(b, sizeof b, "Its runtime makes %u made frames at most: a lower Frame generation, or a newer nvngx_dlssg.dll.",
+                 most ? most : 1u);
+        return b;
+    }
+    case FG_SKIP_INPUTS:
+        return "No picture from a temporal Upscaler to make them from: NVIDIA DLSS or DLAA, or AMD FSR, on the Upscaler row. "
+               "The game's own menus have none.";
+    case FG_SKIP_REFUSED: return "NGX refused its frames.";
+    case FG_SKIP_NOT_BUILT: return "This build has no NVIDIA DLSS (the builder's NVIDIA DLSS tick).";
+    case FG_SKIP_COUNT: return "DLSS Frame Generation makes a fixed 2x to 8x, not Frame generation's Auto.";
+    default: return nullptr;
+    }
+}
+/// Its line: at Auto with another than DLSS-G making the frames, why ("Not DLSS FG now: " and framegen_skip_text). Variants
+/// (every one): Auto's, Built-in's, then "Not DLSS FG now: " with each reason
 const char* hn_framegen_by(int v, int variant) {
     static const char* const t[] = {
         "NVIDIA DLSS Frame Generation where it runs (RTX 40 and newer, with the Upscaler's depth and motion), else the "
         "built-in one.",
         "The renderer's own: made from the finished picture alone.",
-        "Not DLSS FG now: DLSS Frame Generation makes a fixed 2x to 8x, not Frame generation's Auto.",
     };
     if (v != 0) return variant <= 0 ? t[1] : nullptr;
-    static char b[8][400];
+    static char b[FG_SKIP_COUNT + 2][400];
+    int why = FG_SKIP_NONE;
+    unsigned most = 0;
     if (variant >= 0) {
-        if (variant == 0 || variant == 1) return t[variant == 0 ? 0 : 2];
-        const char* why = variant - 2 < 8 ? dlss_fg_why_not(variant - 2) : nullptr;
-        if (!why) return nullptr;
-        snprintf(b[variant - 2], sizeof b[0], "Not DLSS FG now: %s", why);
-        return b[variant - 2];
+        if (variant == 0) return t[0];
+        why = variant;   // (1 .. FG_SKIP_COUNT: each reason, FG_SKIP_COUNT the Auto multiplier's)
+        if (why > FG_SKIP_COUNT) return nullptr;
+    } else {
+        const FgMaker m = opts.framegen >= 1 ? framegen_maker() : FgMaker::None;
+        if (m != FgMaker::BuiltIn && m != FgMaker::Fsr3) return t[0];
+        why = opts.framegen == 1 ? (int)FG_SKIP_COUNT : dlss_fg_skip(&most);
     }
-    const FgMaker m = opts.framegen >= 1 ? framegen_maker() : FgMaker::None;
-    if (m != FgMaker::BuiltIn && m != FgMaker::Fsr3) return t[0];
-    if (opts.framegen == 1) return t[2];
-    const char* why = dlss_fg_why_not();
-    if (!why) return t[0];
-    snprintf(b[7], sizeof b[7], "Not DLSS FG now: %s", why);
-    return b[7];
+    const char* text = framegen_skip_text(why, most);
+    if (!text) return t[0];
+    char* out = b[variant >= 0 ? variant : FG_SKIP_COUNT + 1];
+    snprintf(out, sizeof b[0], "Not DLSS FG now: %s", text);
+    return out;
 }
 const char* tx_vsync(int v) {
     static const char* const t[] = {"Auto", "On", "Off"};
@@ -2143,7 +2168,7 @@ std::atomic<bool> startup_on{false};
 std::atomic<float> startup_fade{0};   // (the start-up screen's fade to black at its end, 0 to 1: startup_fade_to)
 std::atomic<int64_t> game_frames{0}, shown_frames{0};
 char fps_text[48] = "";
-char fps_sub[32] = "";
+char fps_sub[96] = "";   // (UTF-8: a translation's line can be three bytes a character)
 // (the FPS counter's levels past the number, written every half second by menu_tick: the frame time and its 1% low; the
 // Breakdown's parts, the GPU's time, the shaders built and draws left out over the graph's 4 s)
 char fps_ms_text[24] = "", fps_low_text[24] = "";
@@ -4591,6 +4616,8 @@ void menu_tick() {
             if (opts.framegen >= 1 && who) snprintf(fps_sub, sizeof fps_sub, "Base %.0f, %s", game, who);
             else if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "Base %.0f", game);
             else fps_sub[0] = 0;
+            // (in the menu's language: the counter draws with Tab, past ui::'s translation, so it is put in here)
+            if (const char* t = i18n::tr(fps_sub); t != fps_sub) snprintf(fps_sub, sizeof fps_sub, "%s", t);
         }
         static int64_t texts_next = 0;   // (the lines past the number: four times a second, each over the last half second)
         if (now >= texts_next) texts_next = now + fps_stats::kSecond / 4, fps_texts(now);
