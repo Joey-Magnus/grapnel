@@ -23,6 +23,21 @@ def fail(msg):
     raise SystemExit("FAIL: " + msg)
 
 
+def switches_agree():
+    """HOS_ITEM_WHEEL is read twice (host/oot_wheel.c, gpu/vk/vk_framegen.cpp): both by env_on/env_value_off, so a value
+    like `on` or `off` turns the wheel and its backdrop on or off together. env_int read only digits: `on` left the
+    renderer on the menu's row (no backdrop behind an open wheel), `off` still copied the scene every frame."""
+    host, renderer = read("host", "oot_wheel.c"), read("gpu", "vk", "vk_framegen.cpp")
+    if 'forced = e ? env_on("HOS_ITEM_WHEEL") : -1' not in host:
+        fail("host/oot_wheel.c does not read HOS_ITEM_WHEEL with env_on")
+    if 'const char* e = getenv("HOS_ITEM_WHEEL"); return e ? (env_value_off(e) ? 0 : 1) : -1;' not in renderer:
+        fail("gpu/vk/vk_framegen.cpp does not read HOS_ITEM_WHEEL as host/oot_wheel.c does (env_value_off)")
+    if 'const char* e = getenv("RX_VK_WHEEL_BACKDROP"); return e && env_value_off(e);' not in renderer:
+        fail("gpu/vk/vk_framegen.cpp does not read RX_VK_WHEEL_BACKDROP by the on/off rule (env_value_off)")
+    if re.search(r'env_int\("(HOS_ITEM_WHEEL|RX_VK_WHEEL_BACKDROP|HOS_WHEEL_TRACE)"', host + renderer):
+        fail("an item wheel switch is read with env_int: on/off switches follow env_on")
+
+
 def build_runs_them():
     make = read("nx2", "make_game.py")
     if not re.search(r'os\.path\.join\(HERE, "prompt_assets\.py"\), "--romfs", romfs, "--wheel-icons", icons\]', make) or \
@@ -95,6 +110,7 @@ def bars_entries():
 
 
 def main():
+    switches_agree()
     build_runs_them()
     icons_match()
     sounds_match()

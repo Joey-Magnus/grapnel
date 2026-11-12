@@ -14,7 +14,8 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h);
 /// After that recording's submit (value): the display thread shows its frames
 void framegen_queue(uint64_t value);
 /// (hookshot) The Gameplay tab's Item wheel row is on (off by default) and the wheel's backdrop wanted
-/// (RX_VK_WHEEL_BACKDROP=0: off). While it is false the two below record nothing and make nothing
+/// (RX_VK_WHEEL_BACKDROP set to an off value, env_value_off: none). While it is false the two below record nothing and
+/// make nothing
 bool framegen_wheel_on();
 /// (hookshot) With the Item wheel row on: the gameplay upscale's output (image, its view format, w x h at level, GENERAL)
 /// as the upscale left it, the scene before the game draws its HUD on it, copied in the frame's own work (the game stops

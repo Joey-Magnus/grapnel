@@ -11,7 +11,8 @@
    shown, the row turns with it too); the row is turned there with D-pad taps (60 ms down, 60 up, as main's mouse wheel
    does), and R is kept held for the game until it gets there, so letting go of R early still equips the item pointed at.
 
-   HOS_ITEM_WHEEL=0 or 1: the row's setting overridden. HOS_WHEEL_TRACE=1: the openings, the taps and R kept held, logged. */
+   HOS_ITEM_WHEEL=0 or 1 (or any value, as env_on reads it): the row's setting overridden, here and in the renderer
+   (gpu/vk/vk_framegen.cpp framegen_wheel_on, by the same rule). HOS_WHEEL_TRACE=1: the openings, the taps and R kept held, logged. */
 #include "hos.h"
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/compat/hookshot_env.h"

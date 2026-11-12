@@ -1032,11 +1032,12 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     return true;
 }
 
-/// (hookshot) The Gameplay tab's Item wheel row is on (HOS_ITEM_WHEEL=0 or 1 over it, as host/oot_wheel.c reads it) and
-/// the backdrop wanted (RX_VK_WHEEL_BACKDROP=0: off). Off: nothing below records or makes anything
+/// (hookshot) The Gameplay tab's Item wheel row is on (HOS_ITEM_WHEEL set over it: an off value, env_value_off, the
+/// game's row, anything else the wheel, as host/oot_wheel.c reads it) and the backdrop wanted (RX_VK_WHEEL_BACKDROP set
+/// to an off value: none). Off: nothing below records or makes anything
 bool framegen_wheel_on() {
-    static const bool off = env_int("RX_VK_WHEEL_BACKDROP", 1) == 0;
-    static const int forced = env_int("HOS_ITEM_WHEEL", -1);
+    static const bool off = [] { const char* e = getenv("RX_VK_WHEEL_BACKDROP"); return e && env_value_off(e); }();
+    static const int forced = [] { const char* e = getenv("HOS_ITEM_WHEEL"); return e ? (env_value_off(e) ? 0 : 1) : -1; }();
     const bool on = !off && (forced >= 0 ? forced != 0 : opts.item_wheel != 0);
     if (!on && wheel.copied.load(std::memory_order_relaxed))   // (turned on again later: the frames before are not the scene)
         wheel.copied.store(false, std::memory_order_relaxed);
