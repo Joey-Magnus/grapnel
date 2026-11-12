@@ -1422,6 +1422,7 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
     const uint64_t movement = components ? recomp_load64(c, components + 800) : 0;
     if (movement < HOS_HEAP_BASE + 0x1d50 || recomp_load64(c, movement + 24) != actor ||
         !hos_oot_is_player(c, movement - 0x1d50)) return;
+    { void oot_coop_player(Ctx *c, uint64_t actor); oot_coop_player(c, actor); }   /* host/oot_coop.c: where Link stands, for the others */
 
     // Link can be updated by different guest workers on successive frames.
     static SRWLOCK cheats_lock = SRWLOCK_INIT;
