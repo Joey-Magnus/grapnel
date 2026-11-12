@@ -127,7 +127,7 @@ def main():
 
         broken("no-role", "@SPIN@", "hos_thread_serial(hos_self()) ? b >> 32 : b & 0xFFFFFFFF", "b >> 32",
                (None, None, 20000, 5000), "the others spinning as long as the serial threads passes")
-        broken("no-clamp", "@SPIN@", "other > s ? s : other", "other", (None, "50", 20000, 20000),
+        broken("no-clamp", "@SPIN@", "other = other > s ? s : other;", "", (None, "50", 20000, 20000),
                "the others spinning longer than HOS_SPIN_US passes")
         broken("no-off", "@SPIN@", "other < 0 ? 0 : ", "", (None, "-5", 20000, 0), "a negative spin passes")
         broken("presentation", "@NAMES@", '!strcmp(name, "Presentation Thread")', "0", (None, None, 20000, 5000),
