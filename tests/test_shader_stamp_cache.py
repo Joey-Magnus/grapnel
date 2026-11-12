@@ -7,6 +7,7 @@ import ast
 import hashlib
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -22,8 +23,12 @@ BUILD_SCRIPT = ROOT / "nx2" / "build.py"
 def production_code(path):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     names = {"tree_headers", "vk_sources", "flag_text", "object_key", "zstd_jobs"}
-    functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-    assert {n.name for n in functions} == names
+    # (renderer_deps and its helpers and globals: the back end's files keyed by their depfile's headers; an older build.py has none)
+    later = {"renderer_deps", "depfile_paths", "depfile_of"}
+    functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names | later]
+    assert names <= {n.name for n in functions}
+    functions = [n for n in tree.body if isinstance(n, ast.Assign) and any(
+        isinstance(t, ast.Name) and t.id in ("HEADER_EXTS", "_HEADER_DIGESTS", "DEPFILE_JOBS") for t in n.targets)] + functions
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
     # Execute the real branch that hashes the translator, chooses per-source flags/deps and appends Vulkan jobs.
     branches = [n for n in ast.walk(main) if isinstance(n, ast.If) and any(
@@ -91,7 +96,7 @@ class ShaderStampCacheTests(unittest.TestCase):
 
     def jobs(self, linux, version="fixture", release=False, ngx="", mingw="llvm-mingw", fsr=False):
         namespace = {
-            "os": os, "hashlib": hashlib,
+            "os": os, "re": re, "hashlib": hashlib,
             "GPU": str(self.root / "gpu"), "POSIX": str(self.root / "host/posix"), "HOST": str(self.root / "host"),
             "LINUX": linux, "CPU": ["-march=x86-64"],
             "kit": SimpleNamespace(ROOT=str(self.root), HERE=str(self.root / "nx2")),
