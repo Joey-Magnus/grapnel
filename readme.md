@@ -126,6 +126,11 @@ The game is also added to your applications menu as "Hookshot". That entry, and 
 launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
 update.
 
+When the desktop gives the launcher its own systemd service, **Play** waits up to two seconds for the game's
+separate scope before closing the window. If that hand-off fails, it cancels that attempt before starting the
+game directly, and records the fallback in `hookshot_startup.log` after the game exits. A direct start still
+follows the desktop's original service lifetime; this fallback cannot bypass a desktop that stops its children.
+
 The same AppImage also builds and starts the game without opening the window, for a machine you reach over SSH or for a
 script: see [Linux, the AppImage from the command line](#build-from-source).
 
