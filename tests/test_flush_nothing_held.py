@@ -6,9 +6,10 @@ done, and the host's copy bookkeeping asking how far the replay is under its own
 the present, and the game's other job threads behind them. pend_held says whether anything is held. Reads the source:
 
   - both flushes test it before they take the mutex;
-  - submit_recording raises it before its recording is in value_rec / part_rec (a thread that finds the recording there
-    and waits for it must not skip the flush), and again once the submit is in the list, under the mutex (a flush of
-    older ones may have come in between);
+  - submit_recording raises it when the submit is in the list of held ones, under the mutex, and only then puts the
+    recording where waiters find it (value_rec / part_rec): a thread that finds a recording and waits for it flushes
+    first, and one found before its submit was in the list had nothing to flush and waited for a signal still held;
+    without batched submits the recording is put there before the submit, as it was;
   - only queue_flush_locked lowers it, after it has sent what was held.
 
 python -I -B tests/test_flush_nothing_held.py
@@ -33,16 +34,18 @@ def main():
             raise SystemExit("%s takes dev.present_mu before it knows a submit is held" % name.split("(")[0][5:])
     submit = body(replay, "void submit_recording(")
     up = "pend_held.store(true, std::memory_order_release);"
-    first = submit.index(up)
-    if first > submit.index("std::lock_guard mk(rec_map_mu);"):
-        raise SystemExit("submit_recording says a submit is held only after its recording is in the maps: a thread that "
-                         "waits for it in between skips the flush its wait needs")
-    if "if (batch_on()) " + up not in submit:
-        raise SystemExit("submit_recording raises pend_held without batched submits: every flush takes the mutex again")
-    again = submit.index(up, first + 1)
-    push = submit.index("pend.cbs.push_back(cb[i]);")
-    if not submit.index("std::lock_guard lk(dev.present_mu);") < push < again:
-        raise SystemExit("submit_recording does not raise pend_held again once the submit is in the list, under the mutex")
+    if replay.count(up) != 1 or up not in submit:
+        raise SystemExit("pend_held is raised somewhere else than where submit_recording holds a submit")
+    lock, push, raised = (submit.index(x) for x in ("std::lock_guard lk(dev.present_mu);", "pend.cbs.push_back(cb[i]);", up))
+    mapped = submit.index("if (seq) map_recording();", raised)
+    if not lock < push < raised < mapped:
+        raise SystemExit("a held submit must be in the list, and said to be, under dev.present_mu, before its recording "
+                         "can be found and waited for")
+    if "if (!batch_on()) map_recording();" not in submit[:lock] or submit.count("map_recording();") != 2:
+        raise SystemExit("a recording is put in value_rec / part_rec at another place: a held one before it is in the list?")
+    maps = submit[submit.index("const auto map_recording = [&] {"):lock]
+    if "value_rec" not in maps or "part_rec.emplace_hint" not in maps or "rec_map_cv.notify_all();" not in maps:
+        raise SystemExit("map_recording no longer holds all of the recording's bookkeeping")
     lowered = "pend_held.store(false, std::memory_order_release);"
     if replay.count(lowered) != 1:
         raise SystemExit("pend_held is lowered somewhere else than queue_flush_locked")

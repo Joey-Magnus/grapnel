@@ -123,7 +123,7 @@ enum { FR_OTHER, FR_POLL, FR_WAIT, FR_SLOT, FR_PRESENT, FR_CAP, FR_VALUE, FR_COU
 int64_t st_reason[FR_COUNT];
 int flush_reason = FR_OTHER;
 std::chrono::steady_clock::time_point pend_since;
-// (hookshot) whether any submit is held (pend.cbs not empty; written under dev.present_mu), for the flushes that come
+// (hookshot) whether any submit is held (pend.cbs not empty; written under dev.present_mu only), for the flushes that come
 // from the game's threads to look at without the mutex: a present holds dev.present_mu for as long as it takes (4 ms a
 // frame in Hyrule Field), and a flush with nothing to send waited for it. The host's copy bookkeeping asks how far the
 // replay is under its own lock (rx_nvn_replayed -> queue_flush_poll), so one job thread waiting there held up every other
@@ -395,15 +395,12 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     VkSemaphoreSubmitInfo signals[2] = {signal, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
     uint32_t nsig = signal_value ? 1 : 0;
     uint64_t seq = 0;
-    // (a submit about to be held: said before its recording is in the maps below, so a thread that finds it there and
-    // waits for it never skips the flush its wait needs. queue_flush_locked takes it back)
-    if (batch_on()) pend_held.store(true, std::memory_order_release);
-    if (rec_timeline) {   // (and its number on the recordings' timeline; every caller holds replay_mu: in order)
-        seq = ++rec_seq;
-        signals[nsig].semaphore = rec_timeline;
-        signals[nsig].value = seq;
-        signals[nsig].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        nsig++;
+    // (hookshot) Where this recording is to be found by the threads that wait for it (value_rec, part_rec). A held submit
+    // is put there only once it is in the list of held ones, under dev.present_mu: a thread that finds a recording and
+    // waits for it flushes first (wait_rec_seq), and one found before it was in the list had nothing to flush and waited
+    // for a signal still held, until something else sent the batch (also before the flushes looked at pend_held: found
+    // by mooki000 there)
+    const auto map_recording = [&] {
         std::lock_guard mk(rec_map_mu);
         // (a submission is recorded in parts (maybe_split, a parallel replay's segments), each part's recording with the
         // submission's value: the value's recording is its last part's, the latest seq. emplace kept the first part's,
@@ -423,6 +420,14 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         if (r.part) part_rec.emplace_hint(part_rec.end(), r.part, seq);
         while (part_rec.size() > 8192) part_rec.erase(part_rec.begin());
         rec_map_cv.notify_all();
+    };
+    if (rec_timeline) {   // (and its number on the recordings' timeline; every caller holds replay_mu: in order)
+        seq = ++rec_seq;
+        signals[nsig].semaphore = rec_timeline;
+        signals[nsig].value = seq;
+        signals[nsig].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        nsig++;
+        if (!batch_on()) map_recording();
     }
     si.signalSemaphoreInfoCount = nsig;
     si.pSignalSemaphoreInfos = nsig ? signals : nullptr;
@@ -433,7 +438,8 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         // untagged. Batching is on by default only with RADV, so on NVIDIA this matters only with RX_VK_BATCH=1)
         if (pend.cbs.empty()) batch_next++, pend_since = std::chrono::steady_clock::now(), pend.reflex = reflex_frame();
         for (uint32_t i = 0; i < n; i++) pend.cbs.push_back(cb[i]);
-        pend_held.store(true, std::memory_order_release);   // (again: a flush of older ones may have come in between)
+        pend_held.store(true, std::memory_order_release);
+        if (seq) map_recording();   // (held, and said so: now it may be found and waited for)
         if (signal_value) pend.signal = std::max(pend.signal, signal.value), pend.any_signal = true;
         if (seq) pend.rec = std::max(pend.rec, seq);
         r.batch = batch_next;
@@ -509,6 +515,9 @@ std::atomic<uint64_t> ev_cpu_signals{0}, ev_cpu_settled{0};
 // from guest memory (event_value_in), where a store of the CPU's or a write-back can meet the wait with no signal counted;
 // update_blocked)
 std::atomic<bool> ev_wait_in_memory{false};
+// (a look's count, kept until the burst it was taken in has finished its recording: burst_end. sync_order_mu)
+uint64_t ev_looked = 0;
+bool ev_looked_any = false;
 std::unordered_set<uint64_t> cpu_events;   // (events the CPU has signalled, nvnEventSignal; ev_cpu_mu)
 void ev_cpu_apply() {
     if (!ev_cpu_any.load(std::memory_order_acquire)) return;
@@ -1930,8 +1939,14 @@ void finish_recording(uint64_t value);
 void burst_end() {
     if (!burst_open) return;
     burst_open = false;
-    std::lock_guard lk(replay_mu);
-    if (rec_cur) finish_recording(burst_value);
+    {
+        std::lock_guard lk(replay_mu);
+        if (rec_cur) finish_recording(burst_value);
+    }
+    // (the looks taken in this burst count only now: what they let on is recorded, its write-backs are in the page table
+    // and its recording is submitted. Said at the look's end, a readback that came before this point found the counts
+    // equal, took no look, and read the page table before the burst's recording had noted its pages: found by mooki000)
+    if (ev_looked_any) ev_cpu_settled.store(ev_looked, std::memory_order_release), ev_looked_any = false;
 }
 
 /// The recording being made: ended and submitted, the timeline signalled as far as no older submission is unfinished
@@ -2094,7 +2109,7 @@ void resume_queue(uint64_t queue, bool forced) {
 /// The stopped queues whose events are reached go on, until none can
 void schedule() {
     // (the CPU's signals made before this look: counted before the first wait is tested, so one made meanwhile, which a
-    // test may or may not have seen, is still to be looked at; stored once every queue those let on is recorded)
+    // test may or may not have seen, is still to be looked at; said once every queue those let on is recorded)
     const uint64_t signals = ev_cpu_signals.load(std::memory_order_acquire);
     for (bool moved = true; moved;) {
         moved = false;
@@ -2104,7 +2119,9 @@ void schedule() {
                 moved = true;
             }
     }
-    ev_cpu_settled.store(signals, std::memory_order_release);
+    // (in a burst the recording of what this look let on is finished at the burst's end, and the count is said there)
+    if (burst_open) ev_looked = signals, ev_looked_any = true;
+    else ev_cpu_settled.store(signals, std::memory_order_release);
 }
 /// Every stopped queue on now (why: an index of st_forced): in turn as their waits allow; when all of them wait, the
 /// oldest past its wait

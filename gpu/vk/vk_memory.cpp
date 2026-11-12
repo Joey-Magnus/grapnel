@@ -1645,18 +1645,29 @@ const std::vector<std::pair<uint64_t, uint64_t>>& capture_ranges_merged() {
     return merged;
 }
 // (hookshot) see vk_internal.h. Raised where a recording gets a read of guest memory itself, at the GPU's time: a pool
-// bound with no mirror (gpu_buffer_bind), a mirror's dirty pages no capture holds (mirror_sync) and a mirror's first copy.
-// With all pools mirrored and captured (the usual case on a card with room) it stays 0
+// bound with no mirror (gpu_buffer_bind), a mirror's dirty pages no capture holds (mirror_sync), a mirror's first copy,
+// and the pool handed out whole (gpu_buffer: a large texture unswizzled on the GPU, a texel buffer's view). With all
+// pools mirrored and captured (the usual case on a card with room) it stays 0. outside: a binding made outside a
+// recording's uploads belongs to no part begun yet: counted for the next one, so every part begun so far is older.
+// Two reads of guest memory at the GPU's time are not noted:
+//  - memory_rb_refresh's copies of the readback pages into their mirrors, in every part's uploads. They are how a write
+//    of the CPU's to a page it reads back reaches the mirror at all, so a part after the readback's taking that write is
+//    what they are for (and what the console's one memory does); a part that writes such a page again has it noted with
+//    its own part, which the read then waits for. Noted, they would be in every part and no read would ever wait for
+//    less than its whole submission. What they do carry along is whatever else shares a 4 KB page with a readback range;
+//  - the shaders' own pointers into a pool that was never bound and so has no mirror (the page table's entry is the
+//    pool's own address): no call of ours is made for those reads.
+// Both are as they were before a value's recording became its last part's (v2.0.14 and before)
 namespace {
 std::atomic<uint64_t> mem_rec_part{0}, mem_in_place_part{0};
-void note_in_place_read() {
-    const uint64_t part = mem_rec_part.load(std::memory_order_relaxed);
-    uint64_t seen = mem_in_place_part.load(std::memory_order_relaxed);
-    while (seen < part && !mem_in_place_part.compare_exchange_weak(seen, part, std::memory_order_release)) {}
+void note_in_place_read(bool outside = false) {
+    const uint64_t part = mem_rec_part.load() + (outside ? 1 : 0);
+    uint64_t seen = mem_in_place_part.load();
+    while (seen < part && !mem_in_place_part.compare_exchange_weak(seen, part)) {}
 }
 } // namespace
-void memory_recording_part(uint64_t part) { mem_rec_part.store(part, std::memory_order_relaxed); }
-uint64_t memory_in_place_part() { return mem_in_place_part.load(std::memory_order_acquire); }
+void memory_recording_part(uint64_t part) { mem_rec_part.store(part); }
+uint64_t memory_in_place_part() { return mem_in_place_part.load(); }
 void memory_recording_value(uint64_t value, uint64_t completed) {
     mem_rec_value = value;
     if (completed > mem_completed) mem_completed = completed;
@@ -2564,6 +2575,7 @@ bool memory_rb_refresh(VkCommandBuffer up) {
             if (rs[k].srcOffset + rs[k].size == rs[i].srcOffset) rs[k].size += rs[i].size;
             else rs[++k] = rs[i];
         rs.resize(k + 1);
+        // (guest memory at the GPU's time, and not noted for the readback's part wait: see note_in_place_read)
         vkCmdCopyBuffer(up, pp->buffer, pp->mirror, (uint32_t)rs.size(), rs.data());
         gp.items += (int)rs.size();
         for (const VkBufferCopy& r : rs) gp.bytes += r.size;
@@ -2583,6 +2595,7 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
     Pool* p = pool_of(guest, size);
     if (!p) return {};
     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;   // (in use: not given back under it, imports_give_back)
+    note_in_place_read();   // (the pool itself, read by the GPU where the caller's work runs)
     return {p->buffer, guest - p->lo, size, p->address + (guest - p->lo)};
 }
 
@@ -2747,7 +2760,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         const uint64_t off = guest - p->lo;
         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
         if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED) {
-            note_in_place_read();
+            note_in_place_read(!mirror_upload);
             return remember({p->buffer, off, size, 0});
         }
         if (p->mstate == Pool::MIRROR_ON && p->synced_epoch == mirror_epoch && p->sync_seg <= texture_segment())
@@ -2779,7 +2792,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         // (hookshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
         // write-back diff's shadow no longer knows those pages, and reads them again at its next write-back, after this write
         if (written) shadow_forget(*p, off, std::min(size, p->hi - p->lo - off));
-        note_in_place_read();
+        note_in_place_read(!mirror_upload);
         return remember({p->buffer, off, size, 0});
     }
     // (a pool's mirror is made at its first binding, in this part's uploads: bound in guest memory until the next

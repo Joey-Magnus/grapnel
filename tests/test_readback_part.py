@@ -119,6 +119,16 @@ std::unordered_map<uint64_t, uint32_t> ev_values;   // (the events the stream or
 struct WaitEvent { uint64_t gpu; };
 static WaitEvent wait_at(const uint8_t* p) { return {*reinterpret_cast<const uint64_t*>(p)}; }
 /* MEMORY_EVENT */
+// (a burst: one recording for a submission's piece and what it lets on, finished at the burst's end)
+std::mutex replay_mu;
+bool burst_open = false;
+uint64_t burst_value = 0;
+int* rec_cur = nullptr;
+static int unsettled_while_finishing;
+static void finish_recording(uint64_t) {   // (ends the recording: its pages are noted and it is submitted in here)
+    rec_cur = nullptr;
+    unsettled_while_finishing += ev_cpu_settled.load() != ev_cpu_signals.load();
+}
 static int looks, signal_during_look;
 static void cpu_signal() { ev_cpu_signals.fetch_add(1, std::memory_order_release); }
 static bool wait_met_at(const uint8_t*) {
@@ -127,6 +137,7 @@ static bool wait_met_at(const uint8_t*) {
 }
 static void resume_queue(uint64_t, bool) {}
 /* SCHEDULE */
+/* BURST_END */
 static void sync_settle() { looks++; schedule(); }
 /* SETTLE */
 
@@ -214,6 +225,19 @@ int main() {
     check(sync_settle_met() && looks == 2, "a signal, and another made while the queues are looked at");
     check(sync_settle_met() && looks == 3, "the one made during the look is still to be looked at");
     check(!sync_settle_met() && looks == 3, "then none");
+    // a look taken in a burst counts only once the burst's recording is finished: until then its write-backs are not in
+    // the page table, and a readback that found the counts equal would read the table without them (mooki000's finding)
+    {
+        int recording = 0;
+        cpu_signal();
+        burst_open = true, rec_cur = &recording;
+        schedule();
+        check(ev_cpu_settled.load() != ev_cpu_signals.load(), "a look in a burst is not counted while the burst's recording is open");
+        burst_end();
+        check(unsettled_while_finishing == 1, "nor while that recording is being finished");
+        check(ev_cpu_settled.load() == ev_cpu_signals.load() && !burst_open, "it is counted at the burst's end");
+        check(!sync_settle_met() && looks == 3, "and the readback then takes no look");
+    }
     // an event neither the stream nor nvnEventSignal ever set: its value is guest memory's, a store there meets the wait
     // with no signal counted. While a queue is stopped at one the readback looks every time, as before
     ev_values.clear();
@@ -251,20 +275,36 @@ def main():
     # (the settle before the lookup goes through sync_settle_met with per-queue fences)
     before = inv[:inv.index(lookup)]
     assert "else if (sync_settle_met())" in before, "the readback's look at the stopped queues is no longer sync_settle_met's"
-    counters = between(replay, "std::atomic<uint64_t> ev_cpu_signals{0}", ";") + "\n" + between(replay, "std::atomic<bool> ev_wait_in_memory{", ";")
+    counters = (between(replay, "std::atomic<uint64_t> ev_cpu_signals{0}", ";") + "\n" + between(replay, "std::atomic<bool> ev_wait_in_memory{", ";") +
+                "\n" + between(replay, "uint64_t ev_looked = 0;", "bool ev_looked_any = false;"))
     blocked = block(replay, "void update_blocked() {")
     assert "ev_wait_in_memory.store(n && waits_on_memory_event()" in blocked, \
         "update_blocked no longer says whether a stopped queue waits on an event in guest memory"
     assert "const bool in_place_after = memory_in_place_part() > part;" in choice and "!in_place_after &&" in choice, \
         "the readback's part wait no longer gives way to guest memory read in place after its part"
     memory_src = memory
+    # every place the guest pool's own buffer is handed to the GPU to read: bound, copied from, or given out whole
+    # (gpu_buffer: a texture unswizzled on the GPU, a texel buffer's view). The write-back's own copies into it, the
+    # shadow's fill and the readback pages' refresh are the ones left out (the last with its reason, at note_in_place_read)
+    noted = 0
     for site in ("return remember({p->buffer, off, size, 0});", "vkCmdCopyBuffer(upload_command_buffer(), p.buffer, p.mirror,",
-                 "vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all);"):
+                 "vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all);",
+                 "return {p->buffer, guest - p->lo, size, p->address + (guest - p->lo)};"):
         at = 0
         while (at := memory_src.find(site, at)) >= 0:
-            assert "note_in_place_read();" in memory_src[max(0, at - 200):at], \
+            assert "note_in_place_read(" in memory_src[max(0, at - 200):at], \
                 "a read of guest memory in place is not noted for the readback's part wait: " + site
             at += 1
+            noted += 1
+    assert noted == 6, "the reads of guest memory in place have changed (%d found): look at each again" % noted
+    import re
+    sources = re.findall(r"vkCmdCopyBuffer\([^,]+, (?:p|pp)(?:->|\.)buffer, [^,]+", memory_src)
+    assert len(sources) == 4, "a new copy out of a guest pool (%d found): is it noted for the readback's part wait?" % len(sources)
+    assert memory_src.count("note_in_place_read(!mirror_upload);") == 2, \
+        "a binding outside a recording's uploads must count for the next part (no part begun yet is the one that reads it)"
+    refresh = block(memory_src, "bool memory_rb_refresh(VkCommandBuffer up) {")
+    assert "not noted for the readback's part wait: see note_in_place_read" in refresh, \
+        "memory_rb_refresh's copies out of guest memory: noted now, or their reason gone?"
     signal = block(replay, "void event_signal_queued(")
     assert signal.index("ev_cpu_pending.emplace_back") < signal.index("ev_cpu_signals.fetch_add"), \
         "a CPU signal must be counted after it is in the pending list (schedule's count comes before its tests)"
@@ -272,7 +312,8 @@ def main():
                .replace("/* CHOICE */", choice).replace("/* COUNTERS */", counters)
                .replace("/* SCHEDULE */", block(replay, "void schedule() {"))
                .replace("/* SETTLE */", block(replay, "bool sync_settle_met() {"))
-               .replace("/* MEMORY_EVENT */", block(replay, "bool waits_on_memory_event() {")))
+               .replace("/* MEMORY_EVENT */", block(replay, "bool waits_on_memory_event() {"))
+               .replace("/* BURST_END */", block(replay, "void burst_end() {")))
     with tempfile.TemporaryDirectory(prefix="readback-part-") as temp:
         src = Path(temp) / "readback_part.cpp"
         exe = Path(temp) / "readback_part.exe"   # (the name llvm-mingw writes on Windows; any name runs on Linux)
