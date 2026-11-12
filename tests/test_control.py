@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_SKIP = {"macos": "control.c's Unix path needs Linux SOCK_CLOEXEC/accept4/ucred; Windows uses the named pipe"}
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -50,6 +50,7 @@ class CleanupTests(unittest.TestCase):
 
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(module, "LINUX", linux))
+            stack.enter_context(mock.patch.object(module, "MACOS", False))
             stack.enter_context(mock.patch.object(module, "__file__", SCRIPT))
             stack.enter_context(mock.patch.object(module.os, "getpid", return_value=100))
             stack.enter_context(mock.patch.object(module.subprocess, "run", side_effect=run))

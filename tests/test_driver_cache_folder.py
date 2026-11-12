@@ -16,7 +16,8 @@ import subprocess
 import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
-RUN_ALL_SKIP = {"windows": "the Linux main's code (POSIX mkdir)"}
+RUN_ALL_SKIP = {"windows": "the Linux main's code (POSIX mkdir)",
+                "macos": "NVIDIA __GL_SHADER_DISK_CACHE_PATH is a Linux driver path; exercised on Linux"}
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,7 +52,7 @@ def main():
         raise SystemExit("FAIL: the Linux main does not call driver_cache_folder")
     if main_fn.index("driver_cache_folder();") > main_fn.index("hos_display_init()"):
         raise SystemExit("FAIL: driver_cache_folder runs after the window (SDL) may have loaded Vulkan")
-    exe_name = re.search(r'^EXE = "([^"]+)" if LINUX', (ROOT / "nx2" / "build.py").read_text(encoding="utf-8"), re.M)
+    exe_name = re.search(r'^EXE = "([^"]+)" if (?:LINUX|POSIX_HOST)', (ROOT / "nx2" / "build.py").read_text(encoding="utf-8"), re.M)
     if not exe_name or exe_name.group(1) != "hookshot":
         raise SystemExit("FAIL: the Linux game is no longer named hookshot (nx2/build.py EXE): NVIDIA's cache is filed by that name")
 
