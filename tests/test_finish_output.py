@@ -57,6 +57,9 @@ class FinishOutputTests(unittest.TestCase):
         self.image = self.work / "sa" / "image" / "image.bin"
         self.image.write_bytes(b"new synthetic image")
         (self.out / "image.bin").write_bytes(b"existing synthetic image")
+        make_game.build_flags.write(self.built, '{"format": 1, "cpu": ["-march=x86-64-v3"]}')
+        self.flags = self.built / make_game.build_flags.FILENAME
+        (self.out / self.flags.name).write_bytes(b"existing build flags\n")
 
     def clear_fixture_readonly_modes(self):
         # Test-owned temporary files only: production must never unlock destinations or pre-existing .new files.
@@ -78,9 +81,12 @@ class FinishOutputTests(unittest.TestCase):
     def assert_installed_unchanged(self):
         self.assertEqual(self.destination.read_bytes(), b"existing synthetic executable")
         self.assertEqual((self.out / "image.bin").read_bytes(), b"existing synthetic image")
+        self.assertEqual((self.out / self.flags.name).read_bytes(), b"existing build flags\n")
 
     def assert_no_staging_files(self):
-        self.assertEqual(sorted(path.name for path in self.out.iterdir()), ["hookshot.exe", "image.bin"])
+        self.assertEqual(sorted(path.name for path in self.out.iterdir()),
+                         ["hookshot.exe", self.flags.name, "image.bin"])
+        self.assertEqual((self.out / self.flags.name).read_bytes(), self.flags.read_bytes())
 
     def stopped_output(self):
         output = io.StringIO()
@@ -112,7 +118,7 @@ class FinishOutputTests(unittest.TestCase):
 
         with mock.patch.object(make_game.shutil, "copy2", side_effect=observe_copy):
             self.finish()
-        self.assertEqual(copied, [self.source, self.image])
+        self.assertEqual(copied, [self.source, self.image, self.flags])
         self.assertEqual(self.destination.read_bytes(), self.source.read_bytes())
         self.assertEqual((self.out / "image.bin").read_bytes(), self.image.read_bytes())
         self.assert_no_staging_files()
@@ -120,12 +126,13 @@ class FinishOutputTests(unittest.TestCase):
     def test_first_install_without_existing_files(self):
         self.destination.unlink()
         (self.out / "image.bin").unlink()
+        (self.out / self.flags.name).unlink()
         self.finish()
         self.assertEqual(self.destination.read_bytes(), self.source.read_bytes())
         self.assertEqual((self.out / "image.bin").read_bytes(), self.image.read_bytes())
         self.assert_no_staging_files()
 
-    def test_launcher_stages_all_three_files_before_replacement(self):
+    def test_launcher_stages_all_files_before_replacement(self):
         binary = self.out / "bin" / "hookshot.exe"
         binary.parent.mkdir()
         binary.write_bytes(b"existing synthetic game in bin")
@@ -143,11 +150,26 @@ class FinishOutputTests(unittest.TestCase):
 
         with mock.patch.object(make_game.shutil, "copy2", side_effect=observe_copy):
             self.finish(launcher=True)
-        self.assertEqual(copied, [self.source, self.image, self.root / "HookshotBuilder-Setup.exe"])
+        self.assertEqual(copied, [self.source, self.image, self.flags, self.root / "HookshotBuilder-Setup.exe"])
         self.assertEqual(binary.read_bytes(), self.source.read_bytes())
         self.assertEqual(self.destination.read_bytes(), b"new synthetic launcher")
         self.assertEqual((self.out / "image.bin").read_bytes(), self.image.read_bytes())
+        self.assertEqual((self.out / self.flags.name).read_bytes(), self.flags.read_bytes())
         self.assertEqual(list(self.out.rglob("*.new")), [])
+
+    def test_partial_flags_copy_preserves_installed_game_and_metadata(self):
+        copy = make_game.shutil.copy2
+
+        def partial_flags(source, destination):
+            if Path(source) == self.flags:
+                Path(destination).write_bytes(b"partial flags")
+                raise PermissionError("test: flags copy interrupted")
+            return copy(source, destination)
+
+        with mock.patch.object(make_game.shutil, "copy2", side_effect=partial_flags):
+            self.stopped_output()
+        self.assert_installed_unchanged()
+        self.assertEqual((self.out / (self.flags.name + ".new")).read_bytes(), b"partial flags")
 
     def test_partial_launcher_copy_preserves_game_image_and_launcher(self):
         binary = self.out / "bin" / "hookshot.exe"

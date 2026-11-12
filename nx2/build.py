@@ -46,6 +46,7 @@ import logo_rgba
 import ui_fonts
 import toolchain
 import version
+import build_flags
 import win_manifest
 
 NX2_RT = os.path.join(kit.HERE, "rt")
@@ -958,6 +959,8 @@ def main():
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + \
         ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK
+    build_record = build_flags.describe(CPU, fl, hot_fl, host_fl, flag_text)
+    flags_def = build_flags.define(build_record)
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
     if LINUX:
@@ -976,7 +979,7 @@ def main():
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
               (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
-              ([stamp_def] if os.path.basename(s) == "hos_main.c" else []) +
+              ([stamp_def, flags_def] if os.path.basename(s) == "hos_main.c" else []) +
               (["-I" + ZSTD] if os.path.basename(s) == "prompts.c" else []) +
               (dav1d_fl if os.path.basename(s) in ("nn_video.c", "dav1d_av1.c") else []),
               host_deps + (zstd_api if os.path.basename(s) == "prompts.c" else b"")) for s in host_srcs]
@@ -1294,6 +1297,7 @@ def main():
             print("\n".join(undefined[:40]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB, no undefined symbols (%.0fs)" % (dll, os.path.getsize(dll) >> 20, time.time() - t))
+    build_flags.write(out, build_record)
     return 0
 
 

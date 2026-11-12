@@ -219,6 +219,13 @@ RX_HOT_OPT=O1 python -I nx2/build.py --standalone --jobs 8
 Run on its own, `build.py` also lacks the rest of `make_game.py`'s environment (`RX_RELEASE`, `A64_HOT_CHUNK`), so its
 runtime objects differ from a `make_game.py` build's.
 
+Every successful game build writes `hookshot_build_flags.json` beside `hookshot_version.txt`. Its `cpu` array
+records the CPU arguments (including `-march`, optional `-mtune`, and `-ffp-contract=off`); `lifted`, `hot`, and
+`host` describe the base flags for each kind of game code, with include paths omitted and temporary paths normalized
+as in the object keys. The executable embeds that same JSON text and prints it as `build flags:` near the start of
+`hookshot_log.txt`. This records the game build, not the separately built renderer. It does not yet change the flags
+used by an update (#2577).
+
 The objects are cached by their flags, so `-O1` and `-O2` objects can sit side by side, and `make_game.py` leaves
 `RX_HOT_OPT` and `RX_PGO` out of its lift key. In the checkout's own `work/` folder, or with
 `HOOKSHOT_KEEP_BUILD_FILES=1`, switching back and forth therefore neither translates the game again nor recompiles

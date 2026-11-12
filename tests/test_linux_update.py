@@ -612,6 +612,7 @@ class UpdateTests(unittest.TestCase):
             (work / "sa" / "image" / "image.bin").write_bytes(b"image")
             for name in make_game.BESIDE:
                 (built / name).write_bytes(b"new " + name.encode())
+            make_game.build_flags.write(built, '{"format": 1, "cpu": ["-march=x86-64-v3"]}')
             out.mkdir()
             for name in make_game.BESIDE:   # (a folder from a builder before the launcher: the game and its libraries in it)
                 (out / name).write_bytes(b"old " + name.encode())
@@ -620,7 +621,10 @@ class UpdateTests(unittest.TestCase):
                                                    "a": SimpleNamespace(fsr=False, no_fsr=False, update=None, fetch_fsr_runtime=False)})
             self.assertEqual((out / "hookshot").read_bytes(), (ROOT / "builder" / "linux" / "hookshot-folder").read_bytes())
             self.assertTrue((out / "hookshot").stat().st_mode & stat.S_IXUSR)
-            self.assertEqual(sorted(p.name for p in out.iterdir()), ["bin", "hookshot", "image.bin"])
+            self.assertEqual(sorted(p.name for p in out.iterdir()),
+                             ["bin", "hookshot", make_game.build_flags.FILENAME, "image.bin"])
+            self.assertEqual((out / make_game.build_flags.FILENAME).read_bytes(),
+                             (built / make_game.build_flags.FILENAME).read_bytes())
             self.assertEqual(sorted(p.name for p in (out / "bin").iterdir()), sorted(make_game.BESIDE))
             self.assertEqual((out / "bin" / "hookshot").read_bytes(), b"new hookshot")
 
