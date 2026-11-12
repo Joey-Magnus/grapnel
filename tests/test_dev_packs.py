@@ -263,6 +263,19 @@ def test_generated_and_runtime(d):
     for asked, what, why in ((["cpu", "cpu2"], "two packs with the same module", "both bring"),
                              (["old"], "a pack on another base", "not the base")):
         refused(what, ["rt", str(base_dir), str(d / ("rt-" + asked[-1])), *asked], why)
+    victim = d / "outside.txt"
+    write(victim, b"not the runtime's")
+    for name, meta, why in (("abs", {"generated": [str(victim)]}, "outside the runtime"),
+                            ("up", {"deleted": ["../outside.txt"]}, "outside the runtime"),
+                            ("deep", {"generated": ["romfs/../../outside.txt"]}, "outside the runtime"),
+                            ("mod", {"files": {"../outside.txt": "h"}}, "names modules")):
+        p = base_dir / "packs" / name
+        (p / "files").mkdir(parents=True, exist_ok=True)
+        (p / "pack.json").write_text(json.dumps(dict({"base": b["commit"], "files": {}, "generated": [], "deleted": [],
+                                                      "prepare": False}, **meta)))
+        refused("a pack.json naming %s" % meta, ["rt", str(base_dir), str(d / ("rt-" + name)), name], why)
+        check("...and nothing made", not (d / ("rt-" + name)).exists())
+    check("the file outside is untouched", victim.read_bytes() == b"not the runtime's")
 
 
 def main():

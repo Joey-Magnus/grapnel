@@ -266,6 +266,11 @@ of what differs from the base (the game, the renderer, files the build generates
 base. It calls `make_game.py` and `build.py` as they are, with the defaults, and changes nothing in what players
 build.
 
+**A base, a pack and a runtime never leave your PC.** They are built from the game: a pack holds the built modules,
+with the lifted game linked in, and files generated from the game; a runtime is a whole game folder. Never attach,
+upload or send them to a tester or the chat ([CONTRIBUTING.md](../CONTRIBUTING.md#the-rule-with-no-exceptions)).
+What you share is the branch; a tester builds their own.
+
 ```
 python -I scripts/dev_packs.py base ../base-main --romfs <romfs> --exefs <exefs> [--seed <an older game folder>]
 python -I scripts/dev_packs.py pack ../base-main my-fix --tree <the change's checkout>

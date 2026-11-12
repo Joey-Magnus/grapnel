@@ -428,6 +428,19 @@ def cmd_pack(a):
                                           time.time() - t))
 
 
+def in_runtime(rt, rel):
+    """A path a pack names (a module, a generated or deleted file) is relative and stays inside the runtime: pack.json is a plain
+    file, and one that named an absolute path or climbed out with .. would have rt write or remove a file anywhere"""
+    if not rel or os.path.isabs(rel) or os.path.splitdrive(rel)[0]:
+        return False
+    root = os.path.normcase(os.path.realpath(rt))
+    target = os.path.normcase(os.path.realpath(os.path.join(rt, rel)))
+    try:
+        return target != root and os.path.commonpath([root, target]) == root
+    except ValueError:
+        return False
+
+
 def cmd_rt(a):
     d, rt = os.path.abspath(a.dir), os.path.abspath(a.runtime)
     b = read_base(d)
@@ -448,6 +461,11 @@ def cmd_rt(a):
                      if m[0] in meta["files"] and m[1] and os.path.isfile(os.path.join(pdir, m[1]))})
         mine.update({rel: os.path.join(pdir, "files", rel) for rel in meta["generated"]})
         mine.update({rel: None for rel in meta.get("deleted", ())})
+        if not set(meta["files"]) <= {m[0] for m in MODULES}:
+            sys.exit("pack %s names modules that are not %s: %s" % (p, " or ".join(m[0] for m in MODULES), sorted(meta["files"])))
+        bad = sorted(rel for rel in mine if not in_runtime(rt, rel))
+        if bad:
+            sys.exit("pack %s names paths outside the runtime: %s" % (p, ", ".join(map(repr, bad[:5]))))
         for rel, src in mine.items():
             if rel in over:
                 sys.exit("packs %s and %s both bring %s: merge their branches and build one pack" % (over[rel][0], p, rel))
