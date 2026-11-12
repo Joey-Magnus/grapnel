@@ -29,7 +29,8 @@ development libraries before reading or translating the dump, and lists every mi
 It uses the compile's lookup order: CPM caches first, then `HOOKSHOT_*_HEADERS`, then `/usr/local` and `/usr`;
 FFmpeg comes from `HOOKSHOT_FFMPEG` when it holds `lib/libavcodec.a`, otherwise from `pkg-config`. The C probe
 uses the selected compiler, lld and `HOOKSHOT_SYSROOT` if set. A prebuilt renderer does not need renderer headers
-or a C++ compiler unless an NGX SDK selects a source renderer instead. The AppImage uses its bundled tools,
+unless an NGX SDK selects a source renderer instead; source builds still need clang++ for the native translator.
+The AppImage uses its bundled tools,
 and `RX_TARGET=windows` keeps the Windows toolchain checks rather than requiring Linux development libraries.
 The button-prompt packages in `nx2/prompt_requirements.txt` remain optional; this check installs nothing.
 

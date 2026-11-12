@@ -654,7 +654,8 @@ def check_linux_prerequisites(work=None):
     import build
     missing = []
     requirements = os.path.join(ROOT, "requirements.txt")
-    if os.path.isfile(requirements):   # (source builds; the AppImage already carries its Python environment)
+    source_build = os.path.isfile(requirements)
+    if source_build:   # (the AppImage already carries its Python environment)
         with open(requirements, encoding="utf-8") as f:
             for line in f:
                 # The top-level pins are mandatory; -r nx2/prompt_requirements.txt is optional.
@@ -674,7 +675,11 @@ def check_linux_prerequisites(work=None):
                                % (name, probe, package, env))
     build.ffmpeg_linux(missing)
     cc = build.toolchain.find("clang")
-    for name, path in [("clang", cc)] + ([] if prebuilt else [("clang++", build.toolchain.find("clang++"))]):
+    # A source checkout also builds a64emit with clang++, even with a prebuilt renderer.
+    tools = [("clang", cc)]
+    if source_build or not prebuilt:
+        tools.append(("clang++", build.toolchain.find("clang++")))
+    for name, path in tools:
         if not os.path.isfile(path):
             missing.append("%s compiler %s (EMSDK/upstream/bin, else ~/emsdk/upstream/bin, then PATH; "
                            "install clang or use the AppImage)" % (name, path))

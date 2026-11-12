@@ -17,6 +17,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+RUN_ALL_ARGS = ["--cc", "clang"]
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(os.environ.get("HOOKSHOT_LINUX_PREFLIGHT_SOURCE", ROOT))
 COMPILER = None
@@ -133,7 +135,7 @@ class LinuxPreflightTests(unittest.TestCase):
             raise ReachedGame
         self.fail("Unexpected game step: %r" % cmd)
 
-    def invoke(self, cross=False):
+    def invoke(self):
         argv = ["make_game.py", "--jobs", "1", "--nup", str(self.nup), "--out", str(self.root / "output"),
                 "--work", str(self.root / "work"), "--no-prepare-shaders"]
         with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(self.output):
@@ -218,13 +220,22 @@ class LinuxPreflightTests(unittest.TestCase):
         os.environ.pop("RX_CPM")
         self.assertEqual(self.invoke(), "game", self.output.getvalue())
 
-    def test_prebuilt_renderer_needs_no_renderer_headers_or_cxx(self):
+    def test_prebuilt_renderer_needs_no_renderer_headers(self):
+        renderer = self.root / "prebuilt.so"
+        renderer.write_bytes(b"authored renderer path")
+        os.environ["HOOKSHOT_VK_PREBUILT"] = str(renderer)
+        self.assertEqual(self.invoke(), "game", self.output.getvalue())
+        self.assertIn(mock.call("clang++"), self.find.call_args_list)   # a64emit still builds from source
+
+    def test_source_prebuilt_still_needs_native_cpp_compiler(self):
         renderer = self.root / "prebuilt.so"
         renderer.write_bytes(b"authored renderer path")
         os.environ["HOOKSHOT_VK_PREBUILT"] = str(renderer)
         self.cxx.unlink()
-        self.assertEqual(self.invoke(), "game", self.output.getvalue())
-        self.assertNotIn(mock.call("clang++"), self.find.call_args_list)
+        self.assertEqual(self.invoke(), 1)
+        self.assertIn("clang++", self.output.getvalue())
+        self.assertNotIn("VMA", self.output.getvalue())
+        self.assertEqual(self.events, [])
 
     def test_ngx_overrides_prebuilt_renderer(self):
         os.environ["HOOKSHOT_VK_PREBUILT"] = str(self.root / "ignored.so")
@@ -242,6 +253,7 @@ class LinuxPreflightTests(unittest.TestCase):
 
     def test_bundled_static_ffmpeg_avoids_system_pkg_config(self):
         (self.checkout / "requirements.txt").unlink()  # AppImage packaging carries Python, not requirements.txt.
+        self.cxx.unlink()   # the bundle carries a64emit too; no renderer or helper C++ compile
         renderer = self.root / "prebuilt.so"
         renderer.write_bytes(b"authored renderer path")
         os.environ["HOOKSHOT_VK_PREBUILT"] = str(renderer)
@@ -283,7 +295,7 @@ class LinuxPreflightTests(unittest.TestCase):
         os.environ["RX_TARGET"] = "windows"
         os.environ["HOOKSHOT_MINGW"] = str(self.root / "mingw")
         self.pc_missing = {"libavcodec"}
-        self.assertEqual(self.invoke(cross=True), "game", self.output.getvalue())
+        self.assertEqual(self.invoke(), "game", self.output.getvalue())
         self.assertFalse(any(cmd[0] == "pkg-config" for cmd in self.processes))
         self.assertTrue(any("--target=x86_64-w64-mingw32" in cmd for cmd in self.processes))
         self.assertEqual(self.events, ["read", "lift"])
