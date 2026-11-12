@@ -1394,10 +1394,44 @@ void upload_frame_report() {
     std::lock_guard lk(up_mu);
     int64_t ns = 0;
     for (const UpStat& u : up_frame) ns += u.ns;
+    static const char* names[UP_COUNT] = {"ASTC on the GPU", "unswizzled on the GPU", "on the CPU"};
+    // (hookshot) The per-frame line stops at 300. Keep the routes and say which one took the time, on the first such
+    // frame and every 10, so a long session still names ASTC, the GPU unswizzle or the CPU. Measure only.
+    if (ns >= 50000000) {
+        struct Acc {
+            int n = 0;
+            int64_t ns = 0;
+            UpStat route[UP_COUNT]{};
+        };
+        static Acc acc;
+        acc.n++;
+        acc.ns += ns;
+        for (int r = 0; r < UP_COUNT; r++) {
+            acc.route[r].n += up_frame[r].n;
+            acc.route[r].bytes += up_frame[r].bytes;
+            acc.route[r].ns += up_frame[r].ns;
+        }
+        if (acc.n == 1 || acc.n % 10 == 0) {
+            int top = 0;
+            for (int r = 1; r < UP_COUNT; r++)
+                if (acc.route[r].ns > acc.route[top].ns) top = r;
+            int second = top == 0 ? 1 : 0;
+            for (int r = 0; r < UP_COUNT; r++)
+                if (r != top && acc.route[r].ns > acc.route[second].ns) second = r;
+            if (acc.route[top].ns < 1000000)
+                logf("vk: upload rollup: %d frames over 50 ms, %.0f ms, no route over 1 ms", acc.n, acc.ns / 1e6);
+            else if (acc.route[second].ns >= 1000000)
+                logf("vk: upload rollup: %d frames over 50 ms, %.0f ms, mostly %s (%.0f ms, %.0f MB), then %s (%.0f ms)",
+                     acc.n, acc.ns / 1e6, names[top], acc.route[top].ns / 1e6, acc.route[top].bytes / 1048576.0,
+                     names[second], acc.route[second].ns / 1e6);
+            else
+                logf("vk: upload rollup: %d frames over 50 ms, %.0f ms, mostly %s (%.0f ms, %.0f MB)",
+                     acc.n, acc.ns / 1e6, names[top], acc.route[top].ns / 1e6, acc.route[top].bytes / 1048576.0);
+        }
+    }
     static int logged;
     if (ns >= 50000000 && logged < 300) {
         logged++;
-        static const char* names[UP_COUNT] = {"ASTC on the GPU", "unswizzled on the GPU", "on the CPU"};
         char line[900];
         int k = snprintf(line, sizeof line, "vk: a frame's uploads took %.0f ms:", ns / 1e6);
         for (int r = 0; r < UP_COUNT; r++)
