@@ -673,6 +673,9 @@ bool swapchain_dlssg() { return swapchain_framegen() >= 2 && dlss_fg_runs(); }
 
 void retire_swapchain() {
     if (!dev.swapchain) return;
+    // (the presenter thread idle first, whatever path led here: it presents and waits on this swapchain and its semaphores
+    // without the queue's lock. It never takes dev.present_mu, so waiting for it with that lock held cannot deadlock)
+    present_thread_drain();
     device_wait_idle_locked();
     reflex_swapchain_destroyed();
     swap_views_drop();

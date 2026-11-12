@@ -119,6 +119,12 @@ def main():
     need(acq.index("present_thread_drain();") < acq.index("invalidate_lost_surface(res);"),
          "the acquire's lost surface is dropped with a present still out on the presenter")
     make = block(main_cpp, "bool create_swapchain(uint32_t width, uint32_t height) {")
+    retire = block(main_cpp, "void retire_swapchain() {")
+    need(retire.index("present_thread_drain();") < retire.index("device_wait_idle_locked();") < retire.index("vkDestroySwapchainKHR"),
+         "a swapchain can be destroyed (a lost surface found by a present) while the presenter thread still presents on it")
+    loop_all = block(replay, "void presenter_loop() {")
+    need("dev.present_mu" not in loop_all and "present_image_mu" not in loop_all,
+         "the presenter thread takes the replay queue's lock: a drain made with it held would deadlock, and the next frame's submits wait behind the present")
     need(make[make.index("{") + 1:].lstrip().startswith("present_thread_drain();"),
          "create_swapchain does not wait for the presenter first")
     on = block(replay, "bool present_thread_on() {")
