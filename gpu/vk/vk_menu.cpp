@@ -38,6 +38,7 @@
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
+#include "vk_dlssnr_ngx.h"   // (hookshot: the Neural tab; nr::why, nr::running_backend: whichever backend the Backend row runs)
 #include "vk_bug_report.h"   // (the Gameplay tab's Bug report: what it writes, and how)
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
@@ -81,8 +82,11 @@ enum MenuTab {
     TAB_AUDIO = 1,
     TAB_GAMEPLAY = 2,
     TAB_CONTROLS = 3,
-    TAB_DEBUG = 4,   // (the OoT debug tools of #785, a tab of their own)
-    TAB_COUNT = 5,
+    // (hookshot) DLSS 5 neural rendering's own tab. Its rows are the model's own knobs, which belong together and
+    // would have doubled the Graphics tab on their own.
+    TAB_NEURAL = 4,
+    TAB_DEBUG = 5,   // (the OoT debug tools of #785, a tab of their own)
+    TAB_COUNT = 6,
     TAB_MOTION = TAB_COUNT,   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
     TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
@@ -168,6 +172,63 @@ const char* tx_upscale(int v) {
     static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
+}
+// (hookshot) DLSS 5 neural rendering's rows (docs/neural-rendering.md). The model names are the quality modes DLSS-NR
+// takes (performance, balanced, quality, DLAA). The three styles are the model's own and these are its names for them;
+// the presets are DLSS presets A to G, where Default lets the model pick -- which is 0, not 1: a preset of 1 silently
+// pins A.
+const char* tx_nr_model(int v) {
+    static const char* t[] = {"Performance", "Balanced", "Quality", "DLAA"};
+    return t[std::min(std::max(v, 0), 3)];
+}
+const char* tx_nr_style(int v) {
+    static const char* t[] = {"Default", "Natural", "Cinematic"};
+    return t[std::min(std::max(v, 0), 2)];
+}
+// (hookshot) What runs the model (vk_dlssnr_ngx.h nr::Backend): the same rows either way.
+const char* tx_nr_backend(int v) {
+    static const char* t[] = {"Auto", "NGX direct", "Open (OpenDLSS-NR)"};
+    return t[std::min(std::max(v, 0), 2)];
+}
+const char* hn_nr_backend(int v, int variant) {
+    static char b[96];
+    if (variant >= 0) return variant == 0 ? "Auto: running through OpenDLSS-NR, the open network." : nullptr;   // (the longest)
+    if (v != nr::AUTO) return nullptr;
+    snprintf(b, sizeof b, "Auto: running through %s.",
+             nr::running_backend() == nr::NGX ? "NGX directly" : "OpenDLSS-NR, the open network");
+    return b;
+}
+const char* tx_nr_preset(int v) {
+    static char b[16];
+    if (v <= 0) return "Default";
+    snprintf(b, sizeof b, "Preset %c", 'A' + (v - 1));
+    return b;
+}
+/// (hookshot) Neural rendering's Passes row (nr_plan.h): how many times the model goes over each frame
+const char* tx_nr_passes(int v) {
+    static char b[16];
+    if (v <= 1) return "1 (default)";
+    snprintf(b, sizeof b, "%d", std::min(v, nr_plan::kMaxPasses));
+    return b;
+}
+const char* hn_nr_passes(int v, int variant) {
+    if (variant > 0) return nullptr;
+    return v <= 1 ? "The model goes over each frame once."
+                  : "Each pass works on the picture of the one before and costs the same again; passes after the first leave "
+                    "Local tone out.";
+}
+/// (hookshot) Neural rendering's Resolution scale row (nr_plan.h, vk_nr_scale.h)
+const char* tx_nr_scale(int v) {
+    static char b[24];
+    if (v >= 100) return "100% (full size)";
+    snprintf(b, sizeof b, "%d%%", std::max(v, nr_plan::kMinScale));
+    return b;
+}
+const char* hn_nr_scale(int v, int variant) {
+    if (variant > 0) return nullptr;
+    return v >= 100 ? "The model works on the whole frame."
+                    : "The model works on a smaller copy of the frame and its detail is put back at full size: faster, with a "
+                      "softer effect.";
 }
 /// The Window scaling filter row's value: its filter, or that none is needed (the saved value stays, for another window size)
 const char* tx_filter(int v) { return filter_needed() ? tx_upscale(v) : "Not needed (window = output)"; }
@@ -288,6 +349,23 @@ const char* hn_dlss_model(int v, int variant) {
     if (variant == 1) return unused;
     if (variant == 2) return env;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
+}
+/// (hookshot) Neural rendering: the value, or why it is not available here (nr::why: the running backend's reason, which
+/// is also where a row turned on after the start says that it needs a restart; the log has more)
+const char* hn_nr(int v, int variant) {
+    static const char* const t[] = {"Off.", "On: the model goes over each of the game's finished frames, before frame generation."};
+    // (the longest line nr::why gives: vk_opennr.cpp's, for a row turned on without the device made for the network)
+    static const char* const longest =
+        "Open was not asked for at the start: restart the game with this on (your model in nr-model, readme).";
+    // (while the picture is the game's own HDR10, the model is left out: vk_replay.cpp do_present says why)
+    static const char* const hdr_native = "On, but left out while HDR is Native: the model takes an SDR picture. Use HDR Expanded.";
+    if (variant < 0) {
+        if (!v) return t[0];   // (off: no backend is asked anything)
+        const char* w = nr::why();
+        if (*w) return w;
+        return dev.hdr && opts.hdr == 2 ? hdr_native : t[1];
+    }
+    return variant == 0 ? t[std::clamp(v, 0, 1)] : variant == 1 ? longest : variant == 2 ? hdr_native : nullptr;
 }
 /// The Game language row (opts.game_lang): language.txt's language, written once the row is left (game_lang_tick); the game
 /// reads it at its start
@@ -1026,6 +1104,55 @@ Row rows[] = {
     {TAB_DEBUG, "ASTC as RGBA8", &opts.astc_rgba8, 0, 1, 1, tx_onoff,
      "Big ASTC textures kept as decoded RGBA8 instead of re-encoded to BC3: a workaround for texture artifacts seen on some AMD "
      "cards (issues 57 and 1006). Takes far more video memory. Applies after restart.", hn_astc_rgba8, true, true},
+
+    // (hookshot) Neural rendering (13 rows). Every row here takes effect on the next frame: the backends read them live
+    // rather than caching them at start-up (tests/test_nr_settings_live.py). Only turning Neural rendering on can need a
+    // restart, where the device was made without what the backend needs (hn_nr says so). None is a Quality preset's:
+    // changing one leaves the preset alone.
+    {TAB_NEURAL, "Neural rendering", &opts.nr, 0, 1, 1, tx_onoff,
+     "DLSS 5 neural rendering: NVIDIA's model goes over the finished frame and rebuilds detail, tone and structure in it. "
+     "Needs an NVIDIA RTX card and NVIDIA's model file, or, through Open, an NVIDIA RTX 40/50 or AMD RX 7000/9000 card and a model "
+     "folder you supply (readme.md; Backend says how it is reached). Turned on while the game runs, it can ask for a restart: "
+     "the line below then says so. The rows below are the model's own settings and do nothing while this is Off.", hn_nr, false,
+     true},
+    {TAB_NEURAL, "Backend", &opts.nr_backend, 0, 2, 1, tx_nr_backend,
+     "What runs the model. NGX direct is NVIDIA's runtime; Open is OpenDLSS-NR, an open Vulkan network for NVIDIA and AMD "
+     "cards that reads a model folder you supply (nr-model in the game folder). Auto takes NGX direct where it can run, "
+     "then Open where a model folder is there, and Open on a card that is not NVIDIA's. The rows below apply to whichever "
+     "runs (readme.md).", hn_nr_backend, false, true},
+    {TAB_NEURAL, "Model", &opts.nr_model, 0, 3, 1, tx_nr_model,
+     "How much work the model does per frame: Performance is the cheapest, DLAA the most expensive, Quality the model's "
+     "own default. NGX direct only: Open's network has no quality modes.", nullptr, false, true},
+    {TAB_NEURAL, "Style", &opts.nr_style, 0, 2, 1, tx_nr_style,
+     "Which look the model aims for. Natural keeps close to what the game drew; Cinematic is the stronger, graded look.",
+     nullptr, false, true},
+    {TAB_NEURAL, "Preset", &opts.nr_preset, 0, 7, 1, tx_nr_preset,
+     "Which trained network the model uses, as DLSS presets A to G. Default lets the model pick, which is usually the "
+     "newest it has. NGX direct only: Open runs the one network of your model folder.", nullptr, false, true},
+    {TAB_NEURAL, "Passes", &opts.nr_passes, 1, nr_plan::kMaxPasses, 1, tx_nr_passes,
+     "How many times the model goes over each frame, each pass on the picture the one before made: a stronger effect, at "
+     "the model's whole cost again for every pass, and its video memory again too (a pass the card has no room for is left "
+     "out, and the log says so). NGX direct only; Open runs one pass.", hn_nr_passes, false, true},
+    {TAB_NEURAL, "Resolution scale", &opts.nr_scale, nr_plan::kMinScale, nr_plan::kMaxScale, 5, tx_nr_scale,
+     "The size the model works at, as a share of the frame's width and height. Below 100% it is given a smaller copy and "
+     "its detail is added back to the frame at full size, so the picture stays as sharp as the game drew it: the cheapest "
+     "way to more frames with the model on. Any backend.", hn_nr_scale, false, true},
+    {TAB_NEURAL, "Intensity", &opts.nr_intensity, 0, 100, 10, tx_percent,
+     "How much of the model's result is mixed into the frame. 0% leaves the picture as the game drew it; 100% is the "
+     "model's full effect.", nullptr, false, true},
+    {TAB_NEURAL, "Local tone", &opts.nr_local_tone, 0, 100, 10, tx_percent,
+     "How far the model may move brightness and colour within a small area. Lower keeps the game's own shading.", nullptr, false, true},
+    {TAB_NEURAL, "Local structure", &opts.nr_local_structure, 0, 100, 10, tx_percent,
+     "How much fine detail the model adds back -- texture, edges, small shapes. Too much looks etched.", nullptr, false, true},
+    {TAB_NEURAL, "Global tone", &opts.nr_global_tone, 0, 100, 10, tx_percent,
+     "How far the model may move the whole frame's brightness and contrast. NGX direct only, and NVIDIA's model may not act "
+     "on it yet; Open's network has no such setting.", nullptr, false, true},
+    {TAB_NEURAL, "Skin structure", &opts.nr_skin, 0, 100, 10, tx_percent,
+     "How much detail the model adds to faces and skin, separately from everything else. It only does anything with Auto "
+     "mask on, which is how the model knows which pixels are a character.", nullptr, false, true},
+    {TAB_NEURAL, "Auto mask", &opts.nr_auto_mask, 0, 1, 1, tx_onoff,
+     "Lets the model find the characters in the frame by itself, which is what Skin structure needs. Also helps it leave "
+     "the HUD and text alone, which it has no reason to rebuild.", nullptr, false, true},
     // (hookshot) the Gameplay tab's Bug report (vk_bug_report.h): A or Enter writes the report's folder; the help says what is in it
     {TAB_GAMEPLAY, "Bug report", nullptr, 0, 0, 0, nullptr,
      "Saves what an issue needs in a new folder, bug-reports in the game folder: report.txt with the issue form's answers (this "
@@ -1368,6 +1495,20 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.fps_cap) return "frame_rate_cap";   // (host/nn_vi.c reads it at the start)
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
+    // (hookshot) the Neural tab's rows under nr_: "backend", "model", "style" or "preset" alone would say nothing in the
+    // file, beside quality_preset and dlss_model. The switch itself is its row's name, neural_rendering
+    if (r.value == &opts.nr_backend) return "nr_backend";
+    if (r.value == &opts.nr_passes) return "nr_passes";
+    if (r.value == &opts.nr_scale) return "nr_scale";
+    if (r.value == &opts.nr_model) return "nr_model";
+    if (r.value == &opts.nr_style) return "nr_style";
+    if (r.value == &opts.nr_preset) return "nr_preset";
+    if (r.value == &opts.nr_intensity) return "nr_intensity";
+    if (r.value == &opts.nr_local_tone) return "nr_local_tone";
+    if (r.value == &opts.nr_local_structure) return "nr_local_structure";
+    if (r.value == &opts.nr_global_tone) return "nr_global_tone";
+    if (r.value == &opts.nr_skin) return "nr_skin_structure";
+    if (r.value == &opts.nr_auto_mask) return "nr_auto_mask";
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
     if (r.value == &opts.ultrawide) return "ultrawide";   // (the Aspect ratio row; host/hos_main.c reads it at the start)
     if (r.value == &opts.mesh_mode) return "mesh_shaders";   // (gpu/vk/vk_main.cpp reads it as the device is made)
@@ -2576,7 +2717,7 @@ const char* bug_report_hint() {
     return text.c_str();
 }
 
-const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "Debug"};
+const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "Neural", "Debug"};
 inline const char* tab_title(int t) { return t >= 0 && t < TAB_COUNT ? tab_titles[t] : "Settings"; }
 inline bool cheat_is_toggle(int c) { return c == 0 || c == 1 || c == 7; }
 
@@ -3892,7 +4033,7 @@ void menu_option_set(int id, int value) {
 // its own thread: menu_mu keeps them apart from menu_tick (the present's thread) and from menu_option_set (the game's)
 bool bridge_row(int i) { return rows[i].value && !rows[i].heading && rows[i].cheat < 0 && row_shown(i); }
 void bridge_fill(int i, MkwVkSetting* out) {
-    static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "debug", "motion", "controls"};
+    static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "neural", "debug", "motion", "controls"};
     static_assert(sizeof tabs / sizeof tabs[0] == TAB_PAGE + 1, "a name for each MenuTab");
     const Row& r = rows[i];
     *out = MkwVkSetting{};

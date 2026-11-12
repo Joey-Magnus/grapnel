@@ -130,7 +130,9 @@ int main(void) {
 #include <cstring>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 enum MenuTab { TAB_CONTROLS };
-struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, upscale = 0, dlss = 0, handheld = 0, mesh_mode = 0, ultrawide = 0, stick_dead_zone = 0, game_lang = 0; } opts;   // (ultrawide: the Aspect ratio row's key)
+struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, upscale = 0, dlss = 0, handheld = 0, mesh_mode = 0, ultrawide = 0, stick_dead_zone = 0, game_lang = 0,
+                 nr_backend = 0, nr_passes = 0, nr_scale = 0, nr_model = 0, nr_style = 0, nr_preset = 0, nr_intensity = 0, nr_local_tone = 0,
+                 nr_local_structure = 0, nr_global_tone = 0, nr_skin = 0, nr_auto_mask = 0; } opts;   // (ultrawide: the Aspect ratio row's key; nr_*: the Neural tab's rows, which ini_key names)
 static int parse_output(const char* text) { return atoi(text); }   // (the Output row's own parse: not what this checks)
 ''' + block(menu, "struct Row {") + ";\n" + block(menu, "const char* tx_stick_dead_zone(") + "\n" + \
         "Row rows[] = {" + row.group(0) + "};\n" + block(menu, "const char* ini_key(") + r'''

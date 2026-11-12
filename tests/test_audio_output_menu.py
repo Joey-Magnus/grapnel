@@ -41,7 +41,9 @@ static int device_channels, device_asked;
 static int au_device_channels(void) { device_asked++; return device_channels; }
 HOST
 struct Row { int tab; const char* name; int* value; };
-struct { int output_res, vsync, resolution, fps_cap, upscale, dlss, handheld, mesh_mode, ultrawide, audio_output; } opts;   // (ultrawide: the Aspect ratio row's key)
+struct { int output_res, vsync, resolution, fps_cap, upscale, dlss, handheld, mesh_mode, ultrawide, audio_output,
+         nr_backend, nr_passes, nr_scale, nr_model, nr_style, nr_preset, nr_intensity, nr_local_tone, nr_local_structure, nr_global_tone,
+         nr_skin, nr_auto_mask; } opts;   // (ultrawide: the Aspect ratio row's key; nr_*: the Neural tab's rows, which ini_key names)
 MENU
 int main(int argc, char **argv) {
     assert(argc == 7);
