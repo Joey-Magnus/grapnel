@@ -8761,6 +8761,22 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
             } else {
                 PipeNote& n = *notes[i - computes.size() - fallbacks.size()];
                 const Program* p = program_find(n.prog, n.variant);
+                // (hookshot, RX_VK_PRECOMPILE_GRAPHICS=release: built, so that it is in the driver's cache, and let go, as the first one
+                // alone like the block below; play makes it again from the caches)
+                static const bool release_graphics = getenv("RX_VK_PRECOMPILE_GRAPHICS") &&
+                                                     std::string(getenv("RX_VK_PRECOMPILE_GRAPHICS")) == "release";
+                if (p && release_graphics) {
+                    std::unique_lock first(pre->first_graphics, std::defer_lock);
+                    if (!pre->graphics_begun.load()) {
+                        first.lock();
+                        if (pre->graphics_begun.load()) first.unlock();
+                    }
+                    const VkPipeline made = build_graphics(*p, n.s, note_targets(n), (VkPrimitiveTopology)n.topo);
+                    pre->graphics_begun = true;
+                    if (first.owns_lock()) first.unlock();
+                    if (made) vkDestroyPipeline(dev.device, made, nullptr);
+                    p = nullptr;
+                }
                 if (p) {
                     // (the first graphics pipeline alone, the rest in parallel: after the library warm, NVIDIA's driver (621.14,
                     // RTX 4070 Ti Super) faulted (nvoglv64+0xde2515) when all the workers began theirs at once, in 14 of 100
@@ -8773,20 +8789,14 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                     const VkPipeline made = build_graphics(*p, n.s, note_targets(n), (VkPrimitiveTopology)n.topo);
                     pre->graphics_begun = true;
                     if (first.owns_lock()) first.unlock();
-                    static const bool release = getenv("RX_VK_PRECOMPILE_GRAPHICS") &&
-                                                std::string(getenv("RX_VK_PRECOMPILE_GRAPHICS")) == "release";
-                    if (release) {   // (in the driver's cache now: play makes it again from there)
-                        if (made) vkDestroyPipeline(dev.device, made, nullptr);
-                    } else {
-                        std::lock_guard lk(note_mu);
-                        auto it = pipelines.find(n.key);
-                        if (it == pipelines.end()) {
-                            auto e = std::make_unique<PipeEntry>();
-                            e->pipeline = made;
-                            e->ready.store(true, std::memory_order_release);
-                            pipelines.emplace(n.key, std::move(e));
-                        } else if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (unpublished: play or another note already owns the entry)
-                    }
+                    std::lock_guard lk(note_mu);
+                    auto it = pipelines.find(n.key);
+                    if (it == pipelines.end()) {
+                        auto e = std::make_unique<PipeEntry>();
+                        e->pipeline = made;
+                        e->ready.store(true, std::memory_order_release);
+                        pipelines.emplace(n.key, std::move(e));
+                    } else if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (unpublished: play or another note already owns the entry)
                 }
             }
             pre->done++;
