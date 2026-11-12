@@ -201,7 +201,7 @@ with tempfile.TemporaryDirectory() as tmp:
         source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
         self.assertIn("#ifdef __linux__\n    /* The window is a memfd's", source)
         self.assertIn("#ifdef __linux__\n                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE,", source)
-        self.assertIn("#ifdef __linux__\n    if (!getenv(\"HOS_THP\")) madvise", source)
+        self.assertIn("#ifdef __linux__\n    if (!env_on(\"HOS_THP\")) madvise", source)
         self.assertIn("#ifdef __linux__\n    return madvise(p, n, hos_guest_memfd >= 0 ? MADV_REMOVE", source)
         self.assertIn("    return 1;\n#endif\n}", source)
 

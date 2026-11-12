@@ -735,9 +735,10 @@ void note_dispatch_write(uint64_t gpu_va, uint64_t size) {
     // RX_SYNC_DISPATCH_WRITES=1 asks for the whole range. RX_NO_SMALL_DISPATCH_SYNC=1 turns the prefix off.
     static const bool all = getenv("RX_SYNC_DISPATCH_WRITES") != nullptr;
     static const bool no_small = getenv("RX_NO_SMALL_DISPATCH_SYNC") != nullptr;
-    static const uint64_t small_limit = getenv("RX_SMALL_DISPATCH_SYNC")
-                                           ? strtoull(getenv("RX_SMALL_DISPATCH_SYNC"), nullptr, 0)
-                                           : (64ull << 10);
+    static const uint64_t small_limit = [] {
+        if (const char* s = getenv("RX_SMALL_DISPATCH_SYNC")) return strtoull(s, nullptr, 0);
+        return 64ull << 10;
+    }();
     if (!size) return;
     if (!all) {
         if (no_small) return;
@@ -751,8 +752,18 @@ void sync_dispatch_writes() {
     if (dispatch_writes.empty()) return;
     flush_batch();
     wait_submitted();
-    for (const auto& [v, n] : dispatch_writes) buffer_cache_sync_to_guest(v, n);
-    count("dispatch_writes_synced", (int64_t)dispatch_writes.size());
+    // One staging round-trip per contiguous span: overlapping or adjacent notes share a sync
+    // (buffer_cache_sync_to_guest also expands ±1 MB of dirty pages around each call).
+    std::sort(dispatch_writes.begin(), dispatch_writes.end());
+    size_t n = 0;
+    for (size_t i = 0; i < dispatch_writes.size(); ) {
+        uint64_t v = dispatch_writes[i].first, end = v + dispatch_writes[i].second;
+        for (++i; i < dispatch_writes.size() && dispatch_writes[i].first <= end; ++i)
+            end = std::max(end, dispatch_writes[i].first + dispatch_writes[i].second);
+        buffer_cache_sync_to_guest(v, end - v);
+        n++;
+    }
+    count("dispatch_writes_synced", (int64_t)n);
     dispatch_writes.clear();
 }
 

@@ -57,6 +57,7 @@ def host_os():
 
 
 OS = host_os()
+WINDOWS = OS == "windows"
 
 # What a check needs is declared in the test file itself, as top-level literals the runner reads with ast (the test is
 # never imported): see the docstring above and read_declarations below.

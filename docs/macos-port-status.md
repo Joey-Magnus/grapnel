@@ -20,7 +20,7 @@ How to build and run: [development.md § macOS](development.md#macos-apple-silic
 | Save path backslashes on POSIX | Fixed (`/` mounts) |
 | Spurious SDL focus loss | Mitigated (focus check + click/key recovery + Apple recheck) |
 | Depth32Float CPU uploads | Fixed (clear via pass; WebGPU forbids `WriteTexture` into depth) |
-| Game-free CI | Green on `bcf9e1a` (MERGEABLE / CLEAN) |
+| Game-free CI | Post-merge fix: restore `WINDOWS` in `run_all.py`, HOS_THP assert uses `env_on` |
 
 CI does **not** run the game. Please try a Mac Builder artifact and report chip, macOS version, steps, and log.
 
