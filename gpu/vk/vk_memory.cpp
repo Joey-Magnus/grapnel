@@ -3180,7 +3180,12 @@ void retired_imports_give_back() {   // (pools_mu held)
         Pool& p = nh.mapped();
         if (!p.memory) continue;
         const uint64_t idle = (uint64_t)std::max<int64_t>(0, now - p.retired_ms);
-        if (p.mstate == Pool::MIRROR_NONE && !p.inherit_pending && p.retired_value <= mem_completed &&
+        // (hookshot) a pool whose mirror was refused (over 1 GB, or no room in VRAM when it was asked for) has no mirror either:
+        // its import goes as a MIRROR_NONE pool's does, as imports_give_back already lets it. Left out here, every such retired
+        // pool kept its import, pinned system memory the driver counts as the GPU's shared memory, for the rest of the session;
+        // the more of them the fuller VRAM was when they were refused
+        if ((p.mstate == Pool::MIRROR_NONE || p.mstate == Pool::MIRROR_REFUSED) && !p.inherit_pending &&
+            p.retired_value <= mem_completed &&
             p.last_value <= mem_completed && retired_give_back::due(mode, idle, idle_ms, floor_ms, want > 0)) {
             dead_imports.push_back({p.buffer, p.memory, std::max(mem_rec_value, p.last_value), p.hi - p.lo, std::move(p.pieces)});
             dead_import_bytes += p.hi - p.lo;
