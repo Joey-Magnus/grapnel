@@ -20,6 +20,12 @@ What CONTRIBUTING.md does not spell out, and agents trip on:
 - **Two platforms.** Windows builds with llvm-mingw, Linux with clang/gcc. Keep host code portable, and paths UTF-8
   (no `CP_ACP`; `tests/test_utf8_paths.py`).
 - **No game in CI.** Checks must run without a dump. A run in the game is for you to do locally and report.
+- **Test a change against a base, not in a new full build.** A new game folder prepares every shader from cold (an
+  hour on some GPUs), and a new work folder translates the game again. `scripts/dev_packs.py` builds the game once
+  and each change as a pack of the modules it touches (the game for `host/` and `nx2/`, the renderer for `gpu/`, a
+  prepare when the shader translator changed), run over a copy of the base: [Testing a change against a
+  base](docs/development.md#testing-a-change-against-a-base). Agents sharing a PC share one base and agree before
+  moving it, so their numbers compare. It is for development and A/B runs only; it changes nothing players build.
 
 ## Team updates
 

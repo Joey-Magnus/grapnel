@@ -258,6 +258,45 @@ what you test.
 **Never use it for numbers:** no fps or frame-time measurements, build timings, hitch or stutter checks, profiles,
 and no release or player build. Build those with the defaults.
 
+#### Testing a change against a base
+
+A full build of a new game folder is more than an hour on some PCs, most of it the shader preparation, which starts
+cold in a new folder. `scripts/dev_packs.py` builds the game once as a **base**, then builds only what a change
+touches as a **pack** (the game, the renderer, or both) and runs it from a copy of the base. It calls `make_game.py` and `build.py` as they are, with the defaults, so a pack is what a full build of
+that change gives; it changes nothing in what players build.
+
+```
+python -I scripts/dev_packs.py base ../base-main --romfs <romfs> --exefs <exefs> [--seed <an older game folder>]
+python -I scripts/dev_packs.py pack ../base-main my-fix --tree <the change's checkout>
+python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
+```
+
+- **`base`** builds a clean checkout at the commit to compare against (with `HOOKSHOT_KEEP_BUILD_FILES=1`).
+  `--seed` copies an older game folder's shader caches first, as an update keeps them: the caches are stamped
+  by the shader translator, so the prepare redoes only what changed instead of starting cold.
+- **`pack`** needs a checkout whose history contains the base's commit (rebase it first). What it builds follows
+  the files changed since the base:
+
+  | Changed | Built | In the runtime |
+  |---|---|---|
+  | the shader translator (`gpu/vk/{eden,sirit,compat}/`, `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, `vk_api.h`: what `build.py` stamps the shader caches with) | the renderer | the renderer, then a prepare |
+  | the rest of `gpu/`, the renderer's `third_party` | the renderer alone (`RX_VK_ONLY`, no lift) | the renderer |
+  | `docs/`, `tests/`, `scripts/`, `builder/` | nothing | the base |
+  | anything else (`host/`, `nx2/` game patches, `a64-kit`) | the game (`make_game.py`, `HOOKSHOT_NO_PREPARE=1`) | the game |
+  | a file both are built from (`vk_api.h`, `dlss_math.h`, `host/hos_wide_size.h`, `host/mingw_msvc_shims.c`) | the game | both |
+
+  The modules are chosen by the paths, not by comparing bytes: both name a fingerprint of all the sources
+  (`nx2/version.py`), so any change makes both differ. Game packs share one work folder per base
+  (`<base>/game-work`). The lift key holds that folder's path, so the first game pack translates the game once
+  and the later ones skip the lift while the translator, the HLE functions and the hot list stay the same; the
+  base's compiled objects are linked in, so only what a change touches compiles. Build one pack at a time.
+- **`rt`** makes a game folder to run: the base's, with `romfs` hard-linked (it is never written), the other files
+  copied (the game writes its caches), and the packs' modules over them. Two packs that bring the same module are
+  refused (merge the branches and build one pack); a pack built on another base is refused too, so the game and
+  the renderer always come from one base (`MKWVK_API_VERSION`).
+
+For numbers, compare the runtime with one made by `rt` from no pack: same base, same caches, one difference.
+
 ## The pipeline state list
 
 Every release ships a list of pipelines, merged from the sources in `assets/pipeline_states/`:
