@@ -62,6 +62,8 @@ bool host_screen_size(uint32_t*, uint32_t*) { return false; }
 dm::Size size_of(Out o) { return {o.w, o.h}; }   // (vk_menu.cpp's, after the part cut out)
 // (the shape the arrows walk: the size's own; the monitor's shape for a 16:9 size kept at it is test_output_resolution's)
 std::string step_shape(int id) { return dm::ratio_name(size_of(output_at(id))); }
+// (the size each choice shows: its own here, no screen to widen a 16:9 one to)
+Out picture_for(int v, bool*) { return output_at(output_choice(v)); }
 /* STEP_OUTPUT */
 /* WALK */
 

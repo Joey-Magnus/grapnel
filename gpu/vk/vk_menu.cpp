@@ -537,19 +537,27 @@ std::string step_shape(int id) {
     const std::string own = dm::ratio_name(size_of(output_at(id))), h = aspect_shape(opts.ultrawide);
     return own == "16:9" && h != own && opts.ultrawide != aspect_monitor_value() && aspect_follows_host(opts.ultrawide) ? h : own;
 }
-// (the choices of id's shape (step_shape), from smallest to largest by width then height: 1920x1080, 2048x1152, 2560x1440,
-// 3840x2160 at 16:9, the player's own in its place; id itself among them)
+Out picture_for(int v, bool* native);
+// (the choices of id's shape (step_shape), from smallest to largest by the size each shows (picture_for), width then height:
+// 1920x1080, 2048x1152, 2560x1440, 3840x2160 at 16:9, the player's own in its place; id itself among them. A 16:9 size walked
+// at the host's wider shape is where its picture is: the game's own 2048x1152 at a 5120x2160 screen's 21:9 draws 2728x1152,
+// between 2560x1080 and 3008x1264, not before them, and reached from either. What is saved is the choice, as before)
 int step_output_choice(int id, int dir) {
     const std::string shape = step_shape(id);
-    std::vector<int> order;
-    for (int i = 0; i <= last_choice(); i++)
-        if (output_choice(i) == i && (i == output_choice(id) || dm::ratio_name(size_of(output_at(i))) == shape)) order.push_back(i);
-    std::sort(order.begin(), order.end(), [](int a, int b) {
-        const Out x = output_at(a), y = output_at(b);
-        return x.w != y.w ? x.w < y.w : x.h < y.h;
+    std::vector<std::pair<Out, int>> order;
+    for (int i = 0; i <= last_choice(); i++) {
+        if (output_choice(i) != i) continue;
+        const Out shown = picture_for(i, nullptr);
+        // (the game's own is in the walk of the shape it is drawn at, as its row shows it)
+        if (i == output_choice(id) || dm::ratio_name(size_of(output_at(i))) == shape || (i == 0 && dm::ratio_name(size_of(shown)) == shape))
+            order.push_back({shown, i});
+    }
+    std::stable_sort(order.begin(), order.end(), [](const std::pair<Out, int>& a, const std::pair<Out, int>& b) {
+        return a.first.w != b.first.w ? a.first.w < b.first.w : a.first.h < b.first.h;
     });
-    const int at = (int)(std::find(order.begin(), order.end(), output_choice(id)) - order.begin());
-    return order[std::clamp(at + dir, 0, (int)order.size() - 1)];
+    int at = 0;
+    while (at < (int)order.size() && order[at].second != output_choice(id)) at++;
+    return order[std::clamp(at + dir, 0, (int)order.size() - 1)].second;
 }
 /// The Output resolution the Aspect ratio row's value v takes: the one the game started with at its shape; the one chosen when
 /// it has that shape; else the screen's own size when it has it; else the one whose height is nearest the screen's
