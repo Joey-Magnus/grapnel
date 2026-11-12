@@ -1167,9 +1167,14 @@ def sweep_prompts(out):
                     if not entry.name.startswith(".prompts-") or path == out:
                         continue
                     try:
-                        st = entry.stat(follow_symlinks=False)
-                        if not prompt_directory_matches(st, st):
+                        if not entry.is_dir(follow_symlinks=False):
                             continue
+                        # Windows DirEntry.stat() has zero file ids; only os.stat() supplies a usable identity.
+                        st = entry.stat(follow_symlinks=False) if anchored else os.stat(path, follow_symlinks=False)
+                        if not stat.S_ISDIR(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
+                            continue
+                        if not st.st_ino:
+                            raise OSError("staging directory identity unavailable")
                         with contextlib.ExitStack() as candidate:
                             directory, relative = path, {}
                             if anchored:

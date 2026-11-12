@@ -218,9 +218,9 @@ Before checking the cache, builds remove abandoned `.prompts-*` staging director
 unmarked directories only after 24 hours), leave live, unreadable or linked entries alone, and warn rather than fail
 if cleanup cannot finish.
 On POSIX the sweep binds owner access and removal to checked directory descriptors, and skips cleanup if
-descriptor-safe removal is unavailable. Windows checks the opened owner's resolved parent identity before locking,
-but its path-based checks cannot exclude a transient external open or later rename races; unknown or changed
-identity leaves the directory alone.
+descriptor-safe removal is unavailable. Windows gets directory file IDs from `os.stat` (`DirEntry.stat` has none)
+and checks the opened owner's resolved parent identity before locking, but its path-based checks cannot exclude a
+transient external open or later rename races; unknown or changed identity is reported and leaves the directory alone.
 
 #### A faster build for development
 

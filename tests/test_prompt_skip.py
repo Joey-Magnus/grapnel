@@ -259,6 +259,9 @@ class PromptSkipTests(unittest.TestCase):
             def __init__(entry, real):
                 entry.real, entry.name, entry.path = real, real.name, real.path
 
+            def is_dir(entry, **kwargs):
+                return entry.real.is_dir(**kwargs)
+
             def stat(entry, **kwargs):
                 result = entry.real.stat(**kwargs)
                 if entry.name == victim.name and not observed["swapped"]:
@@ -350,6 +353,53 @@ class PromptSkipTests(unittest.TestCase):
             P.sweep_prompts(str(self.out))
         self.assertTrue(folder.exists())
         self.assertIn("authored Windows lock denial", self.log.getvalue())
+
+    def test_windows_zero_direntry_ids_use_stat_for_owned_and_legacy_cleanup(self):
+        owned = self.staging(".prompts-windows-owned", marked=True)
+        legacy = self.staging(".prompts-windows-legacy", old=True)
+        owner_parent = owned.stat()
+        scandir = os.scandir
+        game = str(self.out.parent)
+        class WindowsEntry:
+            def __init__(entry, real):
+                entry.real, entry.name, entry.path = real, real.name, real.path
+
+            def is_dir(entry, **kwargs):
+                return entry.real.is_dir(**kwargs)
+
+            def stat(entry, **kwargs):
+                st = entry.real.stat(**kwargs)
+                return types.SimpleNamespace(st_ino=0, st_dev=0, st_nlink=0, st_mode=st.st_mode,
+                                             st_mtime=st.st_mtime, st_file_attributes=0)
+
+        @contextlib.contextmanager
+        def windows_entries(path):
+            with scandir(path) as entries:
+                yield (WindowsEntry(entry) for entry in entries) if path == game else entries
+
+        windows = types.SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, locking=mock.Mock())
+        with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"), \
+                mock.patch.object(P.os, "scandir", side_effect=windows_entries), \
+                mock.patch.object(P, "prompt_owner_parent", return_value=owner_parent):
+            P.sweep_prompts(str(self.out))
+        self.assertFalse(owned.exists(), "owned Windows staging must not silently skip on DirEntry's zero ids")
+        self.assertFalse(legacy.exists(), "legacy Windows staging must use real os.stat identity too")
+        windows.locking.assert_called_once()
+
+    def test_unknown_windows_directory_identity_is_reported(self):
+        folder = self.staging(".prompts-no-identity", marked=True)
+        path, info, real_stat = str(folder), folder.stat(), os.stat
+        def unknown(candidate, *args, **kwargs):
+            if candidate == path:
+                return types.SimpleNamespace(st_ino=0, st_dev=0, st_nlink=0, st_mode=info.st_mode,
+                                             st_mtime=info.st_mtime, st_file_attributes=0)
+            return real_stat(candidate, *args, **kwargs)
+        with mock.patch.object(P.os, "name", "nt"), mock.patch.object(P.os, "stat", side_effect=unknown), \
+                mock.patch.object(P, "prompt_owner_parent", return_value=info):
+            P.sweep_prompts(str(self.out))
+        self.assertTrue(folder.exists())
+        self.assertIn("staging directory identity unavailable", self.log.getvalue())
+        self.assertEqual(self.log.getvalue().count("kept staging directory"), 1)
 
     def test_windows_unknown_or_changed_owner_parent_is_kept_without_locking(self):
         folder = self.staging(".prompts-windows-parent", marked=True)
