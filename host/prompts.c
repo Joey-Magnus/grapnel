@@ -1056,6 +1056,8 @@ static void mark_box(uint64_t box, uint32_t bits) {
 #define TEXT_PICTURE 0x80e6e0e0ull   /* (the box's picture: (box, the draw's two words at +24), f_8152b670 calls it so) */
 uint64_t hos_guest_x(int i);   /* hos_hostcall.c */
 uint64_t hos_call_guest_kept(uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);   /* hos_hostcall.c */
+void hos_text_picture_lock(void);     /* hos_hostcall.c: the lock the texture thread's picture is made in */
+void hos_text_picture_unlock(void);
 /* (state: 0 nothing to do, 1 marked by a change, 2 laid out again since, its picture to be made at its next draw) */
 static struct { uint64_t box, vt, text; uint32_t len; int state; } shown[SHOWN_BOXES];
 static SRWLOCK shown_lock = SRWLOCK_INIT;
@@ -1128,7 +1130,9 @@ static int shown_mark(void) {
 }
 
 /* at a box's draw: its picture made, when a change laid it out again and another thread makes its pictures. The game's
-   context is mid-call (the draw's own arguments still to be read): hos_call_guest_kept puts every register back */
+   context is mid-call (the draw's own arguments still to be read): hos_call_guest_kept puts every register back. The draw
+   calls f_80e6e0e0 for its own boxes with no lock of the game's held (f_8152b670), and that thread's job calls it through
+   hos_text_picture_thread: the lock taken here keeps the two off one box at once (#2756's review) */
 static void shown_picture(uint64_t box) {
     if (!shown_pending) return;
     int due = 0;
@@ -1138,7 +1142,10 @@ static void shown_picture(uint64_t box) {
     ReleaseSRWLockExclusive(&shown_lock);
     const uint32_t *flags = due ? (const uint32_t *)hos_guest_range(box + 380, 4) : NULL;
     const uint64_t *info = flags && (*flags >> 2 & 1) ? (const uint64_t *)hos_guest_range(hos_guest_x(2) + 24, 16) : NULL;
-    if (info) hos_call_guest_kept(TEXT_PICTURE, box, info[0], info[1], 0);
+    if (!info) return;
+    hos_text_picture_lock();
+    hos_call_guest_kept(TEXT_PICTURE, box, info[0], info[1], 0);
+    hos_text_picture_unlock();
 }
 
 /* nx2/oot_patches.py, as the game lays a text box out (f_8152aec0, before it looks at the box's status: laid out now) */

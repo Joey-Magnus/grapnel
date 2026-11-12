@@ -142,6 +142,19 @@ uint64_t hos_call_guest_kept(uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2,
     return r;
 }
 
+/* One text box's picture at a time (f_80e6e0e0): UpdateTextBoxTextureThread's job calls it through hos_text_picture_thread
+   (nx2/oot_patches.py patch_text_picture), and host/prompts.c's shown_picture holds the same lock for its own call of it, so
+   the hint bars' picture after a change of the prompts never runs while that thread makes a picture. The draw's own calls
+   (boxes it makes the pictures of itself) are not in it */
+static SRWLOCK text_picture_lock = SRWLOCK_INIT;
+void hos_text_picture_lock(void) { AcquireSRWLockExclusive(&text_picture_lock); }
+void hos_text_picture_unlock(void) { ReleaseSRWLockExclusive(&text_picture_lock); }
+void hos_text_picture_thread(Ctx *c) {
+    AcquireSRWLockExclusive(&text_picture_lock);
+    a64_icall(c, 0x80e6e0e0ull);
+    ReleaseSRWLockExclusive(&text_picture_lock);
+}
+
 /* HOS_HOSTCALL_STATS=1: at exit, how often each host call ran (the NVN surface a game really uses). */
 void hos_hostcall_stats(void) {
     if (!env_on("HOS_HOSTCALL_STATS")) return;

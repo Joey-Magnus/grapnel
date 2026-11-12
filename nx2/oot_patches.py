@@ -286,6 +286,24 @@ def patch_text_layout(source):
                       "extern void hos_prompts_text_layout(uint64_t box);\n")
 
 
+TEXT_PICTURE_CALL = "c->x[30] = 0x80e6e0a0ULL; f_80e6e0e0(c);"
+TEXT_PICTURE_NEW = ("c->x[30] = 0x80e6e0a0ULL; hos_text_picture_thread(c);   /* (nx2/oot_patches.py: one picture of a box "
+                    "at a time) */")
+
+
+def patch_text_picture(source):
+    """f_80e6dfe0, UpdateTextBoxTextureThread's job (each box whose picture that thread makes: +380 bit 2), calls the box's
+    picture (f_80e6e0e0) through hos_text_picture_thread, which holds the lock host/prompts.c's shown_picture takes for its own
+    call of it: the two never make one box's picture at the same time. The draw's own call (f_8152b670, boxes whose picture it
+    makes itself) is left as it is. None without the call"""
+    if TEXT_PICTURE_NEW in source:   # (made before: a lift patched again)
+        return source
+    if source.count(TEXT_PICTURE_CALL) != 1:
+        return None
+    return source.replace(TEXT_PICTURE_CALL, TEXT_PICTURE_NEW).replace(
+        '#include "a64.h"\n', '#include "a64.h"\nextern void hos_text_picture_thread(Ctx *c);\n', 1)
+
+
 def patch_glyph(source):
     """f_81680c60, FreeType's ft_smooth_render (x1 the glyph slot), calls hos_prompts_glyph first with the slot: where the game
     keeps the button prompts' font, for a change while it runs (host/prompts.c)"""
@@ -780,6 +798,11 @@ def patch_file(s, name, protect_hearts=False):
         out = glyph
         counts["glyph hook"] += 1
         lines.append("oot_patches: the glyphs' hook in " + name)
+    picture = patch_text_picture(out) if protect_hearts else None
+    if picture is not None:
+        out = picture
+        counts["text picture lock"] += 1
+        lines.append("oot_patches: the text boxes' texture thread's picture through the host in " + name)
     layout = patch_text_layout(out) if protect_hearts else None
     if layout is not None:
         out = layout
@@ -889,6 +912,7 @@ def report(paths, counts, protect_hearts=False):
         done["text draw hook"] = 0
         done["glyph hook"] = 0
         done["text layout hook"] = 0
+        done["text picture lock"] = 0
         done["player heart protection"] = 0
         done["player flight"] = 0
         done["player flight rotation"] = 0

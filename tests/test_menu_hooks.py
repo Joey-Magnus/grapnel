@@ -73,6 +73,15 @@ def main():
     hooked(oot_patches.patch_glyph, oot_patches.GLYPH_HEAD, GLYPH, "extern void hos_prompts_glyph(uint64_t slot);")
     hooked(oot_patches.patch_text_layout, oot_patches.TEXT_LAYOUT_HEAD, LAYOUT,
            "extern void hos_prompts_text_layout(uint64_t box);")
+    job = ('#include "a64.h"\nvoid f_80e6dfe0(Ctx *__restrict A64_NOESC c) {\n    ' + oot_patches.TEXT_PICTURE_CALL +
+           "\nreturn;\n}\n")
+    out = oot_patches.patch_text_picture(job)
+    check(out is not None and out.count(oot_patches.TEXT_PICTURE_NEW) == 1 and oot_patches.TEXT_PICTURE_CALL not in out,
+          "the texture thread's picture call does not go through hos_text_picture_thread once")
+    check("extern void hos_text_picture_thread(Ctx *c);" in out, "the lifted file does not declare hos_text_picture_thread")
+    check(oot_patches.patch_text_picture(out) == out, "a file patched before was patched again: the picture lock")
+    check(oot_patches.patch_text_picture(job.replace("0x80e6e0a0", "0x90e6e0a0")) is None,
+          "a file without the texture thread's call was patched")
     every = applied(True)
     check(all(every.count(h) == 1 for h in (FOCUS, TICK, BOX, LAYOUT, GLYPH)),
           "the supported build's lift did not get each hook once")
