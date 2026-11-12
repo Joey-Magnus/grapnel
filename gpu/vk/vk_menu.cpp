@@ -944,8 +944,8 @@ Row rows[] = {
      "How far a stick moves before the game sees it, on each axis. Lower for a precise stick, higher for one that drifts. "
      "The game's own dead zone still follows.", nullptr, false, true},
     {TAB_CONTROLS, "Auto run", &opts.auto_run, 0, 1, 1, tx_auto_run,
-     "Sprint without holding A. Hold A until Link sprints, then let go: he keeps going. Let go of the stick or tap A "
-     "to stop.", nullptr, false, true},
+     "Sprint without holding A (or its key). Hold it until Link sprints, then let go: he keeps going. Let go of the "
+     "stick or the movement keys, or tap A again, to stop.", nullptr, false, true},
     {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
     {TAB_MOTION, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
