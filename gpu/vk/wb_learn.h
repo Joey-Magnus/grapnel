@@ -12,8 +12,8 @@
 // (a write as its whole page). After that only the parts the CPU has read or written are written back, and the page at either end
 // when the binding starts or ends inside it (a page it shares with what is next to it); the rest is left out. A range
 // the CPU first touches after that (read more rarely than every `probation` writes) finds the stale copy that once, and is written
-// back from then on: read() says so, for the log. Past max_seen bindings or max_read ranges nothing more is left out (as
-// RX_VK_WB_MAX_KB=0).
+// back from then on: read() says so, for the log. Past max_seen bindings or max_read ranges everything is forgotten and every
+// binding starts its probation again.
 //
 // Plain rules, no locking and no Vulkan: vk_memory.cpp holds them under its own mutex. tests/test_wb_learn.cpp runs them.
 #pragma once
@@ -36,29 +36,25 @@ inline uint64_t max_bytes(const char* env) {
 
 class Table {
 public:
-    uint32_t probation = 8;     // (writes of a binding written back whole, the CPU's touches noted meanwhile)
+    uint32_t probation = 8;     // (submissions writing a binding in which it is written back whole, the CPU's touches noted meanwhile)
     size_t max_seen = 8192;     // (bindings followed)
     size_t max_read = 8192;     // (ranges the CPU touched, merged)
 
-    // A binding [lo, hi) the GPU writes in the submission being recorded. False: write it all back. True: write back only the
-    // ranges put in `keep` (the parts the CPU has touched; none: nothing)
-    bool plan(uint64_t lo, uint64_t hi, uint64_t cap, std::vector<std::pair<uint64_t, uint64_t>>& keep) {
+    // A binding [lo, hi) the GPU writes in submission `sub` (its value: several binds of it in one submission count once, so that
+    // the probation spans that many frames, not a frame's dispatches). False: write it all back. True: write back only the ranges
+    // put in `keep` (the parts the CPU has touched; none: nothing)
+    bool plan(uint64_t lo, uint64_t hi, uint64_t cap, uint64_t sub, std::vector<std::pair<uint64_t, uint64_t>>& keep) {
         keep.clear();
-        if (!cap || hi <= lo || hi - lo <= cap || full_) return false;
+        if (!cap || hi <= lo || hi - lo <= cap) return false;
         auto it = seen_.find(lo);
-        if (it == seen_.end()) {
-            if (seen_.size() >= max_seen) {
-                full_ = true;
-                return false;
-            }
-            it = seen_.emplace(lo, Seen{hi, 0, false}).first;
-            edges(lo, hi);
-        } else if (it->second.hi != hi) {
-            it->second = Seen{hi, 0, false};   // (another binding at this start: its own probation)
-            edges(lo, hi);
+        if (it == seen_.end() || it->second.hi != hi) {   // (new; or another binding at this start: its own probation)
+            if (it == seen_.end() && seen_.size() >= max_seen) reset();   // (bindings of scenes long gone: all start again)
+            edges(lo, hi);   // (before the entry: a reset there clears the table)
+            seen_[lo] = Seen{hi, 1, false, sub};
+            return false;
         }
-        if (it->second.writes < probation) {
-            it->second.writes++;
+        if (it->second.writes < probation || it->second.sub == sub) {   // (and left out from the submission after its last one)
+            if (it->second.sub != sub) it->second.writes++, it->second.sub = sub;
             return false;
         }
         it->second.left_out = true;
@@ -95,7 +91,7 @@ public:
         return false;
     }
 
-    bool full() const { return full_; }
+    uint64_t resets() const { return resets_; }
     size_t seen() const { return seen_.size(); }
     size_t reads() const { return read_.size(); }
 
@@ -105,10 +101,18 @@ private:
         uint64_t hi;
         uint32_t writes;
         bool left_out;   // (past its probation: planned in part)
+        uint64_t sub;    // (the submission of its last counted write)
     };
     std::map<uint64_t, Seen> seen_;       // (by start)
     std::map<uint64_t, uint64_t> read_;   // (start -> end, merged, none touching)
-    bool full_ = false;
+    uint64_t resets_ = 0;
+
+    // (past max_seen bindings or max_read ranges: forget all; every binding is written back whole for a new probation, so nothing is
+    // left out that the CPU touches)
+    void reset() {
+        seen_.clear(), read_.clear();
+        resets_++;
+    }
 
     // (a binding that starts or ends inside a page shares that page with whatever is next to it, which the CPU may write: the 15 MB
     // culling lists end 0x80 bytes into a page the CPU writes every frame, and a mirror sync copies that page whole. Those pages are
@@ -138,7 +142,9 @@ private:
             if (it->second > hi) hi = it->second;
             it = read_.erase(it);
         }
-        if (read_.size() >= max_read) full_ = true;
+        if (read_.size() >= max_read) {
+            reset();
+        }
         read_.emplace(lo, hi);
     }
 };

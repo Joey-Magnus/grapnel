@@ -38,11 +38,11 @@ def check_source():
     need("vk_memory.cpp: wb_cap()", block(mem, "uint64_t wb_cap()"),
          ['wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB"))', 'getenv("RX_VK_WB_PROBATION")'])
     need("vk_memory.cpp: wb_leave_out()", block(mem, "bool wb_leave_out(uint64_t lo, uint64_t hi"),
-         ["if (!wb_cap()) return false;", "std::lock_guard lk(wb_learn_mu);", "wb_table.plan(lo, hi, wb_cap(), keep)"])
-    # (a CPU write counts only in a binding the table follows; a read always)
+         ["if (!wb_cap()) return false;", "std::lock_guard lk(wb_learn_mu);", "wb_table.plan(lo, hi, wb_cap(), mirror_epoch, keep)"])
+    # (a CPU read or write counts only in a large binding the table follows)
     access = block(mem, "void memory_note_cpu_access(uint64_t guest, uint64_t size, bool write)")
     need("vk_memory.cpp: memory_note_cpu_access()", access,
-         ["if (write && !wb_table.followed(guest, guest + size)) return;", "wb_table.read(guest, guest + size)"])
+         ["if (!wb_table.followed(guest, guest + size)) return;", "wb_table.read(guest, guest + size)"])
     # (a written binding queues its whole write-back, or, planned in part, the ranges the CPU touched; the GPU write hazard is
     # noted either way)
     bind = mem[mem.index("p->gpu_written = true;   // (its mirror kept: mirrors_give_back)"):]
@@ -55,8 +55,8 @@ def check_source():
         raise SystemExit("vk_memory.cpp: the plain size cap is back beside the learned one")
     # (each dirty page a mirror sync copies is a CPU write the table hears of, before the copy is queued)
     sync = block(mem, "void mirror_sync(Pool& p)")
-    note = "if (dirty) memory_note_cpu_access(page << kPageShift, 1ull << kPageShift, true);"
-    need("vk_memory.cpp: mirror_sync()", sync, [note])
+    note = "if (dirty && note_writes) memory_note_cpu_access(page << kPageShift, 1ull << kPageShift, true);"
+    need("vk_memory.cpp: mirror_sync()", sync, ["const bool note_writes = memory_wb_followed(p.lo, p.hi);", note])
     if not sync.index(note) < sync.index("st_sync_live_pages++;"):
         raise SystemExit("vk_memory.cpp: mirror_sync() notes the CPU's writes only after it copies them")
     # (the CPU's reads: every invalidate, before its wait for the write-back)
