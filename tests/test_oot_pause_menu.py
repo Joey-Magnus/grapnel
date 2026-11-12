@@ -134,6 +134,8 @@ def compile_check(edited):
         a64_rtgen.write(d)
         Path(d, "a64_fpx.h").write_text(a64_lift.fpx_header(set()), encoding="utf-8", newline="\n")
         inc = ["-I" + str(ROOT / "host"), "-I" + str(ROOT / "third_party" / "a64-kit" / "rt"), "-I" + d]
+        if os.name != "nt":   # (host/posix's windows.h: host/oot_pause_menu.c's VK_F1 on Linux)
+            inc.append("-I" + str(ROOT / "host" / "posix"))
         for name, text in edited.items():
             p = Path(d) / name
             p.write_text(text, encoding="utf-8", newline="")
