@@ -113,7 +113,7 @@ VkSemaphore batch_tl = VK_NULL_HANDLE;
 uint64_t batch_next = 0, batch_flushed = 0;
 struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0; bool any_signal = false; uint64_t rec = 0; uint64_t reflex = 0; } pend;   // (rec: the recordings' timeline value the held ones reach; reflex: the game frame of the first, vk_reflex.h)
 int64_t st_flushes, st_batched_cbs;
-enum { FR_OTHER, FR_POLL, FR_WAIT, FR_SLOT, FR_PRESENT, FR_CAP, FR_VALUE, FR_COUNT };
+enum { FR_OTHER, FR_POLL, FR_WAIT, FR_SLOT, FR_PRESENT, FR_CAP, FR_VALUE, FR_READBACK, FR_COUNT };
 int64_t st_reason[FR_COUNT];
 int flush_reason = FR_OTHER;
 std::chrono::steady_clock::time_point pend_since;
@@ -179,9 +179,27 @@ uint64_t completed() {
 /// (take_capture's late pages), so the GPU started cold just as it was waited for. RX 9070 XT, RADV, Kokiri Forest: 33-41
 /// fps -> 46-61, no flashes in 5230 frames; ~10 flushes a frame of ~3.7 command buffers each, so batching still groups the
 /// submits while the GPU is busy. RX_VK_BATCH_IDLE=0: held until a wait, a present or the cap, as before.
-/// (Not by default on the Steam Deck's APU (Van Gogh: 0x163f LCD, 0x1435 OLED): Deck LCD, Kokiri Forest, current main: queue
-/// submit 11-12 ms a frame with it, 6.6-7.1 without, 18.6-18.8 fps -> 20.0-20.7; each submit costs that APU ~1 ms. Other APUs
-/// (780M, 890M, 8060S) are unmeasured and keep it. RX_VK_BATCH_IDLE=1: on there too)
+/// (Not by default on the Steam Deck's APU (Van Gogh: 0x163f LCD, 0x1435 OLED), where each submit costs ~1 ms: Deck LCD,
+/// Kokiri Forest, main with default switches: queue submit 11.7 ms a frame with it, 2.0 without, replay 40.5 -> 31.4 ms; the
+/// fps comes with the readback send below. Other APUs (780M, 890M, 8060S) are unmeasured and keep it. RX_VK_BATCH_IDLE=1: on)
+/// (hookshot) While a CPU read of GPU results waits (invalidate, after #2125's catch-up), what is held goes out when the wait
+/// begins and then each time RX_VK_READBACK_SEND_CBS command buffers are held (default 8): the GPU works through the catch-up's
+/// work meanwhile instead of starting it only at the wait's own flush. Without the idle send (the Steam Deck's APU) that wait
+/// doubled: Deck LCD, Kokiri, main: 13.8 / 13.5 fps, no idle send 12.8 / 12.8, with this 14.6 / 14.3. RX_VK_READBACK_SEND=0: off
+std::atomic<int> readback_waiting{0};
+bool readback_send_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_READBACK_SEND");
+        const bool v = !e || atoi(e) != 0;
+        logf("vk: held submits go out while a readback waits: %s (RX_VK_READBACK_SEND)", v ? "on" : "off");
+        return v;
+    }();
+    return on;
+}
+bool readback_send_now() {   // (dev.present_mu held)
+    static const size_t cbs = getenv("RX_VK_READBACK_SEND_CBS") ? (size_t)std::max(1, atoi(getenv("RX_VK_READBACK_SEND_CBS"))) : 8;
+    return readback_waiting.load(std::memory_order_relaxed) && pend.cbs.size() >= cbs;   // (by the work held: the same split on a slower CPU)
+}
 bool batch_gpu_idle() {
     static const bool on = [] {
         const char* e = getenv("RX_VK_BATCH_IDLE");
@@ -426,6 +444,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         static const size_t cap = getenv("RX_VK_BATCH_MAX") ? (size_t)std::max(1, atoi(getenv("RX_VK_BATCH_MAX"))) : 32;
         if (pend.cbs.size() >= cap) flush_reason = FR_CAP, queue_flush_locked();
         if (!pend.cbs.empty() && batch_gpu_idle()) flush_reason = FR_OTHER, queue_flush_locked();   // (#1993)
+        if (!pend.cbs.empty() && readback_send_now()) flush_reason = FR_READBACK, queue_flush_locked();
         return;
     }
     PROF(PROF_QSUBMIT);
@@ -2366,6 +2385,11 @@ void invalidate(uint64_t gpu, uint64_t size) {
         bool ever = false;
         if (!off && (memory_writeback_value(host->gpu_guest(gpu), size, &ever), ever)) {
             memory_note_readback(host->gpu_guest(gpu), size);   // (PR 430: the CPU may write it back: memory_rb_refresh)
+            struct Waiting {   // (readback_send_on: what is held goes out now, and while this thread waits)
+                bool on;
+                explicit Waiting(bool w) : on(w) { if (on) readback_waiting++, queue_flush_for(FR_READBACK); }
+                ~Waiting() { if (on) readback_waiting--; }
+            } waiting(readback_send_on() && memory_writeback_value(host->gpu_guest(gpu), size, nullptr) > completed());
             static std::atomic<int64_t> calls{0}, waited{0}, ns{0};
             const auto w0 = std::chrono::steady_clock::now();
             bool w = false;
