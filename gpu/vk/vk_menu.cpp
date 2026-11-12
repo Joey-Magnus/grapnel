@@ -4540,6 +4540,9 @@ void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uin
     const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
     if (!open && !fps) return;
     if (!ui::begin(w, h)) return;
+    // (a still picture, drawn once in many presents: the lists where their selections are, not a step of the way there.
+    // Without it the step stayed 0 here and a picture never showed a row past the first page)
+    ease_step = 1.0f;
     ui::Ctx c = ui_ctx(w, h);
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
