@@ -307,23 +307,49 @@ const char* tx_percent(int v) {
     snprintf(b, sizeof b, "%d%%", v);
     return b;
 }
-/// The main screen's size, as host/hos_main.c takes its shape at the start (the Aspect ratio row): false where it
-/// is not known (Linux: the sizes are shown as the 16:9 outputs)
-bool screen_size(uint32_t* w, uint32_t* h) {
+/// The host's screen: the main one, whose shape host/hos_main.c gives a 16:9 Output resolution at the start with ultrawide=1
+/// (Windows: the primary's size; Linux: SDL's primary desktop, MkwVkHost.screen_size): false where it is not known
+bool host_screen_size(uint32_t* w, uint32_t* h) {
 #ifdef _WIN32
     const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     if (sw > 0 && sh > 0) return *w = (uint32_t)sw, *h = (uint32_t)sh, true;
 #endif
+    int hw = 0, hh = 0;
+    if (host && host->screen_size && host->screen_size(&hw, &hh) && hw > 0 && hh > 0)
+        return *w = (uint32_t)hw, *h = (uint32_t)hh, true;
     return false;
 }
-/// The main screen's display modes, each as Windows lists it (every refresh rate and depth: display_modes.h keeps each size once);
-/// none where they are not known
+#ifdef _WIN32
+/// The monitor the game's window is on (the nearest), with its size; false before there is a window
+bool window_monitor(MONITORINFOEXW& mi) {
+    const HWND wnd = app_window();
+    mi = {};
+    mi.cbSize = sizeof mi;
+    return wnd && GetMonitorInfoW(MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST), &mi) && mi.rcMonitor.right > mi.rcMonitor.left &&
+           mi.rcMonitor.bottom > mi.rcMonitor.top;
+}
+#endif
+/// The screen the Aspect ratio and Output resolution rows mark ("(monitor's)", "(native)"): the one the game's window is on,
+/// its size now (a desktop size changed while running is followed: outputs_follow_screen); the host's before there is a
+/// window, and on Linux. False where neither is known
+bool screen_size(uint32_t* w, uint32_t* h) {
+#ifdef _WIN32
+    MONITORINFOEXW mi;
+    if (window_monitor(mi))
+        return *w = (uint32_t)(mi.rcMonitor.right - mi.rcMonitor.left), *h = (uint32_t)(mi.rcMonitor.bottom - mi.rcMonitor.top), true;
+#endif
+    return host_screen_size(w, h);
+}
+/// That screen's display modes, each as Windows lists it (every refresh rate and depth: display_modes.h keeps each size once);
+/// the primary's before there is a window; none where they are not known (Linux)
 std::vector<display_modes::Size> screen_modes() {
     std::vector<display_modes::Size> v;
 #ifdef _WIN32
+    MONITORINFOEXW mi;
+    const wchar_t* device = window_monitor(mi) ? mi.szDevice : nullptr;
     DEVMODEW m{};
     m.dmSize = sizeof m;
-    for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &m); i++) v.push_back({(uint32_t)m.dmPelsWidth, (uint32_t)m.dmPelsHeight});
+    for (DWORD i = 0; EnumDisplaySettingsW(device, i, &m); i++) v.push_back({(uint32_t)m.dmPelsWidth, (uint32_t)m.dmPelsHeight});
 #endif
     return v;
 }
@@ -343,21 +369,30 @@ constexpr Out kGameOutput{2048, 1152};
 // (the sizes offered before the screen's: output_res=0 to 5 as saved then, and where the screen's are not known, by width then
 // height. nx2/pipeline_share.py OUTPUTS mirrors it)
 constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}, {5120, 2880}};
+Out outputs_screen{0, 0};   // (the window's screen's size the choices were read for: outputs_follow_screen)
+/// A screen's own size among the modes, and its shape at the most pixels a picture of another shape takes when the size itself
+/// is past what the game accepts: a 7680x2160 32:9 screen gets 6256x1760, so its shape is still offered
+void add_screen_size(std::vector<dm::Size>& modes, uint32_t sw, uint32_t sh) {
+    modes.push_back({sw, sh});
+    unsigned w = 0, h = 0;
+    if (sh && !hos_output_size_valid(sw & ~7u, sh & ~7u)) {
+        hos_wide_size(sh, hos_wide_clamp((double)sw / sh), hos_wide_max_px(), &w, &h);
+        if (dm::ratio_name({w, h}) == dm::ratio_name({sw, sh})) modes.push_back({w, h});
+    }
+}
 const std::vector<Out>& outputs() {
     static const std::vector<Out> v = [] {
         const char* e = getenv("HOS_DISPLAY_MODES");
         std::vector<Out> o{kGameOutput};
         std::vector<dm::Size> modes = e ? dm::parse_list(e) : screen_modes();
-        uint32_t sw = 0, sh = 0;
-        if (!e && !modes.empty() && screen_size(&sw, &sh)) {
-            // (the screen's own size, and its shape at the most pixels a picture of another shape takes when the size itself
-            // is past what the game accepts: a 7680x2160 32:9 screen gets 6256x1760, so its shape is still offered)
-            modes.push_back({sw, sh});
-            unsigned w = 0, h = 0;
-            if (sh && !hos_output_size_valid(sw & ~7u, sh & ~7u)) {
-                hos_wide_size(sh, hos_wide_clamp((double)sw / sh), hos_wide_max_px(), &w, &h);
-                if (dm::ratio_name({w, h}) == dm::ratio_name({sw, sh})) modes.push_back({w, h});
-            }
+        if (!e) {
+            uint32_t sw = 0, sh = 0, hw = 0, hh = 0;
+            const bool screen = screen_size(&sw, &sh), host_screen = host_screen_size(&hw, &hh);
+            // (no modes but a screen's size (Linux): the sizes offered before, with the screen's)
+            if (modes.empty() && (screen || host_screen))
+                for (int i = 1; i < (int)std::size(kOutputs); i++) modes.push_back({kOutputs[i].w, kOutputs[i].h});
+            if (screen) add_screen_size(modes, sw, sh), outputs_screen = {sw, sh};
+            if (host_screen) add_screen_size(modes, hw, hh);   // (the host's shape, which ultrawide=1 gives a 16:9 size)
         }
         for (dm::Size s : dm::with_common(dm::offered(modes)))
             if (!(s.w == kGameOutput.w && s.h == kGameOutput.h)) o.push_back({s.w, s.h});
@@ -369,17 +404,27 @@ const std::vector<Out>& outputs() {
     }();
     return v;
 }
-int custom_index() { return (int)outputs().size(); }   // (the player's own size's choice: after the sizes offered; the last)
+int custom_index() { return (int)outputs().size(); }   // (the player's own size's choice: after the sizes offered)
 Out custom_output{0, 0};   // (the player's own size; 0 x 0: none)
-int output_choice(int v) { return v >= 0 && (v < custom_index() || (v == custom_index() && custom_output.w)) ? v : 0; }
+// (a screen's sizes found while running, the window moved to another monitor or its desktop size changed: after the player's
+// own, so the choices' numbers before them keep their sizes; outputs_follow_screen)
+std::vector<Out> output_extras;
+int last_choice() { return custom_index() + (int)output_extras.size(); }
+int output_choice(int v) {
+    const int c = custom_index();
+    return v >= 0 && (v < c || (v == c && custom_output.w) || (v > c && v <= last_choice())) ? v : 0;
+}
 Out output_at(int v) {
     v = output_choice(v);
-    return v == custom_index() ? custom_output : outputs()[v];
+    const int c = custom_index();
+    return v < c ? outputs()[v] : v == c ? custom_output : output_extras[v - c - 1];
 }
-/// The choice of size w x h: one of the sizes offered, else the player's own from now on
+/// The choice of size w x h: one of the sizes offered (or found since), else the player's own from now on
 int output_choice_of(uint32_t w, uint32_t h) {
     for (int i = 0; i < custom_index(); i++)
         if (outputs()[i].w == w && outputs()[i].h == h) return i;
+    for (int i = 0; i < (int)output_extras.size(); i++)
+        if (output_extras[i].w == w && output_extras[i].h == h) return custom_index() + 1 + i;
     custom_output = {w, h};
     return custom_index();
 }
@@ -399,11 +444,17 @@ int parse_output(const char* text) {
     return v >= 1 && v < (int)std::size(kOutputs) ? output_choice_of(kOutputs[v].w, kOutputs[v].h) : 0;
 }
 dm::Size size_of(Out o) { return {o.w, o.h}; }
-/// Every choice's size, in choice order (the player's own last, when there is one)
+/// Every choice there is, in order (the player's own when there is one, then the sizes found while running)
+std::vector<int> output_ids() {
+    std::vector<int> v;
+    for (int i = 0; i <= last_choice(); i++)
+        if (output_choice(i) == i) v.push_back(i);
+    return v;
+}
+/// Their sizes, in the same order
 std::vector<dm::Size> output_sizes() {
     std::vector<dm::Size> v;
-    for (int i = 0; i <= custom_index(); i++)
-        if (output_choice(i) == i) v.push_back(size_of(output_at(i)));
+    for (int i : output_ids()) v.push_back(size_of(output_at(i)));
     return v;
 }
 /// The shapes of the choices, narrowest first: made again only when the player's own size changes (the sizes offered are
@@ -411,7 +462,9 @@ std::vector<dm::Size> output_sizes() {
 const std::vector<dm::Shape>& output_shapes() {
     static std::vector<dm::Shape> v;
     static Out made_for{~0u, ~0u};
-    if (made_for.w != custom_output.w || made_for.h != custom_output.h) v = dm::shapes(output_sizes()), made_for = custom_output;
+    static size_t extras = ~size_t(0);
+    if (made_for.w != custom_output.w || made_for.h != custom_output.h || extras != output_extras.size())
+        v = dm::shapes(output_sizes()), made_for = custom_output, extras = output_extras.size();
     return v;
 }
 /// The shape (a place in output_shapes) of choice v
@@ -445,10 +498,26 @@ int aspect_index(const std::string& name) {
         if (shapes[i].name == "16:9") return i;
     return 0;
 }
-/// Whether the row's value v is the monitor's shape (saved as ultrawide=1: host/hos_main.c gives a 16:9 size the monitor's shape)
+/// Whether the row's value v is the monitor's shape: the window's screen's, marked "(monitor's)"
 bool aspect_is_monitors(int v) {
     const std::string m = monitor_shape();
     return m.empty() ? v == aspect_monitor_value() : aspect_shape(v) == m;
+}
+/// The host's screen's shape when it is one of output_shapes ("" otherwise): what ultrawide=1 gives a 16:9 size at the start
+std::string host_shape() {
+    uint32_t w = 0, h = 0;
+    if (!host_screen_size(&w, &h)) return std::string();
+    const std::string name = dm::ratio_name({w, h});
+    for (const dm::Shape& s : output_shapes())
+        if (s.name == name) return name;
+    return std::string();
+}
+/// Whether the row's value v is saved as ultrawide=1: the host's shape (a 16:9 size then takes it at the next start, as it
+/// shows), or Monitor's shape where the monitor's is not known. The same as the mark where the window is on the host's screen
+bool aspect_follows_host(int v) {
+    if (v == aspect_monitor_value()) return true;
+    const std::string h = host_shape();
+    return h.empty() ? aspect_is_monitors(v) : aspect_shape(v) == h;
 }
 /// The Aspect ratio row's value for Output resolution choice v: a size of a shape of its own is that shape; a 16:9 one is the
 /// monitor's shape when ultrawide (0 or 1, as host/hos_main.c started with it) follows the monitor, else 16:9
@@ -456,24 +525,24 @@ int aspect_of_choice(int v, int ultrawide) {
     const Out o = output_at(v);
     if (hos_output_own_shape(o.w, o.h)) return aspect_index(dm::ratio_name(size_of(o)));
     if (ultrawide != 1) return aspect_index("16:9");
-    const std::string m = monitor_shape();
-    return m.empty() ? aspect_monitor_value() : aspect_index(m);
+    const std::string h = host_shape(), m = monitor_shape();   // (the shape the host gives it: its screen's)
+    return !h.empty() ? aspect_index(h) : m.empty() ? aspect_monitor_value() : aspect_index(m);
 }
 /// The Aspect ratio row's value that choice v needs (the control bridge, before it walks the Output resolution to a size of
 /// another shape): its own shape; a 16:9 size, 16:9 itself, not the monitor's shape the row may be at
 int aspect_for_choice(int v) { return aspect_of_choice(v, 0); }
-/// The shape the Output resolution's arrows walk from choice id: its own; but a 16:9 size kept from before at the monitor's
-/// shape (ultrawide=1, the host widening it) walks into the monitor's own sizes, the list the Aspect ratio row names
+/// The shape the Output resolution's arrows walk from choice id: its own; but a 16:9 size kept from before at the host's
+/// shape (ultrawide=1, the host widening it) walks into that shape's own sizes, the list the Aspect ratio row names
 std::string step_shape(int id) {
-    const std::string own = dm::ratio_name(size_of(output_at(id))), m = monitor_shape();
-    return own == "16:9" && !m.empty() && m != own && aspect_is_monitors(opts.ultrawide) ? m : own;
+    const std::string own = dm::ratio_name(size_of(output_at(id))), h = aspect_shape(opts.ultrawide);
+    return own == "16:9" && h != own && opts.ultrawide != aspect_monitor_value() && aspect_follows_host(opts.ultrawide) ? h : own;
 }
 // (the choices of id's shape (step_shape), from smallest to largest by width then height: 1920x1080, 2048x1152, 2560x1440,
 // 3840x2160 at 16:9, the player's own in its place; id itself among them)
 int step_output_choice(int id, int dir) {
     const std::string shape = step_shape(id);
     std::vector<int> order;
-    for (int i = 0; i <= custom_index(); i++)
+    for (int i = 0; i <= last_choice(); i++)
         if (output_choice(i) == i && (i == output_choice(id) || dm::ratio_name(size_of(output_at(i))) == shape)) order.push_back(i);
     std::sort(order.begin(), order.end(), [](int a, int b) {
         const Out x = output_at(a), y = output_at(b);
@@ -490,7 +559,7 @@ int output_for_aspect(int v) {
     uint32_t sw = 0, sh = 0;
     screen_size(&sw, &sh);
     const int i = dm::pick(output_sizes(), name, {sw & ~7u, sh & ~7u});
-    return i < 0 ? opts.output_res : i;   // (output_sizes' places are the choices' numbers)
+    return i < 0 ? opts.output_res : output_ids()[i];
 }
 /// The picture an Output resolution choice makes: a size not 16:9 (the Aspect ratio row's 21:9, 16:10, 4:3...) takes its own
 /// shape; a 16:9 one, at the monitor's own Aspect ratio, the screen's. Both keep at most hos_wide_max_px() pixels, matching
@@ -502,9 +571,11 @@ Out picture_for(int v, bool* native = nullptr) {
     uint32_t sw = 0, sh = 0;
     if (native) *native = false;
     const bool own = hos_output_own_shape(o.w, o.h);
-    const bool have_screen = screen_size(&sw, &sh);
-    if (v && !opts.handheld && (own || aspect_is_monitors(opts.ultrawide))) {
-        const double want = own ? (double)o.w / o.h : have_screen ? (double)sw / sh : 0.0;
+    screen_size(&sw, &sh);
+    uint32_t hw = 0, hh = 0;
+    const bool have_host = host_screen_size(&hw, &hh);
+    if (v && !opts.handheld && (own || aspect_follows_host(opts.ultrawide))) {
+        const double want = own ? (double)o.w / o.h : have_host ? (double)hw / hh : 0.0;   // (the host's screen: hos_main.c)
         const double game = 16.0 / 9.0;
         if (want > game * 1.01 || (want > 1.0 && want < game * 0.99)) {
             unsigned w = 0, h = 0;
@@ -1384,7 +1455,7 @@ int aspect_started = -1;   // (the Aspect ratio row's value at the start, from t
 void outputs_sync() {
     const std::vector<dm::Shape> shapes = output_shapes();
     for (Row& r : rows) {
-        if (r.value == &opts.output_res) r.hi = custom_index();
+        if (r.value == &opts.output_res) r.hi = last_choice();
         if (r.value == &opts.ultrawide) r.hi = aspect_last();
     }
     ultrawide_read = std::clamp(opts.ultrawide, 0, 1);
@@ -1683,7 +1754,7 @@ void save() {
                 // (a run whose Output resolution HOS_OUTPUT_RES holds took the row from the environment's size: the player's own
                 // ultrawide= is kept, unless the row was changed in the menu)
                 const int v = saved_value(r.value);
-                fprintf(f, "%s=%d\n", ini_key(r), env_holds(&opts.output_res) && v == aspect_started ? ultrawide_read : aspect_is_monitors(v) ? 1 : 0);
+                fprintf(f, "%s=%d\n", ini_key(r), env_holds(&opts.output_res) && v == aspect_started ? ultrawide_read : aspect_follows_host(v) ? 1 : 0);
             } else if (r.value && r.value != &opts.game_lang) {   // (game_lang: language.txt's)
                 fprintf(f, "%s=%d\n", ini_key(r), saved_value(r.value));
             }
@@ -2007,7 +2078,7 @@ std::vector<std::string> share_values(long long pipelines, bool v2) {
     v[0] = HOOKSHOT_VERSION;
     v[1] = share_os() + "; " + dev.props.deviceName + ", driver " + driver_text();
     const Out o = shown_output();
-    v[2] = ps::output_text(o.w, o.h, opts.handheld != 0, output_choice(opts.output_res) == 0, aspect_is_monitors(opts.ultrawide));
+    v[2] = ps::output_text(o.w, o.h, opts.handheld != 0, output_choice(opts.output_res) == 0, aspect_follows_host(opts.ultrawide));
     v[3] = std::string(tx_upscaler(opts.dlss)) + ", " + tx_resolution(opts.resolution);
     v[4] = std::string(tx_framegen(std::clamp(opts.framegen, 0, 8))) + " / " + tx_hdr(opts.hdr);
     std::vector<std::string> mods;
@@ -4291,11 +4362,58 @@ void game_lang_tick() {
     }
 }
 
+/// (hookshot) The screen the window is on, followed while the game runs (every 30 presents): moved to another monitor, or its
+/// desktop size changed, the sizes it has that are not offered yet (its modes, its own size, the common sizes of their shapes)
+/// join the Output resolution's choices after the player's own, so the numbers chosen keep their sizes; the Aspect ratio row
+/// keeps the shape it is at (the list can gain one), and so do the run's start and the restart question's. HOS_DISPLAY_MODES:
+/// the list as given
+void outputs_follow_screen() {
+    static int every = 0;
+    if (++every % 30 || getenv("HOS_DISPLAY_MODES")) return;
+    uint32_t sw = 0, sh = 0;
+    if (!screen_size(&sw, &sh) || (sw == outputs_screen.w && sh == outputs_screen.h)) return;
+    outputs_screen = {sw, sh};
+    const int slot = [] {
+        for (const Row& r : rows)
+            if (r.value == &opts.ultrawide) return restart_slot_of(r);
+        return -1;
+    }();
+    // (the shapes the row's values name now: the same shapes after the list grows)
+    const bool at_monitor = opts.ultrawide == aspect_monitor_value();
+    const std::string now = aspect_shape(opts.ultrawide), started = aspect_shape(aspect_started),
+                      restart_from = slot >= 0 ? aspect_shape(restart_state.start[slot]) : std::string();
+    std::vector<dm::Size> modes = screen_modes();
+    add_screen_size(modes, sw, sh);
+    int added = 0;
+    for (dm::Size s : dm::with_common(dm::offered(modes))) {
+        const int before = last_choice();
+        if (s.w == kGameOutput.w && s.h == kGameOutput.h) continue;
+        const Out kept = custom_output;
+        const int at = output_choice_of(s.w, s.h);
+        custom_output = kept;   // (output_choice_of takes a size it does not have as the player's own: not this one)
+        if (at == custom_index() && !(kept.w == s.w && kept.h == s.h)) output_extras.push_back({s.w, s.h}), added++;
+        (void)before;
+    }
+    if (added) {
+        for (Row& r : rows) {
+            if (r.value == &opts.output_res) r.hi = last_choice();
+            if (r.value == &opts.ultrawide) r.hi = aspect_last();
+        }
+        opts.ultrawide = at_monitor && !monitor_shape().empty() ? aspect_index(monitor_shape()) : aspect_index(now);
+        aspect_started = aspect_index(started);
+        if (slot >= 0) restart_state.restart_value(slot, aspect_index(restart_from));
+        menu_refresh = true;
+    }
+    logf("vk: the window's screen is %ux%u (%s): %d sizes added to the Output resolution's", sw, sh,
+         dm::ratio_name({sw, sh}).c_str(), added);
+}
+
 void menu_tick() {
     std::lock_guard lk(menu_mu);   // (the control bridge's settings: menu_setting_set)
     share_finish();   // (Save my pipeline list's worker, done)
     fullscreen_tick();
     game_lang_tick();
+    outputs_follow_screen();
     enum { K_N = 17 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)

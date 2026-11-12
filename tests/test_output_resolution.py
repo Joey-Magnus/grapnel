@@ -39,6 +39,11 @@ struct { int handheld, output_res, ultrawide; } opts;
 // (the main screen tx_output_res shapes its sizes for: none unless a check sets one)
 static uint32_t screen_w = 0, screen_h = 0;
 bool screen_size(uint32_t* w, uint32_t* h) { return screen_w ? (*w = screen_w, *h = screen_h, true) : false; }
+// (the host's screen, whose shape ultrawide=1 gives a 16:9 size: the same one unless a check sets another)
+static uint32_t host_w = 0, host_h = 0;
+bool host_screen_size(uint32_t* w, uint32_t* h) {
+    return host_w ? (*w = host_w, *h = host_h, true) : screen_size(w, h);
+}
 namespace mkwvk {
 int up_now = 0;   // (the Upscaler shown: 0 the game's own, 1 DLSS, 2 DLAA)
 int upscaler() { return up_now; }
@@ -138,6 +143,26 @@ int main(int argc, char **argv) {
         assert(monitor_shape().empty() && aspect_monitor_value() == 2 && aspect_of_choice(1, 1) == 2);
         opts.output_res = 4;   // (16:9 nearest the screen's height: 2560x1440, not 5120x2880)
         assert(output_for_aspect(0) == 2);
+        // (the window on a 16:9 monitor, the host's (primary) screen 32:9: the mark is the window's monitor's, the saved
+        // ultrawide= the host's shape, so the next start draws the shape picked)
+        screen_w = 2560, screen_h = 1440, host_w = 5120, host_h = 1440;
+        assert(strcmp(tx_ultrawide(0), "16:9 (monitor's)") == 0 && strcmp(tx_ultrawide(1), "32:9") == 0);
+        assert(host_shape() == "32:9" && !aspect_follows_host(0) && aspect_follows_host(1));
+        assert(aspect_of_choice(1, 1) == 1 && aspect_of_choice(1, 0) == 0);   // (a 16:9 size with ultrawide=1: the host's 32:9)
+        opts.ultrawide = 1;   // (a 16:9 size at the host's 32:9: widened to it; not the window's screen's own size)
+        if (!opts.handheld) assert(strcmp(tx_output_res(2), "5120x1440") == 0);   // (handheld: the game's own size, as it is)
+        opts.ultrawide = 0;
+        if (!opts.handheld) assert(strcmp(tx_output_res(2), "2560x1440 (native)") == 0);
+        host_w = host_h = 0;
+        // (a screen's sizes found while running come after the player's own: the numbers before keep their sizes)
+        output_extras.push_back({3440, 1440});
+        assert(last_choice() == custom_index() + 1 && output_choice(custom_index() + 1) == custom_index() + 1);
+        assert(output_at(custom_index() + 1).w == 3440 && output_at(2).w == 2560 && output_choice_of(3440, 1440) == custom_index() + 1);
+        assert(output_ids().back() == custom_index() + 1 && aspect_index("21:9") == 1 && aspect_shape(2) == "32:9");
+        screen_w = 3440, screen_h = 1440;   // (the window moved to that 21:9 screen: marked, and picked at its own size)
+        assert(strcmp(tx_ultrawide(1), "21:9 (monitor's)") == 0 && output_for_aspect(1) == custom_index() + 1);
+        if (!opts.handheld) assert(strcmp(tx_output_res(custom_index() + 1), "3440x1440 (native)") == 0);
+        output_extras.clear();
         screen_w = screen_h = 0;
         opts.output_res = was, opts.ultrawide = was_aspect;
     } else {   // (the player's own: its shape listed, and chosen with it)

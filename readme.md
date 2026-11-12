@@ -432,7 +432,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   and 5K at 16:9, 1920x1200 and 2560x1600 at 16:10, 3440x1440 at 21:9, ...), grouped by shape. **Aspect ratio** lists
   the shapes, your monitor's own marked "(monitor's)" (the default: 21:9 on an ultrawide, 16:10 on a 16:10 screen);
   **Output resolution** then lists that shape's sizes, your screen's own marked "(native)". A size larger than your
-  screen is drawn at that size and scaled down to the window. Docked only. A shape other than 16:9 widens the cameras (21:9, 32:9) or narrows the
+  screen is drawn at that size and scaled down to the window. The marks are for the monitor the game's window is on, and
+  follow it: moved to another monitor, or the desktop's resolution changed while playing, the menu adds that screen's
+  sizes. On Linux the screen's size comes from SDL (the primary display). A portrait screen has no shape the game can
+  draw, so the row shows Monitor's shape as a value of its own there. Docked only. A shape other than 16:9 widens the cameras (21:9, 32:9) or narrows the
   picture (16:10, 4:3, 5:4) and keeps the HUD and movies in the middle 16:9. At 16:9 on a 5120x1440 (32:9) monitor, the
   game's 16:9 picture is stretched across the 32:9 output, sharp but wide. Options saved by an older version at 16:9,
   the default then, move to Monitor's shape on a screen narrower than 16:9 (16:10 such as the Steam Deck's, or 4:3),
