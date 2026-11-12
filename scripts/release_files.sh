@@ -31,7 +31,9 @@
 #   scripts/release_files.sh check <tag> <name> ...  each named file and SHA256SUMS are on the release, and SHA256SUMS
 #                                                    lists every other file on it, with its digest
 set -euo pipefail
-shopt -s inherit_errexit 2>/dev/null || true
+if (( BASH_VERSINFO[0] >= 4 )); then
+  shopt -s inherit_errexit
+fi
 MARK='<!-- release-files -->'
 LINKS='<!-- release-links -->'
 

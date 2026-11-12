@@ -16,7 +16,9 @@
 #
 #   scripts/release_rc.sh
 set -euo pipefail
-shopt -s inherit_errexit 2>/dev/null || true
+if (( BASH_VERSINFO[0] >= 4 )); then
+  shopt -s inherit_errexit
+fi
 FILES=$(dirname "$0")/release_files.sh
 RC=rc
 TITLE="Latest release candidate"

@@ -25,7 +25,9 @@
 # every file names the version it was built as (tools/version.txt, the AppImage's VERSION, the setup lists' tag) and
 # the updaters compare that with the latest release's tag.
 set -euo pipefail
-shopt -s inherit_errexit 2>/dev/null || true
+if (( BASH_VERSINFO[0] >= 4 )); then
+  shopt -s inherit_errexit
+fi
 FILES=$(dirname "$0")/release_files.sh
 MARK='<!-- release-files -->'
 RC_TAG='^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$'

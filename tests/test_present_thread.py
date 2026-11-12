@@ -10,9 +10,16 @@ while the frame before's present is still out; a present made directly waits for
 the swapchain is made again only with the presenter idle, and the wait for that comes before the queue's lock (the presenter takes
 it). The presenter never makes a swapchain itself: an out-of-date or suboptimal present asks the next present_image for one.
 
-python -I -B tests/test_present_thread.py
+python -I -B tests/test_present_thread.py [--cxx clang++]
 """
+import argparse
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,7 +39,7 @@ def need(cond, why):
         raise SystemExit("FAIL: " + why)
 
 
-def main():
+def main(args):
     vk = ROOT / "gpu" / "vk"
     replay = (vk / "vk_replay.cpp").read_text(encoding="utf-8")
     main_cpp = (vk / "vk_main.cpp").read_text(encoding="utf-8")
@@ -112,11 +119,10 @@ def main():
     need("vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.presenter_family" in choose,
          "the presenter's family is not checked against the window's surface")
     # (the queue choice on NVIDIA's, RADV's and smaller layouts: tests/presenter_queue_test.cpp)
-    import subprocess, tempfile, os
     need("presenter_queue_pick(" in dev_make, "create_device does not choose the presenter's queue with presenter_queue_pick")
     with tempfile.TemporaryDirectory() as tmp:
         exe = os.path.join(tmp, "presenter_queue_test" + (".exe" if os.name == "nt" else ""))
-        subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests" / "presenter_queue_test.cpp"),
+        subprocess.run([args.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests" / "presenter_queue_test.cpp"),
                         "-o", exe], check=True)
         out = subprocess.run([exe], capture_output=True, text=True)
         print(out.stdout.strip())
@@ -125,4 +131,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cxx", default=os.environ.get("CXX") or shutil.which("clang++") or shutil.which("c++") or "c++")
+    args, _ = parser.parse_known_args()
+    main(args)

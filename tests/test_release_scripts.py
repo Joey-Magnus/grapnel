@@ -239,8 +239,8 @@ class ReleaseScripts(unittest.TestCase):
         tools.mkdir()
         (tools / "gh").write_text(STUB, encoding="utf-8")
         (tools / "gh").chmod(0o755)
-        # (no waiting between retries)
-        (tools / "sleep").write_text("#!/bin/sh\n", encoding="utf-8")
+        # (tiny yield between retries: a no-op sleep made two finish loops fight forever on SHA256SUMS)
+        (tools / "sleep").write_text("#!/bin/sh\nexec /bin/sleep 0.2\n", encoding="utf-8")
         (tools / "sleep").chmod(0o755)
         self.state_file = self.dir / "state.json"
         self.files = self.dir / "dist"
