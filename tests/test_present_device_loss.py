@@ -29,7 +29,8 @@ def main():
     sites = []
     for call in CALLS:
         found = [i for i, line in enumerate(lines) if re.search(r"\b" + call + r"\(", line)]
-        if len(found) != (2 if call == "vkQueuePresentKHR" else 1):
+        # (two presents: the replay's queue and the presents' own; two fence waits: the frame slot's and the copy's before a present)
+        if len(found) != (2 if call in ("vkQueuePresentKHR", "vkWaitForFences") else 1):
             raise SystemExit("FAIL: presentation call sites changed: " + call)
         for i in found:
             snippet = lines[i].strip()
@@ -52,7 +53,7 @@ using VkResult = int;
 enum { VK_SUCCESS=0, VK_ERROR_DEVICE_LOST=-4, VK_TRUE=1, VK_NULL_HANDLE=0 };
 struct { int device=1, queue=2, present_queue=3, swapchain=4; } dev;
 struct { int done=5, acquired=6, pool=7, cmd=8; } f;
-int bi=0, si=0, pi=0, index=0;
+int bi=0, si=0, pi=0, index=0, copy=9;   // (copy: the fence present_copy_wait is given)
 uint64_t acquire_timeout=UINT64_MAX;
 int result=VK_SUCCESS, calls=0, reports=0, continued=0;
 struct Lost {};
@@ -69,7 +70,7 @@ struct Lost {};
                         "if (calls!=1 || reports!=%d || continued!=%d) { "
                         "std::printf(\"FAIL: %s site%d result%%d reports%%d continued%%d\\n\",result,reports,continued); ++failed; }\n"
                         % (result, i, int(result == -4), int(result != -4), name, i))
-    fixture += 'if (!failed) { std::puts("PASS: all nine native WSI sites route device loss before continuing; other results preserved"); }\nreturn failed ? 1 : 0;\n}\n'
+    fixture += 'if (!failed) { std::puts("PASS: all ten native WSI sites route device loss before continuing; other results preserved"); }\nreturn failed ? 1 : 0;\n}\n'
     with tempfile.TemporaryDirectory(prefix="present-device-loss-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")

@@ -63,8 +63,24 @@ def main():
         need(at.index("present_thread_drain();") < at.index("std::lock_guard qk(dev.present_mu);"),
              "present_image remakes the swapchain without first waiting for the presenter, outside the queue's lock")
     commit = block(replay, "bool present_commit(")
-    need("present_out(p.index, qk);" in commit and "present_copy_done" not in commit,
+    need("present_out(p.index, qk);" in commit and "present_from_game" not in commit,
          "frame generation's paced presents are handed over")
+    # (the copy's fence waited for before a present on the replay's queue, with the queue's lock let go: present_copy_wait_on)
+    need("present_copy_done = p.done;\n    const bool shown = present_out(p.index, qk);\n    present_copy_done = VK_NULL_HANDLE;" in commit,
+         "frame generation's paced presents do not give their copy's fence to present_out")
+    wait_at = out.index("present_copy_wait(present_copy_done);")
+    need("if (present_copy_done && !dev.present_queue_supported && present_copy_wait_on()) {\n        qk.unlock();\n"
+         "        present_copy_wait(present_copy_done);\n        qk.lock();" in out,
+         "the wait for the copy before the present holds the queue's lock (every submit of the replay waits behind it)")
+    need(out.index("present_hand_off(") < wait_at < out.index("vkQueuePresentKHR(dev.queue, &pi)"),
+         "the copy is not waited for before the present on the replay's queue (or a handed-over present waits too)")
+    cw = block(replay, "static bool present_copy_wait_on() {")
+    need('getenv("RX_VK_PRESENT_COPY_WAIT")' in cw and "e ? atoi(e) != 0 : by_default" in cw and
+         "#ifdef _WIN32\n        const bool by_default = false;\n#else\n        const bool by_default = dev.props.vendorID == 0x10DE;" in cw,
+         "the copy wait is not NVIDIA-on-Linux by default with RX_VK_PRESENT_COPY_WAIT over it")
+    wait_fn = block(replay, "static void present_copy_wait(VkFence copy) {")
+    need("UINT64_MAX" not in wait_fn and "1000000000ull" in wait_fn and "VK_ERROR_DEVICE_LOST" in wait_fn,
+         "the wait for the copy has no limit, or misses a device lost")
 
     give = block(replay, "void present_hand_off(uint32_t index, VkFence done) {")
     idle = block(replay, "void presenter_wait_idle(std::unique_lock<std::mutex>& lk) {")

@@ -4219,9 +4219,47 @@ bool present_commit(const PendingPresent& p) {
     if (p.swapchain != dev.swapchain || p.swapchain_generation != dev.swapchain_generation) return false;   // (made again since the copy)
     const uint64_t was = reflex_present_frame;
     reflex_present_frame = p.reflex_frame;   // (NVIDIA Reflex: the frame this present shows, as at its copy)
+    // (its copy's fence, for present_out's wait before the present. Never handed to the presenter thread: that takes the
+    // game's own present, and this is frame generation's display thread)
+    present_copy_done = p.done;
     const bool shown = present_out(p.index, qk);
+    present_copy_done = VK_NULL_HANDLE;
     reflex_present_frame = was;
     return shown;
+}
+
+/// (hookshot) Whether a present made on the replay's queue waits for its copy's fence first, with the queue's lock let go
+/// (present_out). NVIDIA's driver on Linux waits inside vkQueuePresentKHR, on the CPU, until the copy into the window's image is
+/// done on the GPU, and the copy is behind everything submitted before it; made with dev.present_mu held, that wait holds every
+/// submit of the replay. With frame interpolation the display thread presents four times a game frame: the game's presentation
+/// thread waited for the lock in submit_recording at 17 % of all instants, 3.8 ms a frame (Hyrule Field, DLSS + interpolation 4x
+/// + Reflex, an RTX 3090). After the fence the present itself takes 0.2-0.3 ms there (the presenter thread's log). The present
+/// goes out no earlier and no later than the driver would have let it: it waited for the same copy.
+/// On by default only where that wait was seen: NVIDIA's driver on Linux. On Windows the same was tried and was worse (the
+/// note at vkQueuePresentKHR below); other Linux drivers were not seen to wait for the copy in the present, and there this would
+/// add the wait. RX_VK_PRESENT_COPY_WAIT=0 / 1: off / on over that
+static bool present_copy_wait_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_PRESENT_COPY_WAIT");
+#ifdef _WIN32
+        const bool by_default = false;
+#else
+        const bool by_default = dev.props.vendorID == 0x10DE;
+#endif
+        const bool v = e ? atoi(e) != 0 : by_default;
+        logf("vk: presents on the replay's queue %s (RX_VK_PRESENT_COPY_WAIT=%d: %s)",
+             v ? "wait for their copy first, the queue's lock let go" : "are made with the queue's lock held, the driver waiting as it will",
+             v ? 0 : 1, v ? "off" : "on");
+        return v;
+    }();
+    return on;
+}
+/// The wait itself, at most a second (then the present is made all the same: swap_rendered orders it on the GPU). The fence is
+/// the frame slot's, reset only by present_image, under present_image_mu, which every caller of present_out holds
+static void present_copy_wait(VkFence copy) {
+    const int64_t t0 = fps_breakdown_on() ? fps_clock() : 0;
+    if (vkWaitForFences(dev.device, 1, &copy, VK_TRUE, 1000000000ull) == VK_ERROR_DEVICE_LOST) device_lost();
+    if (t0) fps_wait(fps_stats::kGpuWait, fps_clock() - t0);   // (the FPS counter's Breakdown: the GPU's)
 }
 
 // The present of a swapchain image whose copy is submitted, as present_image ended before; qk holds dev.present_mu
@@ -4251,6 +4289,13 @@ static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     pi.pSwapchains = &dev.swapchain;
     pi.pImageIndices = &index;
     antilag_present();   // (AMD Anti-Lag 2: the frame's present stage)
+    // (the copy done first, the queue's lock let go meanwhile: present_copy_wait_on. Not for a present on the presents' own
+    // queue, made without that lock anyway. The swapchain cannot change meanwhile: it is remade only under present_image_mu)
+    if (present_copy_done && !dev.present_queue_supported && present_copy_wait_on()) {
+        qk.unlock();
+        present_copy_wait(present_copy_done);
+        qk.lock();
+    }
     // (hookshot) vkQueuePresentKHR blocked a quarter of the display thread's time with frame interpolation at 4x (a 14700K and an
     // RTX 5070 Ti), and with the queue's lock held there the game's main thread waited ~9% of its time and the presentation thread
     // ~15% to submit. With a queue of their own (dev.present_queue, a compute family's: vk_main.cpp create_device) the presents go
