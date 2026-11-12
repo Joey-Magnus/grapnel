@@ -134,9 +134,10 @@ def main():
         temp = Path(temp)
         (temp / "cpus.inc").write_text(code + "\n", encoding="utf-8")
         (temp / "check.cpp").write_text(CHECK, encoding="utf-8")
-        exe = temp / "check.exe"
-        cmd = [a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-I" + str(temp), str(temp / "check.cpp"),
-               "-o", str(exe)]
+        exe = temp / ("check.exe" if os.name == "nt" else "check")
+        # (-D_CRT_SECURE_NO_WARNINGS: MSVC CRT marks getenv deprecated under -Werror on Windows CI)
+        cmd = [a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
+               "-D_CRT_SECURE_NO_WARNINGS", "-I" + str(temp), str(temp / "check.cpp"), "-o", str(exe)]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode:
             print(result.stdout + result.stderr)
