@@ -8774,7 +8774,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                     pre->graphics_begun = true;
                     if (first.owns_lock()) first.unlock();
                     static const bool release = getenv("RX_VK_PRECOMPILE_GRAPHICS") &&
-                                                !strcmp(getenv("RX_VK_PRECOMPILE_GRAPHICS"), "release");
+                                                std::string(getenv("RX_VK_PRECOMPILE_GRAPHICS")) == "release";
                     if (release) {   // (in the driver's cache now: play makes it again from there)
                         if (made) vkDestroyPipeline(dev.device, made, nullptr);
                     } else {
