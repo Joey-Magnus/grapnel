@@ -74,6 +74,11 @@ static int held, takes;
 int hos_vcore_away(void) { if (!held) return 0; held = 0; return 1; }
 void hos_vcore_back(void) { if (!held) held = 1, takes++; }
 
+/* The restart observer sees successful write opens only; it does not change core ownership. */
+static unsigned restart_files;
+static const char *restart_path;
+void hos_oot_restart_file(const char *path) { ++restart_files; restart_path = path; }
+
 /* host_path: the mount's path (here, the build of a prompt file would run in it); -1 = not called */
 static int path_ok, path_writable, held_in_path, held_in_create, create_ok, blank;
 static int host_path(const char *g, char *out, size_t cap, int *writable) {
@@ -104,6 +109,7 @@ static uint64_t open_file(const char *path, int mode, int core) {
     memset(&c, 0, sizeof c);
     c.x[0] = (uint64_t)(uintptr_t)&handle, c.x[1] = (uint64_t)(uintptr_t)path, c.x[2] = (uint64_t)mode;
     held = core, takes = 0, held_in_path = held_in_create = -1;
+    restart_files = 0, restart_path = nullptr;
     imp__ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci(&c);
     return c.x[0];
 }
@@ -123,6 +129,7 @@ int main(void) {
     check(held_in_path == 0, "host_path (where a prompt file is built at its first open) runs without the core");
     check(held_in_create == 0, "CreateFileA runs without the core");
     check(held == 1 && takes == 1, "the core is held again after OpenFile, taken once");
+    check(restart_files == 0, "a read does not notify restart in place of a save");
 
     path_ok = 0;
     r = open_file("nomount:/x", 1, 1);
@@ -131,6 +138,7 @@ int main(void) {
 
     r = open_file("rom:/x", 2, 1);
     check(r == R_PATH_NOT_FOUND && held == 1 && held_in_create == -1, "a write to a mount that is not writable: the core back");
+    check(restart_files == 0, "a refused write does not notify restart in place of a save");
 
     set_env("HOS_NO_MOVIES", "1");
     r = open_file("rom:/Movie/a.webm", 1, 1);
@@ -149,6 +157,17 @@ int main(void) {
 
     r = open_file("rom:/a.bin", 1, 0);
     check(r == 0 && held == 0 && takes == 0, "a thread that held no core takes none");
+
+    path_writable = 1;
+    r = open_file("save:/slot_00/progress.sav", 2, 1);
+    check(r == 0 && held_in_path == 0 && held_in_create == 0 && held == 1 && takes == 1,
+          "a writable save keeps the same virtual-core handoff");
+    check(restart_files == 1 && restart_path && !strcmp(restart_path, "save:/slot_00/progress.sav"),
+          "a successful write tells restart in place its guest path once");
+    create_ok = 0;
+    r = open_file("save:/slot_00/progress.sav", 2, 1);
+    check(r == R_PATH_NOT_FOUND && held == 1 && restart_files == 0,
+          "a failed write open returns the core without notifying restart in place");
     if (!bad) puts("ok");
     return bad;
 }
