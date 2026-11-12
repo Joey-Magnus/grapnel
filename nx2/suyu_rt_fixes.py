@@ -25,7 +25,9 @@ SUBST = [(sig + _FMA_GUARD, sig + "#if RECOMP_FPX_HOST == 1 || RECOMP_FPX_FMA64\
 
 FP_TO_INT = "static RECOMP_INLINE uint64_t recomp_fp_to_int(uint64_t bits, unsigned fp_bits,\n"
 FP_TO_INT_AT = "    int shift;\n"
-FCVTZS = """#ifndef RECOMP_NO_NATIVE_FP
+# (off where the host's float compare could be folded or kept in extended precision: FPX1's own conditions)
+FCVTZS = """#if !defined(RECOMP_NO_NATIVE_FP) && !defined(__FAST_MATH__) && !defined(_M_FP_FAST) && \\
+    !(defined(FLT_EVAL_METHOD) && FLT_EVAL_METHOD != 0)
     if (rmode == 3 && is_signed && exponent - 1u < bias + int_bits - 2u) {
         if (fp_bits == 32) {
             const uint32_t narrow = (uint32_t)bits;
@@ -64,7 +66,8 @@ def fcvtzs(h):
     if at < 0 or at > h.find("\n}\n", h.find(FP_TO_INT)):
         raise SystemExit("suyu_rt_fixes: recomp_fp_to_int's locals moved: update nx2/suyu_rt_fixes.py")
     at += len(FP_TO_INT_AT)
-    return h[:at] + FCVTZS + h[at:]
+    start = h.find(FP_TO_INT)
+    return h[:start] + "#include <float.h>\n" + h[start:at] + FCVTZS + h[at:]
 
 
 def patch(h):

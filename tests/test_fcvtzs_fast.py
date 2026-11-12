@@ -23,6 +23,7 @@ import importlib.util
 import os
 import platform
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -47,7 +48,7 @@ def helpers():
         parts.append(m.group(1))
     parts[1] = suyu_rt_fixes.fcvtzs(parts[1])
     a = parts[1].find("static RECOMP_INLINE uint64_t recomp_fp_to_int(")
-    if a < 0 or "#ifndef RECOMP_NO_NATIVE_FP" not in parts[1][a:parts[1].find("\n}\n", a)]:
+    if a < 0 or "!defined(RECOMP_NO_NATIVE_FP)" not in parts[1][a:parts[1].find("\n}\n", a)]:
         raise SystemExit("fcvtzs fast: recomp_fp_to_int has no native path to check")
     return parts
 
@@ -88,6 +89,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hookshot-fcvtzs-fast-") as tmp:
         with open(os.path.join(tmp, "fcvtzs_fast.h"), "w", encoding="utf-8", newline="\n") as f:
             f.write(header(helpers()))
+        # (the native path is compiled out where FPX1's is: fast math, as in arm64_to_c.h's RECOMP_FPX_HOST)
+        for extra, kept in (([], True), (["-ffast-math"], False)):
+            r = subprocess.run([cc, "-E", "-x", "c", "-ffp-contract=off"] + extra + [os.path.join(tmp, "fcvtzs_fast.h")],
+                               capture_output=True, text=True)
+            if r.returncode or ("(int32_t)f;" in r.stdout) != kept:
+                print(r.stderr[-400:])
+                failed.append("native path %s with %s" % ("missing" if kept else "kept", " ".join(extra) or "the build's flags"))
         for march, v3 in builds:
             exe = os.path.join(tmp, "fcvtzs_fast_test_%s.exe" % (march or "native"))
             sticky.build([cc] + sticky.target_flags(cc, tmp) + (["-march=" + march] if march else []) + FLAGS +
