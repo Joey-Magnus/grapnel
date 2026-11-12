@@ -54,6 +54,15 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses. It
 is not a focus override.
 
+When an SDL controller connects, its `hid: controller` log line includes the hardware `guid` and active
+`mapping-name` (names are limited to 128 bytes). The `mapping-string` follows in GUID-labelled parts of at most
+512 bytes, up to 1024 bytes in total, with a note when truncated. The GUID and mapping describe a device model's
+button layout; no serial, path, user or account call is made. A mapping the player supplied himself, by environment
+or file, is logged as he wrote it, within those limits.
+`mapping=available` means SDL returned a mapping, not that its origin is known; `mapping=none` means SDL returned
+none, and `unavailable` means the loaded SDL lacks a required diagnostic call. A zero GUID is `unknown`.
+These queries do not change bindings, load a mapping file, or change which controllers are read.
+
 ## Switches for testing and debugging
 
 The running game reads its switches from the environment or from `hookshot_env.txt` beside `image.bin` (one
