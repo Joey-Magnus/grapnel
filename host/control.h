@@ -62,6 +62,11 @@ typedef struct HosControlGame {
     int (*teleport)(int index);
     int (*teleport_result)(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted);
     void (*teleport_cancel)(int ticket);
+    /* (OoT) the Debug tab's Switch age asked for: taken at the player's next update as a teleport is, and done as the menu
+       does it (Link's age flipped, the map reloaded in the other age through the teleport). A ticket in the teleport's
+       numbering (> 0), read with teleport_result (map: the map it reloads) and dropped with teleport_cancel; a later
+       teleport or age ask replaces one not taken yet. 0: not asked */
+    int (*age)(void);
     /* (OoT) with the map: an event playing (a cutscene, a map change's), a map loading, Link the child. 0 before any */
     int (*oot_state)(int *event, int *loading, int *child);
 } HosControlGame;
