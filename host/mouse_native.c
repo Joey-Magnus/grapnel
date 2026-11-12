@@ -103,6 +103,10 @@ void hos_mouse_native_free(int free) { InterlockedExchange(&game_free, free ? 1 
    mouse both turn the camera instead of undoing each other. */
 void hos_mouse_native_stick(int held) { InterlockedExchange(&stick_held, held ? 1 : 0); }
 
+/* The Controls row "Disable camera centering" (option 45), independent of the mouse mode. The game's state-3 yaw-follow
+   branch asks before it runs (nx2/oot_patches.py); 0 keeps the stock behavior, including without a renderer. */
+int hos_disable_camera_centering(void) { return rx_option(45, 0); }
+
 /* f_80644c80's first line (nx2/oot_patches.py): cam is the player camera, the game's thread */
 void hos_mouse_camera(uint64_t cam) {
     if (!cam || !native_on() || !looks_like_camera(cam)) return;
