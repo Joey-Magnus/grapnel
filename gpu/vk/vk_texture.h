@@ -96,6 +96,7 @@ struct Texture {
     std::vector<BlockAttachment> block_attachments;
     struct AutoReadback {
         static constexpr uint32_t kSlots = 4;
+        static constexpr uint32_t kMaxUnpolledWrites = 64;
         VkBuffer buf = VK_NULL_HANDLE;
         VmaAllocation alloc = nullptr;
         void* map = nullptr;
@@ -103,6 +104,7 @@ struct Texture {
         uint64_t copy_bytes = 0;
         uint64_t slot_val[kSlots]{};
         uint32_t head = 0;
+        uint32_t unpolled_writes = 0;
         bool ready = false;
         std::atomic<bool> dirty_in_rec{false};
     };

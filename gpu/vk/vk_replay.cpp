@@ -1632,7 +1632,7 @@ void bench_replay(const std::vector<uint64_t>& handles) {
     rec_cur = nullptr;
     end_pass(r.cmd);
     flush_ub_updates(r.cmd);
-    texture_end_recording(r.cmd, value);
+    texture_end_recording(r.cmd, 0);
     memory_end_submission(r.cmd);
     full_barrier(r.cmd);
     submit_recording(r, false);

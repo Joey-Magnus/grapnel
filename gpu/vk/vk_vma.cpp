@@ -276,6 +276,9 @@ void flush_mapped_range(VmaAllocation allocation, uint64_t offset, uint64_t size
 void invalidate_mapped(VmaAllocation allocation, uint64_t size) {
     if (size) vmaInvalidateAllocation(vma, allocation, 0, size);
 }
+void invalidate_mapped_range(VmaAllocation allocation, uint64_t offset, uint64_t size) {
+    if (size) vmaInvalidateAllocation(vma, allocation, offset, size);
+}
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
     vmaDestroyBuffer(vma, buffer, allocation);
 }

@@ -3002,6 +3002,7 @@ struct Flush {
     struct Part { uint32_t level, layer; uint64_t at, n; LevelGeo g; };
     std::vector<Part> parts;
     uint64_t total = 0;
+    uint64_t offset = 0;
     VkBuffer buf = VK_NULL_HANDLE;
     VmaAllocation alloc = nullptr;
     void* map = nullptr;
@@ -3053,7 +3054,7 @@ bool flush_finish(Flush& f, bool gpu_ok) {
     const std::vector<Part>& parts = f.parts;
     void* map = f.map;
     bool ok = f.ok && gpu_ok;
-    if (ok && !flush_uncached() && f.alloc) invalidate_mapped(f.alloc, total);
+    if (ok && !flush_uncached() && f.alloc) invalidate_mapped_range(f.alloc, f.offset, total);
     if (ok && total <= 64) {   // (RX_VK_LOG_TINY_FLUSH=1: the values of tiny ones, 400 lines: a 1 x 1 luminance)
         static const bool log_tiny = env_on("RX_VK_LOG_TINY_FLUSH");
         static int logged;
@@ -3172,13 +3173,23 @@ bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
 void texture_end_recording(VkCommandBuffer cmd, uint64_t value) {
     if (!auto_rb_dirty_any.exchange(false, std::memory_order_relaxed)) return;
     bool barrier_done = false;
-    for (Texture* t : auto_rb_live) {
-        if (!t || !t->auto_rb || !t->auto_rb->dirty_in_rec.exchange(false, std::memory_order_relaxed)) continue;
-        Texture::AutoReadback& rb = *t->auto_rb;
-        if (!t->gpu_written || !flushable(*t)) {
-            rb.ready = false;
+    for (size_t i = 0; i < auto_rb_live.size();) {
+        Texture* t = auto_rb_live[i];
+        if (!t || !t->auto_rb || !t->auto_rb->dirty_in_rec.exchange(false, std::memory_order_relaxed)) {
+            i++;
             continue;
         }
+        Texture::AutoReadback& rb = *t->auto_rb;
+        if (!value || !t->gpu_written || !flushable(*t)) {
+            rb.ready = false;
+            i++;
+            continue;
+        }
+        if (++rb.unpolled_writes > Texture::AutoReadback::kMaxUnpolledWrites) {
+            auto_rb_forget(*t);
+            continue;
+        }
+        i++;
         if (!barrier_done) {
             barrier_done = true;
             VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -3266,13 +3277,15 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
         bool served_from_ring = false;
         if (!no_auto_rb && t->auto_rb && t->auto_rb->ready && !t->auto_rb->dirty_in_rec.load(std::memory_order_relaxed)) {
             Texture::AutoReadback& rb = *t->auto_rb;
+            rb.unpolled_writes = 0;
             const uint32_t slot = (rb.head - 1) % Texture::AutoReadback::kSlots;
             if (rb.slot_val[slot]) vk_timeline_wait(rb.slot_val[slot]);
             if (vk_timeline_completed() >= rb.slot_val[slot]) {
                 Flush f{t, lo, hi};
                 f.parts.push_back({0, 0, 0, rb.copy_bytes, level_geo(*t, 0)});
                 f.total = (rb.copy_bytes + 15) & ~15ull;
-                f.map = (uint8_t*)rb.map + (size_t)slot * rb.slot_sz;
+                f.offset = (uint64_t)slot * rb.slot_sz;
+                f.map = (uint8_t*)rb.map + (size_t)f.offset;
                 f.alloc = rb.alloc;
                 f.ok = true;
                 flushed_ok = flush_finish(f, true);
@@ -3281,6 +3294,7 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
         }
         if (!served_from_ring) {
             if (t->auto_rb) {
+                t->auto_rb->unpolled_writes = 0;
                 t->auto_rb->ready = false;
                 t->auto_rb->dirty_in_rec.store(false, std::memory_order_relaxed);
             }
