@@ -66,6 +66,7 @@
 #endif
 #include "vk_programs.h"
 #include "vk_pipelines.h"
+#include "warm_bounded.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -8270,6 +8271,79 @@ void prepare_progress_log(const char* what, size_t done, size_t total, std::chro
     if (done) logf("vk: %s: %zu of %zu pipelines in %.0f s, about %.0f s left", what, done, total, s, left);
     else logf("vk: %s: 0 of %zu pipelines in %.0f s (the driver compiles the first ones)", what, total, s);
 }
+/// (hookshot, RX_VK_LOAD=create) The first start after a preparation: every noted pipeline built into the pipeline cache and let
+/// go, so that the loads at the programs' create calls find each one there and never meet a pipeline the prepare should have
+/// compiled. The precompile does the same by keeping them all ready, which is the memory RX_VK_LOAD=create is there to save
+/// and more than a 16 GB PC has (its precompile was killed at 23,407 of 35,870 pipelines under a 12 GB cap). Here each
+/// worker borrows one program, builds its notes' pipelines one after the other and destroys each at once: never more
+/// pipelines alive than workers (warm_bounded.h). Before the game, with the precompile's progress; a start closed in it
+/// begins again at the next one, and after two that did not get through, the notes are taken as they are (what a cache
+/// then lacks is made at its first draw, as on an install that was never prepared)
+void precompile_warm(void (*progress)(size_t done, size_t total)) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::string warming = precompile_built_path() + ".warming";
+    int ended_inside = 0;
+    if (FILE* f = fopen(warming.c_str(), "rb")) {
+        if (fscanf(f, "%d", &ended_inside) != 1) ended_inside = 1;
+        fclose(f);
+    }
+    pcache_init();
+    const std::vector<NoteRef> refs = pipe_notes_refs();
+    if (ended_inside >= 2) {
+        remove(warming.c_str());
+        precompile_built_write(refs.size());
+        logf("vk: precompile: the last two starts did not get through building the noted pipelines into the cache: left as they "
+             "are, a pipeline the caches lack is made when it is first drawn");
+        return;
+    }
+    if (FILE* f = fopen(warming.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
+    // (by program, in the notes' order: a worker's borrowed program serves all its notes)
+    std::vector<uint64_t> progs;
+    std::unordered_map<uint64_t, std::vector<const NoteRef*>> by_prog;
+    for (const NoteRef& r : refs) {
+        auto& list = by_prog[r.prog];
+        if (list.empty()) progs.push_back(r.prog);
+        list.push_back(&r);
+    }
+    const size_t total = refs.size();
+    std::atomic<size_t> done{0}, built{0}, failed{0}, no_program{0};
+    const std::string notes_path = pipe_notes_path();
+    auto log_at = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const unsigned threads = std::min(usable_cpus(), 16u);
+    warm_bounded::run(progs.size(), threads, [&](size_t i) {
+        static thread_local bool off = (ub_thread_off(), true);   // (a background thread: see ub_thread_off)
+        static thread_local FILE* in = fopen(notes_path.c_str(), "rb");
+        static thread_local std::unique_ptr<PipeNote> note = std::make_unique<PipeNote>();
+        (void)off;
+        const auto& list = by_prog.at(progs[i]);
+        size_t found = 0;
+        program_cache_borrow(progs[i], [&](Program& p) {
+            ensure_layout(p);
+            for (const NoteRef* r : list) {
+                if (r->variant != p.variant || prepare_stopped() || !pipe_note_at(in, r->at, note.get())) continue;
+                found++;
+                const VkPipeline made = build_graphics(p, note->s, note_targets(*note), (VkPrimitiveTopology)note->topo);
+                if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (it is in the cache now: that is all it was built for)
+                (made ? built : failed)++;
+            }
+        });
+        no_program += list.size() - std::min(found, list.size());
+        done += list.size();
+    }, [] { return prepare_stopped(); }, [&](size_t) {
+        if (progress) progress(done.load(), total);
+        prepare_progress_log("noted pipelines", done.load(), total, t0, log_at);
+    });
+    if (done == total && !prepare_stopped()) {
+        pipeline_cache_save(true);   // (in the file before the marker says they are there)
+        precompile_built_write(total);
+        remove(warming.c_str());
+    }
+    logf("vk: precompile: %zu noted pipelines of %zu programs built into the pipeline cache and let go (%zu not made, %zu whose "
+         "program variant is not kept), on %u threads in %.1f s%s", built.load(), progs.size(), failed.load(), no_program.load(),
+         threads, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+         done == total && !prepare_stopped() ? "" : "; stopped before the end: the next start goes on");
+}
+
 /// (hookshot, RX_VK_LOAD=create) The start with nothing kept ready by a list: each note is only found, by its place in the file,
 /// and its pipeline is made when the game makes its program (vk_programs.cpp); the compute programs the lists name are only
 /// named. What a start must still do itself is done: the caches and the two lists opened before play, and on a GPU without
@@ -8321,13 +8395,13 @@ void precompile_at_create() {
 }
 
 void precompile_run(void (*progress)(size_t done, size_t total)) {
-    // (hookshot, RX_VK_LOAD=create: only once a precompile that got to its end has built every note into the pipeline cache.
-    // The first start after a preparation builds them all, as before, so that a load from the caches alone never meets a
-    // pipeline the prepare should have compiled)
+    // (hookshot, RX_VK_LOAD=create: only once every note has been built into the pipeline cache, so that a load from the
+    // caches alone never meets a pipeline the prepare should have compiled. The first start after a preparation builds them
+    // there and lets each go, precompile_warm: before the game, and never more of them alive than workers)
     if (programs_load_at_create()) {
+        if (!precompile_covers_notes()) precompile_warm(progress);
         if (precompile_covers_notes()) return precompile_at_create();
-        logf("vk: precompile: RX_VK_LOAD=create, but the notes were not all built into the pipeline cache yet (the first start "
-             "after a preparation): this start keeps them ready, as RX_VK_LOAD=start does");
+        if (prepare_stopped()) return;   // (the window was closed in it)
     }
     const auto t0 = std::chrono::steady_clock::now();
     // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
