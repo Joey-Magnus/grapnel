@@ -31,6 +31,7 @@ font's size (big-endian), each XORed with the same key as the font. The .zs file
 of Pack/ZsDic.pack.zs.
 """
 import argparse
+import contextlib
 import hashlib
 import importlib
 import importlib.metadata
@@ -38,9 +39,12 @@ import io
 import json
 import os
 import platform
+import shutil
+import stat
 import struct
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
@@ -1055,7 +1059,11 @@ def prompt_outputs(out):
 def prompts_before(out, key):
     """None means the complete outputs still match; otherwise the reason they need making again."""
     try:
-        with open(os.path.join(out, PROMPT_KEY), encoding="utf-8") as f:
+        try:
+            f = open(os.path.join(out, PROMPT_KEY), encoding="utf-8")
+        except FileNotFoundError:
+            return "no stamp yet"
+        with f:
             note = json.load(f)
         if not isinstance(note, dict) or not isinstance(note.get("inputs"), dict) or not isinstance(note.get("outputs"), dict):
             return "invalid stamp"
@@ -1071,9 +1079,69 @@ def prompts_before(out, key):
     return None
 
 
+@contextlib.contextmanager
+def prompt_owner(folder, create=False):
+    """Hold the staging owner's lock for its lifetime; a sweeper may take it only after that owner finishes or dies."""
+    path = os.path.join(folder, ".owner")
+    if not create:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
+            raise OSError("not a regular owner file")   # no symlinks or Windows reparse points
+    flags = os.O_RDWR | (os.O_CREAT | os.O_EXCL if create else 0) | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags, 0o600), "r+b") as owner:
+        if create:
+            owner.write(b"\0")
+            owner.flush()
+        owner.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(owner.fileno(), msvcrt.LK_LOCK if create else msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(owner, fcntl.LOCK_EX | (0 if create else fcntl.LOCK_NB))
+        if create:
+            owner.write(b"1")   # publish readiness only AFTER locking; an empty/unready marker is never swept
+            owner.flush()
+        elif owner.read(1) != b"1":
+            raise OSError("ownership not established")
+        yield   # closing the file releases the lock, including on an exception; the OS also releases it on process death
+
+
+def sweep_prompts(out):
+    """Reclaim abandoned staging directories, without following links or making cleanup a build failure."""
+    out = os.path.abspath(out)
+    try:
+        with os.scandir(os.path.dirname(out)) as entries:
+            for entry in entries:
+                if not entry.name.startswith(".prompts-") or entry.path == out:
+                    continue
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISDIR(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
+                        continue   # symlinks and Windows junctions/reparse points are not ours to traverse
+                    try:
+                        os.lstat(os.path.join(entry.path, ".owner"))
+                    except FileNotFoundError:
+                        if time.time() - st.st_mtime < 24 * 60 * 60:
+                            continue   # legacy, unmarked directories: a full day's grace, not a guess at a short build
+                    else:
+                        with prompt_owner(entry.path):
+                            pass
+                        # The ready owner held one continuous lock and will never reuse this unique directory.
+                        # Close before deleting: Windows cannot unlink the open owner file.
+                    shutil.rmtree(entry.path)
+                except Exception as e:
+                    print(f"prompts: kept staging directory {entry.path} ({e})", flush=True)
+    except FileNotFoundError:
+        pass   # the first build's output parent may not exist yet
+    except OSError as e:
+        print(f"prompts: staging cleanup skipped ({e})", flush=True)
+
+
 def make_prompts(a, incremental=False):
     """Generate in a fresh sibling directory; only complete outputs can replace the previous set."""
     from kit import env_on
+    sweep_prompts(a.out)
     key = None
     reason = "packaged or direct build"
     if incremental:
@@ -1106,7 +1174,7 @@ def make_prompts(a, incremental=False):
         pass
     out = a.out
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".prompts-", dir=os.path.dirname(os.path.abspath(out))) as temp:
+    with tempfile.TemporaryDirectory(prefix=".prompts-", dir=os.path.dirname(os.path.abspath(out))) as temp, prompt_owner(temp, create=True):
         a.out = os.path.join(temp, "new")
         try:
             generate(a)

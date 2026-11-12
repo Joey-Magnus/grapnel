@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -110,6 +111,157 @@ class PromptSkipTests(unittest.TestCase):
         self.build()
         self.assertEqual(self.calls, 1, "unchanged finish must not draw the prompts twice")
         self.assertIn("prompts: unchanged, kept", self.log.getvalue())
+
+    def test_missing_stamp_is_a_normal_first_build(self):
+        self.assertFalse(self.out.exists())
+        self.build()
+        self.assertIn("prompts: regenerated (no stamp yet)", self.log.getvalue())
+        self.stamp().unlink()
+        self.log.seek(0)
+        self.log.truncate()
+        self.build()
+        self.assertIn("prompts: regenerated (no stamp yet)", self.log.getvalue())
+
+    def test_unreadable_stamp_keeps_its_reason(self):
+        self.build()
+        self.log.seek(0)
+        self.log.truncate()
+        open_file = open
+        def denied(path, *args, **kwargs):
+            if Path(path) == self.stamp():
+                raise PermissionError("authored unreadable stamp")
+            return open_file(path, *args, **kwargs)
+        with mock.patch("builtins.open", side_effect=denied):
+            self.build()
+        self.assertIn("prompts: regenerated (stamp or outputs unreadable)", self.log.getvalue())
+        self.assertNotIn("no stamp yet", self.log.getvalue())
+
+    def staging(self, name, marked=False, old=False):
+        folder = self.out.parent / name
+        (folder / "new").mkdir(parents=True)
+        (folder / "new" / "authored.bin").write_bytes(b"unfinished generation")
+        if marked:
+            (folder / ".owner").write_bytes(b"1")   # an initialized owner whose lock was released
+        if old:
+            age = time.time() - 2 * 24 * 60 * 60
+            os.utime(folder, (age, age))
+        return folder
+
+    def test_stale_staging_is_removed_and_build_proceeds(self):
+        stale = self.staging(".prompts-abandoned", marked=True)
+        self.build()
+        self.assertFalse(stale.exists())   # a marked dead owner is reclaimable even on an immediate rebuild
+        self.assertTrue(self.stamp().exists())
+        self.assertEqual(self.calls, 1)
+
+    def test_legacy_staging_waits_a_day(self):
+        old = self.staging(".prompts-legacy-old", old=True)
+        recent = self.staging(".prompts-legacy-recent")
+        self.build()
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists())
+        self.assertTrue(self.stamp().exists())
+
+    def test_live_owner_is_kept_even_when_old(self):
+        live = self.staging(".prompts-live")
+        with P.prompt_owner(str(live), create=True):
+            age = time.time() - 2 * 24 * 60 * 60
+            os.utime(live, (age, age))
+            self.build()
+            self.assertTrue((live / "new" / "authored.bin").exists())
+        self.assertIn("kept staging directory", self.log.getvalue())
+        self.build()
+        self.assertFalse(live.exists())
+        self.assertEqual(self.calls, 1)   # the sweep also runs on a cache hit
+
+    def test_generation_holds_its_owner_lock(self):
+        def sweep_during_generation(out):
+            P.sweep_prompts(str(self.out))
+            self.assertTrue((out / "External.bfotf").exists())
+            self.assertTrue((out.parent / ".owner").exists())
+        self.during = sweep_during_generation
+        self.build()
+        self.assertTrue(self.stamp().exists())
+
+    def test_unready_or_unreadable_owner_is_kept(self):
+        unready = self.staging(".prompts-unready", marked=True, old=True)
+        (unready / ".owner").write_bytes(b"\0")
+        unreadable = self.staging(".prompts-unreadable", marked=True, old=True)
+        open_fd = os.open
+        def denied(path, *args, **kwargs):
+            if Path(path) == unreadable / ".owner":
+                raise PermissionError("authored owner denial")
+            return open_fd(path, *args, **kwargs)
+        with mock.patch.object(P.os, "open", side_effect=denied):
+            self.build()
+        self.assertTrue(unready.exists())
+        self.assertTrue(unreadable.exists())
+        self.assertTrue(self.stamp().exists())
+        self.assertEqual(self.log.getvalue().count("kept staging directory"), 2)
+
+    def test_staging_removal_failure_is_nonfatal(self):
+        stale = self.staging(".prompts-cannot-remove", marked=True)
+        rmtree = P.shutil.rmtree
+        def denied(path, *args, **kwargs):
+            if Path(path) == stale:
+                raise PermissionError("authored cleanup denial")
+            return rmtree(path, *args, **kwargs)
+        with mock.patch.object(P.shutil, "rmtree", side_effect=denied):
+            self.build()
+        self.assertTrue(stale.exists())
+        self.assertTrue(self.stamp().exists())
+        self.assertEqual(self.log.getvalue().count("kept staging directory"), 1)
+
+    def test_staging_sweep_leaves_other_entries_alone(self):
+        neighbour = self.staging("prompts-old", marked=True, old=True)
+        ordinary = self.out.parent / ".prompts-x"
+        ordinary.write_bytes(b"ordinary file")
+        nested = neighbour / ".prompts-nested"
+        nested.mkdir()
+        self.build()
+        self.assertEqual(ordinary.read_bytes(), b"ordinary file")
+        self.assertTrue((neighbour / "new" / "authored.bin").exists())
+        self.assertTrue(nested.exists())
+
+    def test_staging_sweep_never_follows_links(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        sentinel = outside / "keep"
+        sentinel.write_bytes(b"outside data")
+        (outside / ".owner").write_bytes(b"1")
+        link = self.out.parent / ".prompts-link"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest(f"cannot create a directory symlink: {e}")
+        with mock.patch.object(P, "prompt_owner", wraps=P.prompt_owner) as owner:
+            self.build()
+        self.assertTrue(all(call.args[0] != str(link) for call in owner.call_args_list))
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(sentinel.read_bytes(), b"outside data")
+
+    def test_windows_owner_lock_calls_and_denial(self):
+        folder = self.staging(".prompts-windows")
+        path = str(folder)
+        calls = []
+        def locking(fd, mode, count):
+            self.assertEqual(os.lseek(fd, 0, os.SEEK_CUR), 0)
+            calls.append((fd, mode, count))
+        windows = types.SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, locking=locking)
+        with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"):
+            with P.prompt_owner(path, create=True):
+                pass
+            with P.prompt_owner(path):
+                pass
+        self.assertEqual([(mode, count) for _, mode, count in calls], [(1, 1), (2, 1)])
+        for fd, _, _ in calls:
+            with self.assertRaises(OSError):
+                os.fstat(fd)   # handles close on exit, releasing their locks
+        windows.locking = mock.Mock(side_effect=OSError("authored Windows lock denial"))
+        with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"):
+            P.sweep_prompts(str(self.out))
+        self.assertTrue(folder.exists())
+        self.assertIn("authored Windows lock denial", self.log.getvalue())
 
     def test_every_file_input_kind(self):
         paths = list(dict.fromkeys(self.source_files + self.game_files + self.font_files))

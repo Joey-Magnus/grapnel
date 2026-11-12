@@ -214,6 +214,9 @@ directory and publishes only a complete set. A failed generator still removes th
 icons, as before. An interrupted builder can leave the old set without a stamp; the next build regenerates it.
 The files the game derives at run time are still cleared by every build, including a cache hit; they are not part of
 the stamp. If those files cannot be cleared, the build regenerates rather than trusting them.
+Before checking the cache, builds remove abandoned `.prompts-*` staging directories whose owner lock is free (legacy
+unmarked directories only after 24 hours), leave live, unreadable or linked entries alone, and warn rather than fail
+if cleanup cannot finish.
 
 #### A faster build for development
 
