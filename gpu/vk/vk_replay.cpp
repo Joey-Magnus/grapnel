@@ -4175,7 +4175,9 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         present_defer_into->swapchain_generation = dev.swapchain_generation;
         return;
     }
-    present_copy_done = f.done;
+    // (a copy whose submit failed signals neither its fence nor swap_rendered: its present is not handed to the presenter
+    // thread, which would wait 5 s for the fence; it stays on this thread, as before the presenter)
+    present_copy_done = res == VK_SUCCESS ? f.done : VK_NULL_HANDLE;
     present_out(index, qk);
     present_copy_done = VK_NULL_HANDLE;
 }
@@ -4200,7 +4202,10 @@ static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     // (RX_VK_PRESENT_THREAD: below. Only the game's own presents made right after their copy, and never while Reflex numbers this
     // swapchain's presents: its ids and the presenter's would not go up together)
     if (present_copy_done && present_from_game && !pi.pNext && !reflex_owns_present_ids() && present_thread_on()) {
-        antilag_present();   // (AMD Anti-Lag 2: the frame's present stage, at the hand-off)
+        // (AMD Anti-Lag 2: the frame's present stage, at the hand-off and on this thread, a GPU tail earlier than the present
+        // itself: the stage carries the frame's index as it is now, and the presenter would race the next frame's input stage
+        // for it)
+        antilag_present();
         qk.unlock();
         present_hand_off(index, present_copy_done);
         return true;   // (taken as shown: only present_commit's presents, never handed over, read it)
@@ -4291,6 +4296,10 @@ void present_finish(VkResult res, bool on_presenter) {
 // - The presenter's waits end: the copy's fence for 5 s at most (then it presents all the same; swap_rendered orders it on the
 //   GPU), the present wait in 20 ms steps, and a device lost ends either. So the waits for the presenter have no limit of their own.
 // - Off on Windows unless asked for: nothing was run there.
+// - Known limits. vkQueuePresentKHR itself has no time limit: a driver that holds a present for good (a hidden window under
+//   FIFO) holds the next present_image at its wait for the presenter, and a swapchain remake behind it, as the same present
+//   held the game's thread before. Nothing waits for the presenter at exit: the process ends with the device, as it does
+//   with the other threads' work.
 namespace {
 struct Presenter {
     std::mutex mu;
@@ -4394,9 +4403,8 @@ bool present_thread_on() {
     static const bool wanted = presenter_wanted();   // (vk_main.cpp: on by default on Linux)
     // (a queue of its own that presents to this surface: vk_main.cpp; a new surface checks again)
     const bool on = wanted && dev.presenter_queue && dev.presenter_supported;
-    static int told = -1;
-    if (told != (int)on) {
-        told = on;
+    static std::atomic<int> told{-1};   // (said when it changes; the game's thread and frame generation's display thread ask)
+    if (told.exchange((int)on, std::memory_order_relaxed) != (int)on) {
         logf("vk: presenter thread: %s", on ? "each present made on a thread and queue of its own once its copy is done (RX_VK_PRESENT_THREAD=0: off)"
                                             : wanted ? "no queue of its own that presents to the window: presents on the game's thread"
                                                      : "off (RX_VK_PRESENT_THREAD=1: on)");
