@@ -15,6 +15,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "../gpu/vk/fallback_size_policy.h"   // (program_cache_save and _read note each stage's phis)
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -86,6 +88,7 @@ FILE* disk_out = nullptr;
 FILE* disk_idx = nullptr;
 std::mutex disk_mu;
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_records;
+std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_taken;   // (vk_shader.cpp: the records read in, for the prediction)
 std::atomic<int64_t> st_cache_hits{0};
 #define PROF_EXACT()   // (vk_prof.h's exact-timing scope, since #989: nothing to time here)
 #include "cache_functions.inc"
