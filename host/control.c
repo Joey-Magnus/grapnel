@@ -14,7 +14,7 @@
    (gpu/vk/vk_replay.cpp shot_ask), the Insert menu's settings through its own setter. The game never waits for the
    bridge: the controller's read takes one short lock that the bridge never holds over I/O.
 
-   Commands: status, press, stick, sequence, release, shot, wait, option_get, option_set, saves, teleport (OoT), subscribe,
+   Commands: status, press, stick, key, sequence, release, shot, wait, option_get, option_set, saves, teleport (OoT), subscribe,
    unsubscribe, quit, and guest memory (mem_read, mem_read_many, mem_write) when HOS_CONTROL_MEM allows it.
    Inputs are timed in frames, from the first controller read after the request. The state (intro, menu, loading,
    play) is a guess from the draws a frame, as test scripts made it from the log: ~2 draws at the intro, 15-70 in menus,
@@ -317,6 +317,7 @@ typedef struct {
     int group;       /* P_INPUT: its inputs */
     int wait, from_changes; int64_t target; char state[16], map[80];
     int token; char path[1100];   /* P_SHOT (its result: G.shots), P_MEM */
+    int window;     /* P_SHOT: of the window (shot_window) */
     int mem_slot;   /* P_MEM */
     int dest;       /* P_TELEPORT: the destination (token: the game's ticket) */
 } Pending;
@@ -327,6 +328,8 @@ typedef struct {
     int64_t at, frames, start;   /* start: -1 until the first controller read after the request */
     uint64_t buttons;
     int32_t stick[4];
+    uint8_t keys[8];   /* keyboard keys (Windows virtual-key codes), held as the player's: CTL_KEY_NAMES */
+    int nkeys, keys_pressed;   /* keys_pressed: the Insert menu was told of their press (at the start) */
 } Input;
 
 static const char *const STATES[] = {"boot", "intro", "menu", "loading", "play", "unknown"};
@@ -430,11 +433,19 @@ static void mem_service(void) {
 }
 
 /* ---- the controller's read (nn_hid.c read_input, the game's thread) ---- */
+/* (the keys held at this read: written and read on the game's thread only, so with no lock) */
+static uint8_t keys_now[256];
+static int keys_now_n;
+int hos_control_key_held(int vk) { return vk > 0 && vk < 256 && keys_now[vk]; }
+int hos_control_keys_held(void) { return keys_now_n; }
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) {
     if (!hos_control_on) return 0;
     if (G.mem_level) mem_service();
     const int64_t frame = G.game->frame();
-    int exclusive = 0;
+    int exclusive = 0, npressed = 0;
+    uint8_t pressed[CTL_INPUTS * 8];
+    memset(keys_now, 0, sizeof keys_now);
+    keys_now_n = 0;
     ctl_lock(&G.mu);
     for (int i = 0; i < CTL_INPUTS; i++) {
         Input *in = &G.inputs[i];
@@ -445,10 +456,18 @@ int hos_control_input(uint64_t *buttons, int32_t stick[4]) {
             *buttons |= in->buttons;
             for (int k = 0; k < 4; k++)
                 if (in->stick_set >> k & 1) stick[k] = in->stick[k];
+            for (int k = 0; k < in->nkeys; k++) {
+                if (!keys_now[in->keys[k]]) keys_now_n++;
+                keys_now[in->keys[k]] = 1;
+                if (!in->keys_pressed) pressed[npressed++] = in->keys[k];
+            }
+            in->keys_pressed = 1;
         }
         if (in->exclusive && frame < end) exclusive = 1;
     }
     ctl_unlock(&G.mu);
+    /* (the Insert menu takes a key as a press, once, where the player's key would be one: told after the lock) */
+    for (int i = 0; i < npressed && G.game->key_press; i++) G.game->key_press(pressed[i]);
     return exclusive;
 }
 
@@ -605,6 +624,55 @@ static const struct { const char *name; int bit, axis, dir; } NAMES[] = {
     {"LUP", -1, 1, 1}, {"LDOWN", -1, 1, -1}, {"LLEFT", -1, 0, -1}, {"LRIGHT", -1, 0, 1},
     {"RUP", -1, 3, 1}, {"RDOWN", -1, 3, -1}, {"RLEFT", -1, 2, -1}, {"RRIGHT", -1, 2, 1}};
 
+/* ---- keys: the keyboard's, by name, as Windows' virtual-key codes (what nn_hid.c's controls and the Insert menu read). A
+   letter or a digit is itself; F1 to F24 ---- */
+static const struct { const char *name; int vk; } CTL_KEY_NAMES[] = {
+    {"BACKSPACE", 0x08}, {"TAB", 0x09}, {"ENTER", 0x0D}, {"RETURN", 0x0D}, {"SHIFT", 0x10}, {"CTRL", 0x11},
+    {"CONTROL", 0x11}, {"ALT", 0x12}, {"PAUSE", 0x13}, {"CAPSLOCK", 0x14}, {"ESC", 0x1B}, {"ESCAPE", 0x1B},
+    {"SPACE", 0x20}, {"PAGEUP", 0x21}, {"PAGEDOWN", 0x22}, {"END", 0x23}, {"HOME", 0x24}, {"LEFT", 0x25},
+    {"UP", 0x26}, {"RIGHT", 0x27}, {"DOWN", 0x28}, {"INSERT", 0x2D}, {"INS", 0x2D}, {"DELETE", 0x2E}, {"DEL", 0x2E},
+    {"NUM0", 0x60}, {"NUM1", 0x61}, {"NUM2", 0x62}, {"NUM3", 0x63}, {"NUM4", 0x64}, {"NUM5", 0x65}, {"NUM6", 0x66},
+    {"NUM7", 0x67}, {"NUM8", 0x68}, {"NUM9", 0x69}, {"NUMMULTIPLY", 0x6A}, {"NUMPLUS", 0x6B}, {"NUMMINUS", 0x6D},
+    {"NUMDOT", 0x6E}, {"NUMDIVIDE", 0x6F}, {"LSHIFT", 0xA0}, {"RSHIFT", 0xA1}, {"LCTRL", 0xA2}, {"RCTRL", 0xA3},
+    {"LALT", 0xA4}, {"RALT", 0xA5}, {"SEMICOLON", 0xBA}, {"EQUALS", 0xBB}, {"COMMA", 0xBC}, {"MINUS", 0xBD},
+    {"PERIOD", 0xBE}, {"SLASH", 0xBF}, {"BACKQUOTE", 0xC0}, {"LBRACKET", 0xDB}, {"BACKSLASH", 0xDC}, {"RBRACKET", 0xDD},
+    {"QUOTE", 0xDE}};
+static int key_code(const char *t) {   /* (t: upper case) 0: not a key */
+    if (t[0] && !t[1] && ((t[0] >= 'A' && t[0] <= 'Z') || (t[0] >= '0' && t[0] <= '9'))) return t[0];
+    if (t[0] == 'F' && t[1] >= '1' && t[1] <= '9') {
+        char *e;
+        const long n = strtol(t + 1, &e, 10);
+        if (!*e && n >= 1 && n <= 24) return 0x70 + (int)n - 1;
+    }
+    for (unsigned i = 0; i < sizeof CTL_KEY_NAMES / sizeof *CTL_KEY_NAMES; i++)
+        if (!strcmp(t, CTL_KEY_NAMES[i].name)) return CTL_KEY_NAMES[i].vk;
+    return 0;
+}
+/* "Insert", "Up+Enter" (or "Up Enter") into in's keys: 0 with the bad name in err */
+static int key_names(Input *in, const char *s, char *err, size_t cap) {
+    while (*s) {
+        while (*s == '+' || *s == ' ') s++;
+        const size_t n = strcspn(s, "+ ");
+        if (!n) break;
+        char t[24];
+        int vk = 0;
+        if (n < sizeof t) {
+            for (size_t i = 0; i < n; i++) t[i] = (char)toupper((unsigned char)s[i]);
+            t[n] = 0;
+            vk = key_code(t);
+        }
+        if (!vk) { snprintf(err, cap, "not a key: %.*s", (int)(n < 40 ? n : 40), s); return 0; }
+        int known = 0;
+        for (int i = 0; i < in->nkeys; i++) known |= in->keys[i] == vk;
+        if (!known) {
+            if (in->nkeys >= (int)sizeof in->keys) { snprintf(err, cap, "more than %d keys at once", (int)sizeof in->keys); return 0; }
+            in->keys[in->nkeys++] = (uint8_t)vk;
+        }
+        s += n;
+    }
+    return 1;
+}
+
 /* One token of a button list into in: a button, a stick direction, or LX=/LY=/RX=/RY=<-32767..32767>. 0: not one */
 static int input_token(Input *in, const char *s, size_t n) {
     char t[24];
@@ -641,10 +709,20 @@ static int input_names(Input *in, const char *s, char *err, size_t cap) {
 }
 static int32_t axis_value(double v) { v = v < -1 ? -1 : v > 1 ? 1 : v; return (int32_t)lround(v * 32767); }
 
-/* One step of press, stick or sequence (its keys: buttons, frames, at, stick + x/y, lx ly rx ry) into in */
+/* One step of press, stick, key or sequence (its keys: buttons, keys, frames, at, stick + x/y, lx ly rx ry) into in */
 static int input_from(const JDoc *d, int obj, Input *in, int64_t default_frames, char *err, size_t cap) {
     memset(in, 0, sizeof *in);
     int bad = 0;
+    const JNode *k = j_get(d, obj, "keys");
+    if (!k) k = j_get(d, obj, "key");
+    if (k && k->type == J_STR && !key_names(in, k->s, err, cap)) return 0;
+    if (k && k->type == J_ARR)
+        for (int i = k->first; i >= 0; i = d->n[i].next)
+            if (d->n[i].type != J_STR || !key_names(in, d->n[i].s, err, cap)) {
+                if (!*err) snprintf(err, cap, "keys: a list of names");
+                return 0;
+            }
+    if (k && k->type != J_STR && k->type != J_ARR && k->type != J_NULL) return snprintf(err, cap, "keys: a name or a list of names"), 0;
     const JNode *b = j_get(d, obj, "buttons");
     if (!b) b = j_get(d, obj, "button");
     if (b && b->type == J_STR && !input_names(in, b->s, err, cap)) return 0;
@@ -673,7 +751,7 @@ static int input_from(const JDoc *d, int obj, Input *in, int64_t default_frames,
     if (bad) return snprintf(err, cap, "frames, at, x, y: numbers"), 0;
     if (in->frames < 1 || in->frames > 216000) return snprintf(err, cap, "frames: 1 to 216000"), 0;
     if (in->at < 0 || in->at > 216000) return snprintf(err, cap, "at: 0 to 216000 frames"), 0;
-    if (!in->buttons && !in->stick_set) return snprintf(err, cap, "nothing to press: buttons, or a stick"), 0;
+    if (!in->buttons && !in->stick_set && !in->nkeys) return snprintf(err, cap, "nothing to press: buttons, keys, or a stick"), 0;
     return 1;
 }
 /* HOS_INPUT_SCRIPT's syntax, "<at>:<button>[+<button>...][/<held>],...": frames, or with hos_units seconds and ms as there
@@ -732,7 +810,7 @@ static void inputs_drop(int group) {   /* (G.mu) */
         if (G.inputs[i].used && G.inputs[i].group == group) G.inputs[i].used = 0;
 }
 
-/* press, stick and sequence: steps queued for the controller's read; the reply when the last one is over (wait: false
+/* press, stick, key and sequence: steps queued for the controller's read; the reply when the last one is over (wait: false
    at once) */
 static void cmd_input(int ci, const JDoc *d, int req, const char *id, const char *cmd) {
     Conn *c = &G.conns[ci];
@@ -759,6 +837,8 @@ static void cmd_input(int ci, const JDoc *d, int req, const char *id, const char
             return reply_error(c, id, "bad_request", "stick: x and y, -1 to 1");
         if (!strcmp(cmd, "press") && !j_get(d, req, "buttons") && !j_get(d, req, "button"))
             return reply_error(c, id, "bad_request", "press: buttons");
+        if (!strcmp(cmd, "key") && !j_get(d, req, "keys") && !j_get(d, req, "key"))
+            return reply_error(c, id, "bad_request", "key: keys");
         n = input_from(d, req, &steps[0], 8, err, sizeof err) ? 1 : -1;
     }
     if (n < 0) return reply_error(c, id, "bad_request", "%s", err);
@@ -902,6 +982,13 @@ static void cmd_status(int ci, const char *id) {
         buf_printf(&b, ",\"game\":{\"event\":%s,\"loading\":%s,\"age\":\"%s\"}", G.oot_event ? "true" : "false",
                    G.oot_loading ? "true" : "false", G.oot_child ? "child" : "adult");
     else buf_puts(&b, ",\"game\":null");
+    float pos[3], yaw = 0;
+    int life = -1;
+    if (G.game->link && G.game->link(pos, &yaw, &life)) {   /* (Link: read here, on the bridge's thread, as kept for it) */
+        buf_printf(&b, ",\"link\":{\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"yaw\":%.1f,\"life\":", pos[0], pos[1], pos[2], yaw);
+        if (life >= 0) buf_printf(&b, "%d}", life);
+        else buf_puts(&b, "null}");
+    } else buf_puts(&b, ",\"link\":null");
     buf_puts(&b, ",\"version\":");
     buf_str(&b, G.game->version ? G.game->version : "unknown");
     const char *r = G.game->renderer ? G.game->renderer() : NULL;
@@ -1043,7 +1130,10 @@ static void cmd_shot(int ci, const JDoc *d, int req, const char *id) {
     const int64_t after = after_n && after_n->type == J_NUM ? whole(after_n->num) : G.frame;
     const int64_t deadline = deadline_arg(d, req, 30, &bad);
     if (bad) return reply_error(c, id, "bad_request", "timeout: seconds");
-    if (!G.game->shot) return reply_error(c, id, "unavailable", "no renderer that takes shots");
+    /* (window: the picture as the window shows it, with the Insert menu and the FPS counter over the game's) */
+    const int window = bool_arg(d, req, "window", 0);
+    int (*take)(const char *, int64_t, void (*)(void *, int64_t, int), void *) = window ? G.game->shot_window : G.game->shot;
+    if (!take) return reply_error(c, id, "unavailable", window ? "no renderer that takes window shots" : "no renderer that takes shots");
     Pending *p = pending_new(ci, id, P_SHOT);
     if (!p) return reply_error(c, id, "busy", "too many requests waiting");
     const int slot = (int)(p - G.pending);
@@ -1051,14 +1141,15 @@ static void cmd_shot(int ci, const JDoc *d, int req, const char *id) {
     p->token = ++G.next_token;
     G.shots[slot].token = p->token, G.shots[slot].done = 0;
     ctl_unlock(&G.mu);
-    p->deadline = deadline;
+    p->deadline = deadline, p->window = window;
     snprintf(p->path, sizeof p->path, "%s", full);
-    if (!G.game->shot(full, after, shot_done, (void *)(intptr_t)p->token)) {
+    if (!take(full, after, shot_done, (void *)(intptr_t)p->token)) {
         ctl_lock(&G.mu);
         G.shots[slot].token = 0;
         ctl_unlock(&G.mu);
         p->used = 0;
-        return reply_error(c, id, "unavailable", "the renderer takes no shot now (not started, no Vulkan, or too many waiting)");
+        return reply_error(c, id, "unavailable", window ? "the renderer takes no window shot now (not started, no Vulkan, headless: "
+                           "no window, or too many waiting)" : "the renderer takes no shot now (not started, no Vulkan, or too many waiting)");
     }
 }
 static int shot_finished(Pending *p, Conn *c, int64_t now) {
@@ -1070,6 +1161,9 @@ static int shot_finished(Pending *p, Conn *c, int64_t now) {
     ctl_unlock(&G.mu);
     if (!done && now < p->deadline) return 0;
     if (!done) reply_error(c, p->id, "timeout", "no present came in time");
+    else if (!ok && p->window)
+        reply_error(c, p->id, "failed", "no window shot to %s: no window (headless), the window's images cannot be read on this "
+                    "GPU, or the PNG could not be written (the game's log says which)", p->path);
     else if (!ok) reply_error(c, p->id, "failed", "the PNG could not be written to %s", p->path);
     else {
         Buf b = {0};
@@ -1726,7 +1820,8 @@ static void request(int ci, const char *line, size_t len) {
     const char *cmd = str_arg(&d, req, "cmd");
     if (!cmd) return reply_error(c, id, "bad_request", "no cmd");
     if (!strcmp(cmd, "status")) cmd_status(ci, id);
-    else if (!strcmp(cmd, "press") || !strcmp(cmd, "stick") || !strcmp(cmd, "sequence")) cmd_input(ci, &d, req, id, cmd);
+    else if (!strcmp(cmd, "press") || !strcmp(cmd, "stick") || !strcmp(cmd, "key") || !strcmp(cmd, "sequence"))
+        cmd_input(ci, &d, req, id, cmd);
     else if (!strcmp(cmd, "release")) cmd_release(ci, &d, req, id);
     else if (!strcmp(cmd, "saves")) cmd_saves(ci, id);
     else if (!strcmp(cmd, "teleport")) cmd_teleport(ci, &d, req, id);
@@ -2225,6 +2320,9 @@ extern volatile int64_t hos_present_count;   /* (display.c, posix/display_sdl.c:
 const char *rx_describe(void);
 int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *height);
 int rx_control_shot(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
+int rx_control_shot_window(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
+void hos_bridge_key_press(unsigned key);   /* (rx_backend.c: the Insert menu's MkwVkHost.take_bridge_key) */
+static void game_key_press(int vk) { hos_bridge_key_press((unsigned)vk); }
 int rx_control_setting(int index, HosControlSetting *out);   /* (rx_backend.c: MkwVkSetting's fields) */
 int rx_control_setting_set(const char *key, int value, HosControlSetting *out);
 int hos_mem_region(uint64_t addr, uint64_t size);           /* (hos_mem.c) */
@@ -2262,13 +2360,15 @@ int hos_oot_teleport_ask(int index);
 int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted);
 void hos_oot_teleport_cancel(int ticket);
 int hos_oot_state(int *event, int *loading, int *child);
+int hos_oot_link(float pos[3], float *yaw, int *life);
 static HosControlGame game = {
-    .frame = game_frame, .frame_info = rx_control_frame_info, .shot = rx_control_shot, .setting = rx_control_setting,
+    .frame = game_frame, .frame_info = rx_control_frame_info, .shot = rx_control_shot,
+    .shot_window = rx_control_shot_window, .key_press = game_key_press, .setting = rx_control_setting,
     .setting_set = rx_control_setting_set, .mem_region = game_mem_region, .mem_read = game_mem_read,
     .mem_write = game_mem_write, .save_root = game_save_root, .log = game_log, .quit = game_quit,
     .renderer = game_renderer, .map = hos_oot_current_map, .destination = hos_oot_destination,
     .teleport = hos_oot_teleport_ask, .teleport_result = hos_oot_teleport_result,
-    .teleport_cancel = hos_oot_teleport_cancel, .oot_state = hos_oot_state};
+    .teleport_cancel = hos_oot_teleport_cancel, .oot_state = hos_oot_state, .link = hos_oot_link};
 
 void hos_control_start(const char *version) {
     const char *path = getenv("HOS_CONTROL");

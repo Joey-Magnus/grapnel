@@ -105,7 +105,7 @@ replies are out. (Linux; a Windows pipe has no half-close.)
 | `forbidden` | a memory command while `HOS_CONTROL_MEM` does not allow it |
 | `out_of_range` | a memory address or range outside mapped guest memory |
 | `not_found` | no such setting |
-| `failed` | a shot could not be written |
+| `failed` | a shot could not be written (a window shot: also no readable window image) |
 | `refused` | the game turned a teleport down (an event playing, a map loading, ...); the message says why |
 | `cancelled` | a press that was waited on was let go by `release`, or a teleport was replaced by a later one |
 
@@ -122,6 +122,17 @@ Buttons use the names `HOS_INPUT_SCRIPT` uses: `A B X Y L R ZL ZR PLUS MINUS LS 
 directions are `LUP LDOWN LLEFT LRIGHT RUP RDOWN RLEFT RRIGHT`, and `LX= LY= RX= RY=` set an axis from -32767 to 32767
 (positive y is up). Names are given as `"A+B"` or `["A", "B"]`.
 
+Keys (`keys`, in `key` and in a `sequence`'s steps) are the keyboard's, held as the player's own: the controls bound to
+them in the Insert menu's Controls page (the left stick's and the camera's keys too, and the ocarina's notes), and the
+Insert menu, which takes the start of each as a press of that key. Unlike the player's keyboard they count with the
+window behind another one, so a test can open the menu and play on while the player works in another window; the
+player's own keys count only with the game's window in front. A letter or a digit is itself (`W`, `1`), `F1` to `F24`,
+and `Insert Delete Home End PageUp PageDown Up Down Left Right Enter Esc Tab Space Backspace Shift Ctrl Alt LShift RShift
+LCtrl RCtrl LAlt RAlt CapsLock Pause Num0`-`Num9` `NumPlus NumMinus NumMultiply NumDivide NumDot Minus Equals Comma
+Period Slash Semicolon Quote Backquote LBracket RBracket Backslash`, any case; up to 8 at once. While the Insert menu is
+open the game gets no keys, as with the player's. An exclusive input keeps the player's keys out, not the bridge's
+(no ocarina notes then).
+
 The reply comes once the input is over, with the frames it covered: `{"start": 5400, "end": 5408}` (`end` is the first
 frame without it). With `"wait": false` the reply is immediate: `{"queued": 1, "frames": 8}`.
 
@@ -135,9 +146,15 @@ version.
 > {"id":1,"cmd":"status"}
 < {"id":1,"ok":true,"frame":5321,"protocol":1,"fps":59.8,"state":"play","stalled":false,"draws":2410.3,"replayed":5320,
    "window":{"width":1280,"height":720},"uptime":95.2,"clients":1,"input":{"queued":0,"exclusive":false},
-   "map":"KokiriForest_Child","game":{"event":false,"loading":false,"age":"child"},"version":"1.4.0-abc123",
-   "renderer":"Vulkan: ..."}
+   "map":"KokiriForest_Child","game":{"event":false,"loading":false,"age":"child"},
+   "link":{"x":-20.50,"y":105.04,"z":-0.17,"yaw":-94.0,"life":6},"version":"1.4.0-abc123","renderer":"Vulkan: ..."}
 ```
+
+`link` (OoT) is Link as his last update left him: his position in the map's units (`x`, `y` up, `z`), the way he faces
+in degrees (`yaw`, -180 to 180) and his life in quarter hearts (`life`: 6 is a heart and a half; `null` when it could
+not be read). It is read on the game's thread each frame he is updated, so it is `null` at the title, in the game's own
+menus and while a map loads (not updated for a second). A script can check where a walk took him, or stop a walk
+that costs him life, without reading guest memory.
 
 `map` is the game's own name for the map (`Sequence_CurrentBanc`), read on the game's thread with the player's update
 every 250 ms: the last one known, so it stays through loads and menus, and it is `null` until Link was first seen. `game`
@@ -183,6 +200,14 @@ step's end.
 > {"id":6,"cmd":"sequence","steps":[{"at":0,"buttons":"ZL","frames":30},{"at":10,"lx":-1,"frames":20}]}
 ```
 
+**key**: `keys` held for `frames` (default 8) from `at`, as `press` holds buttons, with `exclusive` and `wait` as there.
+
+```
+> {"id":4,"cmd":"key","keys":"Insert","frames":2}
+< {"id":4,"ok":true,"frame":5420,"start":5412,"end":5414}
+> {"id":5,"cmd":"sequence","steps":[{"keys":"Down","frames":2},{"at":10,"keys":"Enter","frames":2}]}
+```
+
 **release**: the caller's queued inputs are let go, and those that clients which have gone left behind (sent with
 `"wait": false`): `{"released": 3, "all": false}`. Another connected client's inputs stay. With `"all": true`, every
 client's. Presses that were waited on reply `cancelled`.
@@ -198,6 +223,18 @@ path in the reply is complete. The `timeout` default is 30 s. Shots need the Vul
 ```
 > {"id":7,"cmd":"shot","path":"/tmp/run/kokiri.png"}
 < {"id":7,"ok":true,"frame":5440,"present":5432,"path":"/tmp/run/kokiri.png","width":1280,"height":720}
+```
+
+With `"window": true` the shot is the window as the player sees it, at the window's size: the Insert menu and the FPS
+counter over the picture, the letterboxing too, and a frame that frame generation made when it is the one shown. It is
+copied as the window's image is presented and read back a few frames later, so the game never waits for it, also with
+the window behind another one (not while it is minimized: Windows then shows no frames). It needs a window (not
+`HOS_HEADLESS`: `unavailable`) whose images can be read back (`failed` otherwise, with the reason in the game's log).
+With HDR on, the PNG holds the window's 10-bit or 16-bit values cut to 8 bits, without tone mapping.
+
+```
+> {"id":8,"cmd":"shot","path":"menu.png","window":true}
+< {"id":8,"ok":true,"frame":5452,"present":5450,"path":"...\\menu.png","width":3440,"height":1440}
 ```
 
 **wait**: `event`, plus a `timeout` in seconds (default 60). The reply has the state and the frames waited:
@@ -389,6 +426,10 @@ python -I scripts/hookshot_ctl.py press A --frames 8
 python -I scripts/hookshot_ctl.py sequence '0:A/8,60:A/8'
 python -I scripts/hookshot_ctl.py sequence '0:LUP/2000,2:A' --hos       # HOS_INPUT_LIVE's line, as it is
 python -I scripts/hookshot_ctl.py shot out.png
+python -I scripts/hookshot_ctl.py key Insert --frames 2                 # the Insert menu, open
+python -I scripts/hookshot_ctl.py key Down --frames 2
+python -I scripts/hookshot_ctl.py shot menu.png --window                # the window, the menu and the FPS counter on it
+python -I scripts/hookshot_ctl.py key Esc --frames 2
 python -I scripts/hookshot_ctl.py option get
 python -I scripts/hookshot_ctl.py option set text_speed 3
 python -I scripts/hookshot_ctl.py teleport                              # the destinations

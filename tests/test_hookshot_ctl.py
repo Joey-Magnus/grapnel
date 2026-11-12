@@ -86,7 +86,7 @@ def serve(f):
         r = {"id": rid, "ok": True, "frame": frame[0]}
         if cmd == "status":
             r.update(protocol=1, fps=59.9, state="play", draws=2400.0, window={"width": 1280, "height": 720}, version="fake",
-                     map="KokiriForest_Child")
+                     map="KokiriForest_Child", link={"x": 1.5, "y": -2.0, "z": 300.0, "yaw": -90.0, "life": 12})
         elif cmd == "teleport":
             if req.get("to") is None:
                 r.update(destinations=[{"index": 0, "child": "KokiriForest_Child", "adult": "KokiriForest_Adult"},
@@ -99,7 +99,7 @@ def serve(f):
                 r.update(sent=None if req.get("wait") is False else True)
                 if r["sent"]:
                     r.update(map="GerudoFortress_Adult", accepted=req.get("to") != "gerudofortress_adult")
-        elif cmd in ("press", "stick", "sequence"):
+        elif cmd in ("press", "stick", "key", "sequence"):
             r.update(start=frame[0], end=frame[0] + req.get("frames", 8))
         elif cmd == "shot":
             r.update(present=frame[0] + 1, path=req.get("path") or "/run/shots/shot_0001.png")
@@ -228,7 +228,8 @@ class HookshotCtl(unittest.TestCase):
 
     def test_status(self):
         r = ctl("status", env=self.env, check=0)
-        self.assertRegex(r.stdout, r"^frame \d+  fps 59\.9  state play  draws 2400  window 1280x720  map KokiriForest_Child  fake")
+        self.assertRegex(r.stdout, r"^frame \d+  fps 59\.9  state play  draws 2400  window 1280x720  map KokiriForest_Child"
+                                   r"  link 1\.5 -2\.0 300\.0  yaw -90  life 12  fake")
         r = ctl("--sock", self.sock, "--json", "status", check=0)
         self.assertEqual(json.loads(r.stdout)["state"], "play")
 
@@ -240,6 +241,11 @@ class HookshotCtl(unittest.TestCase):
         ctl("stick", "l", "0", "1", "--frames", "60", env=self.env, check=0)
         req = self.last("stick")
         self.assertEqual((req["stick"], req["x"], req["y"], req["frames"]), ("L", 0.0, 1.0, 60))
+        r = ctl("key", "Insert+Up", "--frames", "2", env=self.env, check=0)
+        self.assertRegex(r.stdout, r"^frames \d+ to \d+")
+        req = self.last("key")
+        self.assertEqual((req["keys"], req["frames"]), ("Insert+Up", 2))
+        self.assertNotIn("exclusive", req)
         ctl("sequence", "0:A/8,60:A/8", env=self.env, check=0)
         self.assertEqual(self.last("sequence")["script"], "0:A/8,60:A/8")
         self.assertNotIn("units", self.last("sequence"))
@@ -283,6 +289,9 @@ class HookshotCtl(unittest.TestCase):
         ctl("shot", "--after", "500", env=self.env, check=0)
         self.assertNotIn("path", self.last("shot"))
         self.assertEqual(self.last("shot")["after"], 500)
+        self.assertNotIn("window", self.last("shot"))
+        ctl("shot", "menu.png", "--window", env=self.env, check=0)
+        self.assertIs(self.last("shot")["window"], True)
 
     def test_wait_and_errors(self):
         r = ctl("wait", "in_play", "--timeout", "120", env=self.env, check=0)

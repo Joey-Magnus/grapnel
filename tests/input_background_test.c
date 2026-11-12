@@ -47,6 +47,9 @@ static long long logged_origin;
 volatile int64_t hos_hid_last_read;
 volatile int hos_nvn_sync_log_on;
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }   /* (host/control.c: off) */
+static int bridge_vk[2];   /* (the control bridge's keys held: its key command; none outside the bridge-keys cases) */
+int hos_control_key_held(int vk) { return vk > 0 && (vk == bridge_vk[0] || vk == bridge_vk[1]); }
+int hos_control_keys_held(void) { return (bridge_vk[0] != 0) + (bridge_vk[1] != 0); }
 static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + address; }
 #define GP(a) at(a)
 #define G32(a) (*(uint32_t *)at(a))
@@ -203,6 +206,23 @@ int main(int argc, char **argv) {
     CHECK(!pads_in_background("0", 1));    /* HOS_INPUT_BACKGROUND=0 wins over the menu */
     memory = calloc(512, 1); CHECK(memory);
     const char *name = argv[1];
+    if (!strcmp(name, "bridge-keys-background") || !strcmp(name, "bridge-keys-foreground")) {
+        /* the control bridge's keys: P (X) and D (the left stick right) behind another window count, where the player's own
+           keyboard is never read (GetAsyncKeyState says P and D are down: a key held in another program); in front, the
+           player's keys and the bridge's both, by the same bindings */
+        front = !strcmp(name, "bridge-keys-foreground");
+        packet(front ? (1ULL << B_X) | (1ULL << B_B) : 0, front ? 32767 : 0, 0, front ? 8000 : 0);   /* (no bridge keys yet) */
+        const int queried = key_queries;
+        bridge_vk[0] = 'P', bridge_vk[1] = 'D';
+        packet((1ULL << B_X) | (front ? 1ULL << B_B : 0), 32767, 0, front ? 8000 : 0);
+        if (!front) CHECK(key_queries == 0 && queried == 0 && pad_merges == 0 && mouse_queries == 0);
+        else CHECK(key_queries > queried);
+        bridge_vk[0] = bridge_vk[1] = 0;
+        packet(front ? (1ULL << B_X) | (1ULL << B_B) : 0, front ? 32767 : 0, 0, front ? 8000 : 0);
+        printf("PASS: actual control bridge keys %s\n", name);
+        free(memory);
+        return 0;
+    }
     if (!strcmp(name, "frame-hold") || !strcmp(name, "live-frame") || !strcmp(name, "reuse-frame") ||
         !strcmp(name, "wall") || !strcmp(name, "zero") || !strcmp(name, "empty")) {
         frame_clock_case(name);

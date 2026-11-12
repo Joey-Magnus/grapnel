@@ -27,7 +27,8 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("foreground", "script-background", "headless", "noactivate", "live-background",
          "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off",
-         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty")
+         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty", "bridge-keys-background",
+         "bridge-keys-foreground")
 
 
 def block(text, marker):
@@ -50,12 +51,15 @@ def main():
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
 
     read = block(hid, "static void read_input(")
-    behind = read[read.index("if (!game_in_front()"):]   # (with or without PR 545's scripted-background test)
+    behind = read[read.index("if (!front && !scripted_background)"):]
     behind = behind[:behind.index("return;") + len("return;")]
     if "pads_in_background(" not in behind or "pads_read(" not in behind:
         raise SystemExit("behind another window the pads are never read")
-    if "key(" in behind or "mouse" in behind:
+    # (the control bridge's keys do count there, bridge_keys: never the player's keyboard, which real_keys keeps out)
+    if "key(" in behind or "mouse" in behind or "bound_down(" in behind:
         raise SystemExit("behind another window the keyboard or mouse would reach the game")
+    if "real_keys = front || scripted_background;" not in read:
+        raise SystemExit("the player's keyboard is read behind other windows")
     option = replay[replay.index("t.option = "):]
     option = option[:option.index("};") + 2]
     if "id == 4 ? opts.pad_background" not in option:
@@ -90,14 +94,16 @@ static void host_stick_read(int32_t stick[4]) { (void)stick; }
 static void host_drag_read(int32_t stick[4]) { (void)stick; }
 static void player_used(void) {}
 """
-    actual = "\n".join((cheat_state, cheat_spies, host_spies, block(hid, "static int key("), block(hid, "static int kmap_down("),
+    actual = "\n".join((cheat_state, cheat_spies, host_spies, re.search(r"^static int real_keys = 1;", hid, re.M).group(0),
+        block(hid, "static int key("), block(hid, "static int kmap_down("),
         block(hid, "static int game_in_front("), hid[start:end], block(hid, "static void stick_max("),
         block(hid, "static int pads_in_background("),
         # (the bound keys' helpers read_input calls: a mouse button counts only while the mouse is captured)
         block(hid, "static int mouse_vk_slot("), re.search(r"^static int mouse_armed\[5\];", hid, re.M).group(0),
         block(hid, "static void mouse_buttons_arm("), block(hid, "static int bound_down("),
         block(hid, "static void oc_notes("), block(hid, "static uint64_t oc_pad_word("),
-        block(hid, "static int flight_jump_shortcut("), read, block(hid, "static void npad_states(")))
+        block(hid, "static int flight_jump_shortcut("), block(hid, "static void bridge_keys("), read,
+        block(hid, "static void npad_states(")))
     glue = (ROOT / "host/mkw_glue.c").read_text(encoding="utf-8")
     actual += "\n" + "\n".join(block(glue, "uint64_t " + name + "(")
                                   for name in ("hos_title_input", "hos_frame_step_buttons"))
@@ -124,7 +130,8 @@ static void player_used(void) {}
              "-I" + str(folder), str(ROOT / "tests/input_background_test.c"), "-o", str(exe)])
         for case in ((a.case,) if a.case else CASES):
             case_env = dict(env)
-            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame"):
+            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame",
+                            "bridge-keys-background", "bridge-keys-foreground"):
                 case_env["HOS_INPUT_SCRIPT"] = "0:A+LUP/200"
             if case in ("frame-hold", "live-frame", "reuse-frame"):
                 case_env["HOS_INPUT_FRAME_CLOCK"] = "1"

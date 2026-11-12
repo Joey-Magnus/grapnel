@@ -84,6 +84,7 @@ struct Device {
     uint64_t swapchain_generation = 0;   // (under the presentation lock)
     VkFormat swap_format = VK_FORMAT_UNDEFINED;
     VkExtent2D swap_extent{};
+    VkImageUsageFlags swap_usage = 0;   // (hookshot) its images' usage: TRANSFER_SRC when the surface lets them be read (shot_window)
     std::vector<VkImage> swap_images;
     // (hookshot) how many of its images may be held acquired at once with no acquire timeout: the count less the surface's
     // minImageCount (the Vulkan spec's limit). vk_framegen.cpp's present ahead holds two

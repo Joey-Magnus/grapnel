@@ -1203,6 +1203,33 @@ static float oot_load_float(Ctx *c, uint64_t addr) {
     return value;
 }
 
+/* (hookshot) Link for the control bridge's status (host/control.c): where he is (his movement actor's position, +796, as the
+   flight reads it), which way he faces (its rotation's forward, +816 and +840, as the flight's yaw: degrees here) and his life
+   (the word the hearts' protection guards, nx2/oot_patches.py patch_life: quarter hearts), as his last update left them
+   (hos_oot_lift_player, each frame he is updated). Kept with the time: the bridge says nothing once he has not been updated for
+   a second (the title, menus, a load) */
+static SRWLOCK oot_link_lock = SRWLOCK_INIT;
+static struct { float pos[3], yaw; int life; int64_t at; } oot_link;
+static void oot_link_note(Ctx *c, uint64_t actor, uint64_t player) {
+    float pos[3];
+    for (unsigned i = 0; i < 3; i++) pos[i] = oot_load_float(c, actor + 796 + i * 4);
+    const float yaw = atan2f(oot_load_float(c, actor + 816), oot_load_float(c, actor + 840)) * 57.2957795f;
+    const uint64_t life_at = recomp_load64(c, player + 7184);
+    const int life = life_at >= HOS_HEAP_BASE ? (int)recomp_load32(c, life_at + 8) : -1;
+    AcquireSRWLockExclusive(&oot_link_lock);
+    memcpy(oot_link.pos, pos, sizeof pos);
+    oot_link.yaw = yaw, oot_link.life = life, oot_link.at = hos_now_ns();
+    ReleaseSRWLockExclusive(&oot_link_lock);
+}
+/* Link as last updated, if within the last second: 0 otherwise. life: -1 when it could not be read */
+int hos_oot_link(float pos[3], float *yaw, int *life) {
+    AcquireSRWLockShared(&oot_link_lock);
+    const int fresh = oot_link.at && hos_now_ns() - oot_link.at < 1000000000LL;
+    if (fresh) memcpy(pos, oot_link.pos, sizeof oot_link.pos), *yaw = oot_link.yaw, *life = oot_link.life;
+    ReleaseSRWLockShared(&oot_link_lock);
+    return fresh;
+}
+
 static _Thread_local uint64_t flight_transform_controller;
 static _Thread_local uint64_t flight_pose_actor;
 static _Thread_local float flight_transform_yaw;
@@ -1433,6 +1460,7 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
     const uint64_t movement = components ? recomp_load64(c, components + 800) : 0;
     if (movement < HOS_HEAP_BASE + 0x1d50 || recomp_load64(c, movement + 24) != actor ||
         !hos_oot_is_player(c, movement - 0x1d50)) return;
+    oot_link_note(c, actor, movement - 0x1d50);   /* (the control bridge's status) */
 
     // Link can be updated by different guest workers on successive frames.
     static SRWLOCK cheats_lock = SRWLOCK_INIT;

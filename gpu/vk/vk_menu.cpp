@@ -4107,10 +4107,12 @@ void menu_tick() {
     for (int i = 0; i < K_N; i++) {
         const bool down = mine && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;
         const bool queued = host && host->take_key_press && host->take_key_press(keys[i]);
+        // (the control bridge's key command, host/control.c: a press of the player's key, also behind other windows)
+        const bool bridge = host && host->take_bridge_key && host->take_bridge_key(keys[i]);
         // Read both keys even if one is disabled, so old presses cannot toggle the menu after a change.
         // (F1 always opens the menu; Menu shortcut's F1 only leaves Insert to an overlay)
         const bool enabled = keys[i] != VK_INSERT || opts.menu_shortcut != 1;   // (Insert: all but F1 only)
-        press[i] = enabled && (host && host->take_key_press ? mine && queued : down && !held[i]);
+        press[i] = enabled && ((host && host->take_key_press ? mine && queued : down && !held[i]) || bridge);
         held[i] = down;
         if (press[i]) pad_last = false;   // (the keys: their names in the prompts)
     }

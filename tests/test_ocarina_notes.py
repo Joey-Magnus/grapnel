@@ -75,6 +75,7 @@ static void ReleaseSRWLockShared(SRWLOCK *p) { (void)p; }
 static LONG InterlockedCompareExchange(volatile LONG *p, LONG v, LONG c) { LONG o = *p; if (o == c) *p = v; return o; }
 static void Sleep(int ms) { (void)ms; }
 static void hos_log(const char *f, ...) { (void)f; }
+static int hos_control_keys_held(void) { return 0; }   /* (host/control.c: the bridge's keys, none here) */
 static int64_t oc_now = 0;
 static int64_t hos_now_ns(void) { return oc_now; }
 static const char *ini_dir;

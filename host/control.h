@@ -14,6 +14,10 @@ void hos_control_start(const char *version);
 /* nn_hid.c, each read of the controller: the bridge's presses added to buttons and stick. 1 while one of them asked for
    the player's own devices to be left out (exclusive) */
 int hos_control_input(uint64_t *buttons, int32_t stick[4]);
+/* nn_hid.c, during that read (the game's thread): whether the bridge holds the key (a Windows virtual-key code) at this
+   read, and how many keys it holds. The bridge's keys count as the player's keyboard, also behind other windows */
+int hos_control_key_held(int vk);
+int hos_control_keys_held(void);
 /* hos_thread.c, each log line: for the clients that subscribed to log lines */
 void hos_control_log(const char *line);
 extern volatile int hos_control_on;
@@ -32,6 +36,11 @@ typedef struct HosControlGame {
     int (*frame_info)(int64_t *replayed, int64_t *draws, int *width, int *height);
     /* a PNG of the first present after `after`; done(ctx, present, ok) from any thread. 0: not taken */
     int (*shot)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
+    /* the same, of the window as the player sees it: the Insert menu and the FPS counter over the picture (NULL: none) */
+    int (*shot_window)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
+    /* a key the bridge pressed, for the Insert menu (a Windows virtual-key code; NULL: none). On the game's thread, as the
+       press starts */
+    void (*key_press)(int vk);
     int (*setting)(int index, HosControlSetting *out);   /* the index-th settings row, to list them: 0 past the last */
     /* the row whose hookshot_options.ini key is key set to value as the menu sets it, out the row after it: 1 set, 0 no such
        row, -1 nothing to choose on this PC, -2 no step of a list row reaches value here, left as it was (out the row as it
@@ -64,6 +73,9 @@ typedef struct HosControlGame {
     void (*teleport_cancel)(int ticket);
     /* (OoT) with the map: an event playing (a cutscene, a map change's), a map loading, Link the child. 0 before any */
     int (*oot_state)(int *event, int *loading, int *child);
+    /* (OoT) Link as his last update left him, within the last second: his position, the way he faces (degrees) and his life (quarter
+       hearts; -1 not read). 0 when he has not been updated for a second (the title, menus, a load) or NULL: none */
+    int (*link)(float pos[3], float *yaw, int *life);
 } HosControlGame;
 
 /* Listens on path and serves on a thread of its own. 0 when it could not (logged) */

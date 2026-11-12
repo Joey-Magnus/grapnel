@@ -168,6 +168,14 @@ int hos_vk_take_key_press(int key) {
 #else
 #define host_take_key_press NULL
 #endif
+/* (the control bridge's key presses for the Insert menu: host/control.c, on every system) */
+static unsigned char bridge_key_press[256];
+void hos_bridge_key_press(unsigned key) {
+    if (key < sizeof bridge_key_press) __atomic_store_n(&bridge_key_press[key], 1, __ATOMIC_RELAXED);
+}
+static int host_take_bridge_key(int key) {
+    return (unsigned)key < sizeof bridge_key_press && __atomic_exchange_n(&bridge_key_press[key], 0, __ATOMIC_RELAXED);
+}
 
 /* (hookshot) the FPS counter's Breakdown: this thread's sleeps so far (host/hos_thread.c) */
 extern _Thread_local int64_t hos_slept_ns[2];
@@ -186,7 +194,7 @@ static const MkwVkHost vk_host = {
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_collect_in, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
-    host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts,
+    host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts, host_take_bridge_key,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -474,6 +482,9 @@ int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *he
 }
 int rx_control_shot(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx) {
     return vk && vk->shot ? vk->shot(path, after, done, ctx) : 0;
+}
+int rx_control_shot_window(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx) {
+    return vk && vk->shot_window ? vk->shot_window(path, after, done, ctx) : 0;
 }
 #define CTL_SAME(f) (sizeof ((HosControlSetting *)0)->f == sizeof ((MkwVkSetting *)0)->f)
 _Static_assert(CTL_SAME(key) && CTL_SAME(name) && CTL_SAME(text) && CTL_SAME(tab), "control.h and vk_api.h: one setting");

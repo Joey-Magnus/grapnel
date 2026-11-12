@@ -5,12 +5,16 @@ steer it and read its state from a shell, a test or a coding agent. Standard lib
 
     launch GAME_DIR [--data DIR] [--headless]   start the game with the bridge on; prints the socket's path
            [--save FOLDER [--slot NN]]          a copy of a save folder (one slot of it) as the run's saves
-    status                                      frame, fps, draws a frame, state, window, version
+    status                                      frame, fps, draws a frame, state, window, map, (OoT) where Link is, his yaw
+                                                and life (quarter hearts), version
     press A+B [--frames 8] [--exclusive]        buttons held for some frames (the reply once they are let go)
     stick L 0 1 [--frames 60]                   a stick at x, y (-1 to 1)
+    key Insert / key Up+Enter [--frames 8]      keyboard keys, as the player's (also behind other windows): the Insert menu,
+                                                the controls bound to them
     sequence '0:A/8,60:A/8' [--hos]             steps, <at>:<buttons>[/<frames held>] (--hos: HOS_INPUT_SCRIPT's s and ms)
     release [--all]                             this client's queued inputs let go (and those of clients gone)
-    shot [out.png] [--after FRAME]              a PNG of the next present; prints its path
+    shot [out.png] [--after FRAME] [--window]   a PNG of the next present; prints its path (--window: as the window shows
+                                                it, the Insert menu and the FPS counter on it)
     wait in_play [--timeout 120]                also: present --frames N, frame --frame N, state --state S,
                                                 loading_start, loading_end, change, map [--map NAME]
     teleport [INDEX|MAP] [--arrive SECS]        (OoT) the debug teleport: sent or refused; none: the destinations
@@ -134,7 +138,7 @@ class Bridge:
         if timeout is not None:
             req["timeout"] = timeout
         self.send(req)
-        wait = (timeout if timeout is not None else 3600 if cmd in ("press", "stick", "sequence") else 60) + 10
+        wait = (timeout if timeout is not None else 3600 if cmd in ("press", "stick", "key", "sequence") else 60) + 10
         while True:
             msg = self.line(wait)
             if msg is None:
@@ -260,15 +264,20 @@ def run(a):
             win = r.get("window") or {}
             g = r.get("game") or {}
             flags = " ".join(n for n, on in (("event", g.get("event")), ("loading", g.get("loading"))) if on)
-            show(a, r, lambda r: "frame %d  fps %.1f  state %s  draws %s  window %s  map %s%s  %s" % (
+            link = r.get("link")
+            show(a, r, lambda r: "frame %d  fps %.1f  state %s  draws %s  window %s  map %s%s%s  %s" % (
                 r["frame"], r["fps"], r["state"], "-" if r.get("draws") is None else "%.0f" % r["draws"],
                 "%dx%d" % (win["width"], win["height"]) if win else "-", plain_text(r.get("map") or "-"),
                 " (%s%s)" % (plain_text(g.get("age", "?")), ", " + flags if flags else "") if g else "",
+                "  link %.1f %.1f %.1f  yaw %.0f  life %s" % (link["x"], link["y"], link["z"], link["yaw"],
+                                                            "-" if link.get("life") is None else link["life"]) if link else "",
                 plain_text(r.get("version", ""))))
-        elif a.command in ("press", "stick", "sequence"):
+        elif a.command in ("press", "stick", "key", "sequence"):
             args = {"exclusive": True if a.exclusive else None, "wait": False if a.no_wait else None}
             if a.command == "press":
                 args.update(buttons=a.buttons, frames=a.frames, at=a.at)
+            elif a.command == "key":
+                args.update(keys=a.keys, frames=a.frames, at=a.at)
             elif a.command == "stick":
                 args.update(stick=a.which.upper(), x=a.x, y=a.y, frames=a.frames, at=a.at)
             else:
@@ -281,7 +290,7 @@ def run(a):
                  lambda r: "released %d%s" % (r["released"], " (every client's)" if a.all else ""))
         elif a.command == "shot":
             path = os.path.abspath(a.path) if a.path else None   # (the bridge would take it as the socket folder's)
-            r = check(b.request("shot", timeout=a.timeout, path=path, after=a.after))
+            r = check(b.request("shot", timeout=a.timeout, path=path, after=a.after, window=True if a.window else None))
             show(a, r, lambda r: r["path"])
         elif a.command == "wait":
             r = check(b.request("wait", timeout=a.timeout, event=a.event, frames=a.frames, frame=a.frame, state=a.state,
@@ -530,6 +539,9 @@ def main(argv=None):
     q = sub.add_parser("press")
     q.add_argument("buttons", help="A, A+B, ZL+LUP, LX=-16000 ...")
     inputs(q)
+    q = sub.add_parser("key", help="keyboard keys held as the player's: the controls bound to them, and the Insert menu")
+    q.add_argument("keys", help="Insert, Up+Enter, W, F1, Esc, Space, LShift ... (docs/control.md: the names)")
+    inputs(q)
     q = sub.add_parser("stick")
     q.add_argument("which", choices=["L", "R", "l", "r"])
     q.add_argument("x", type=float)
@@ -546,6 +558,8 @@ def main(argv=None):
     q = sub.add_parser("shot")
     q.add_argument("path", nargs="?")
     q.add_argument("--after", type=int, help="the first present after this frame")
+    q.add_argument("--window", action="store_true",
+                   help="the window as the player sees it: the Insert menu and the FPS counter on it, at the window's size")
     q.add_argument("--timeout", type=float)
     q = sub.add_parser("wait")
     q.add_argument("event", choices=["present", "frame", "in_play", "state", "loading_start", "loading_end", "change", "map"])

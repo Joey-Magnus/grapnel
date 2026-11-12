@@ -3962,6 +3962,122 @@ void present_hand_off(uint32_t index, VkFence done);
 void present_finish(VkResult res, bool on_presenter);
 std::atomic<bool> presenter_surface_lost{false};   // (the presenter thread's present: VK_ERROR_SURFACE_LOST_KHR, for present_image)
 }  // namespace
+// ---- (hookshot) the control bridge's window shots (shot with "window": true, host/control.c): the window's image as the player
+// sees it, the Insert menu and the FPS counter over the picture, at the window's size. Copied in present_image after the
+// overlays, read back in a later present_image once that frame's fence is signalled (looked at, never waited for), written on a
+// thread of its own. All under present_image_mu but the asks (shot_ask_mu) ----
+std::deque<ShotAsk> window_asks;   // (shot_ask_mu)
+struct {
+    bool on = false;
+    VkFence fence = VK_NULL_HANDLE;   // (the frame's: signalled once the copy is done)
+    int64_t present = 0;
+    ShotAsk ask;
+} window_shot;
+VkImage win_image = VK_NULL_HANDLE;
+VmaAllocation win_image_alloc = nullptr, win_buf_alloc = nullptr;
+VkBuffer win_buf = VK_NULL_HANDLE;
+void* win_map = nullptr;
+uint32_t win_w = 0, win_h = 0;
+VkFormat win_format = VK_FORMAT_UNDEFINED;
+
+int shot_window_ask(const char* path, int64_t after, void (*done)(void*, int64_t, int), void* ctx) {
+    if (!path || !*path || !done || dev.offscreen) return 0;   // (headless: no window, and present_image never runs)
+    std::lock_guard lk(shot_ask_mu);
+    if (window_asks.size() >= 16) return 0;
+    window_asks.push_back({path, after, done, ctx});
+    return 1;
+}
+/// (present_image_mu) the copy's image and buffer for a window of w x h, in format (made again when either changed)
+static bool window_shot_ready(uint32_t w, uint32_t h, VkFormat format) {
+    if (win_image && win_w == w && win_h == h && win_format == format) return true;
+    if (win_image) destroy_image(win_image, win_image_alloc), win_image = VK_NULL_HANDLE;   // (no copy in flight: window_shot.on)
+    if (win_buf) destroy_buffer(win_buf, win_buf_alloc), win_buf = VK_NULL_HANDLE, win_map = nullptr;
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = format;
+    ci.extent = {w, h, 1};
+    ci.mipLevels = ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!create_image(ci, win_image, win_image_alloc)) return win_image = VK_NULL_HANDLE, false;
+    if (!create_buffer((uint64_t)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, win_buf, win_buf_alloc, &win_map)) {
+        destroy_image(win_image, win_image_alloc);
+        win_image = VK_NULL_HANDLE, win_buf = VK_NULL_HANDLE, win_map = nullptr;
+        return false;
+    }
+    win_w = w, win_h = h, win_format = format;
+    return true;
+}
+/// (present_image, present_image_mu) the copy of the window's image, its overlays drawn, for the first window shot asked for
+/// before this present: the image left in TRANSFER_SRC (true) or as it was, in TRANSFER_DST (false)
+static bool shot_window_record(VkCommandBuffer cmd, VkImage image, VkFence fence) {
+    if (window_shot.on) return false;
+    const int64_t now = __atomic_load_n(&presents_now, __ATOMIC_RELAXED);
+    ShotAsk a;
+    {
+        std::lock_guard lk(shot_ask_mu);
+        if (window_asks.empty() || window_asks.front().after >= now) return false;
+        a = std::move(window_asks.front());
+        window_asks.pop_front();
+    }
+    // (blitted into RGBA8 in the swapchain's encoding: an sRGB swapchain's bytes stay sRGB bytes, a UNORM one's stay as they are)
+    const VkFormat f = dev.swap_format;
+    const bool srgb = f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+    const VkFormat to = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormatProperties from_props{}, to_props{};
+    vkGetPhysicalDeviceFormatProperties(dev.physical, f, &from_props);
+    vkGetPhysicalDeviceFormatProperties(dev.physical, to, &to_props);
+    const char* why = !(dev.swap_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ? "the surface does not let its images be read"
+                      : !(from_props.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ? "its format cannot be blitted from"
+                      : !(to_props.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) ? "RGBA8 cannot be blitted to"
+                      : !window_shot_ready(dev.swap_extent.width, dev.swap_extent.height, to) ? "no memory for the copy"
+                      : nullptr;
+    if (why) {
+        logf("vk: no window shot for the control bridge (%s; the window's format %d)", why, (int)f);
+        a.done(a.ctx, now, 0);
+        return false;
+    }
+    image_barrier(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    image_barrier(cmd, win_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit b{};
+    b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    b.srcOffsets[1] = b.dstOffsets[1] = {(int32_t)win_w, (int32_t)win_h, 1};
+    vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, win_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b,
+                   VK_FILTER_NEAREST);
+    image_barrier(cmd, win_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {win_w, win_h, 1}};
+    vkCmdCopyImageToBuffer(cmd, win_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, win_buf, 1, &c);
+    capture_host_read_barrier(cmd, win_buf, (VkDeviceSize)win_w * win_h * 4);
+    window_shot.on = true, window_shot.fence = fence, window_shot.present = now, window_shot.ask = std::move(a);
+    return true;
+}
+/// (present_image, present_image_mu, before this present resets a frame's fence) the window shot being read back, once the GPU is
+/// past it
+static void shot_window_take() {
+    // (a wait of 0 ns: whether the fence is signalled, never waited for)
+    if (!window_shot.on || vkWaitForFences(dev.device, 1, &window_shot.fence, VK_TRUE, 0) != VK_SUCCESS) return;
+    const size_t n = (size_t)win_w * win_h * 4;
+    invalidate_mapped(win_buf_alloc, n);
+    auto px = std::make_shared<std::vector<uint8_t>>((const uint8_t*)win_map, (const uint8_t*)win_map + n);
+    for (size_t i = 3; i < n; i += 4) (*px)[i] = 255;   // (the window shows no alpha: its composite alpha is opaque)
+    ShotAsk a = std::move(window_shot.ask);
+    const int64_t at = window_shot.present;
+    const uint32_t w = win_w, h = win_h;
+    window_shot.on = false;
+    std::thread([px, a, at, w, h] {
+        const std::string part = a.path + ".part";   // (as shot_ask_take's: never half a picture under the path)
+        bool ok = write_png(part.c_str(), px->data(), w, h);
+        if (ok) {
+            std::remove(a.path.c_str());
+            ok = std::rename(part.c_str(), a.path.c_str()) == 0;
+        }
+        if (!ok) std::remove(part.c_str());
+        logf("vk: present %lld's window %s %s (the control bridge)", (long long)at, ok ? "written to" : "could not be written to",
+             a.path.c_str());
+        a.done(a.ctx, at, ok ? 1 : 0);
+    }).detach();
+}
+
 void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
     std::lock_guard lk(present_image_mu);
     static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
@@ -4013,6 +4129,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     if (vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX) == VK_ERROR_DEVICE_LOST) device_lost();
     framelog_collect(log_slot);
     uint32_t index = 0;
+    shot_window_take();   // (the control bridge's window shot of an earlier present, when its frame is done: before f.done is reset)
     const int64_t acquire_t0 = fence_t0 ? fps_clock() : 0;   // (then the swapchain's image: the display's pace)
     if (fence_t0) fps_wait(fps_stats::kGpuWait, acquire_t0 - fence_t0);
 #ifdef _WIN32
@@ -4146,7 +4263,9 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         }
     }
     menu_record(f.cmd, index, dev.swap_extent.width, dev.swap_extent.height);   // (hookshot) Dear ImGui's overlays, over all of it
-    image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    const bool shot_copied = shot_window_record(f.cmd, dst, f.done);   // (the control bridge's window shot: as the player sees it)
+    image_barrier(f.cmd, dst, shot_copied ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     if (vkEndCommandBuffer(f.cmd) == VK_ERROR_DEVICE_LOST) device_lost();
     // after the image's acquisition. (Not on the timeline: one queue runs submits in order, and a wait for a value
     // another thread had counted but not yet submitted blocked the queue for good)
@@ -5011,6 +5130,7 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.jitter_sample = jitter_sample;
     t.frame_info = frame_info;
     t.shot = shot_ask;
+    t.shot_window = shot_window_ask;
     t.setting = menu_setting;
     t.setting_set = menu_setting_set;
     t.nvn_register_sampler = register_sampler_queued;

@@ -63,7 +63,7 @@ constexpr VkResult VK_ERROR_SURFACE_LOST_KHR = -1000000000;
 constexpr int VK_PRESENT_MODE_MAILBOX_KHR=1, VK_PRESENT_MODE_IMMEDIATE_KHR=2;
 struct VkSemaphoreCreateInfo { int type; };
 struct Extent { uint32_t width,height; };
-struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;std::atomic<uint32_t> swap_spare{0};
+struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};int swap_usage=0;bool swap_mutable=false;std::atomic<uint32_t> swap_spare{0};
     std::vector<VkImage> swap_images;std::vector<VkSemaphore> swap_rendered;
     std::atomic<uint64_t> swap_resize{0};std::mutex present_mu;uint64_t swapchain_generation=0;
     int instance=1;uint64_t surface=1;bool present_queue_supported=true; } dev;

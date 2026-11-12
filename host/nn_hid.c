@@ -51,8 +51,13 @@ static XInputGetStateFn xinput_get;
 static int64_t sampling;
 
 int rx_option(int id, int otherwise);
-/* (the Insert menu takes the keyboard while it is open) */
-static int key(int vk) { return !rx_option(1, 0) && (GetAsyncKeyState(vk) & 0x8000) != 0; }
+/* (the Insert menu takes the keyboard while it is open) The control bridge's keys (host/control.c key) count as the player's
+   own, also with the window behind another; the player's keyboard only while it counts (real_keys: read_input) */
+static int real_keys = 1;
+static int key(int vk) {
+    if (rx_option(1, 0)) return 0;
+    return hos_control_key_held(vk) || (real_keys && (GetAsyncKeyState(vk) & 0x8000) != 0);
+}
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);   /* display.c */
 
@@ -930,7 +935,7 @@ static void oc_notes(void) {
 static uint64_t oc_pad_word(uint64_t buttons) {
     if (hos_oc_wait != 1) return buttons;
     /* (no notes where read_input gives the game no player input either: menu open, pads held after it, background) */
-    if (rx_option(1, 0) || pad_after_menu || !game_in_front()) return buttons;
+    if (rx_option(1, 0) || pad_after_menu || (!game_in_front() && !hos_control_keys_held())) return buttons;
     static const uint64_t note_to[5] = {1ULL << HOS_SW_L, 1ULL << HOS_SW_R, 1ULL << HOS_SW_A,
                                         1ULL << HOS_SW_Y, 1ULL << HOS_SW_X};
     uint64_t w = buttons;
@@ -947,14 +952,46 @@ static uint64_t oc_pad_word(uint64_t buttons) {
     return w;
 }
 
+/* the controls the control bridge's keys press where the player's keyboard is not read (behind other windows, an exclusive
+   press): the buttons and both sticks' keys, by the same bindings as the player's keys (bound_down, with the player's keyboard
+   left out: real_keys 0), not the mouse's buttons, and not while the Insert menu is open (key) */
+static void bridge_keys(uint64_t *buttons, int32_t stick[4]) {
+    real_keys = 0;
+    if (!hos_control_keys_held()) return;
+    binds_load();
+    for (int i = 0; i < HOS_SW_N; i++)
+        if (bound_down(i, 0)) *buttons |= 1ULL << i;
+    const int32_t keys[4] = {(bound_down(HOS_KEY_MOVE_RIGHT, 0) - bound_down(HOS_KEY_MOVE_LEFT, 0)) * 32767,
+                             (bound_down(HOS_KEY_MOVE_UP, 0) - bound_down(HOS_KEY_MOVE_DOWN, 0)) * 32767,
+                             (bound_down(HOS_KEY_CAM_RIGHT, 0) - bound_down(HOS_KEY_CAM_LEFT, 0)) * 32767,
+                             (bound_down(HOS_KEY_CAM_UP, 0) - bound_down(HOS_KEY_CAM_DOWN, 0)) * 32767};
+    stick_max(stick, keys);
+}
+
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
     void hos_mouse_native_stick(int held);
     scripted_input(buttons, stick);
     /* (hookshot) HOS_CONTROL: the control bridge's presses (host/control.c); one that asked to be exclusive keeps the
-       player's devices out while it lasts */
-    if (hos_control_input(buttons, stick)) return;
+       player's devices out while it lasts (the bridge's keys still count: bridge_keys) */
+    if (hos_control_input(buttons, stick)) {
+        memset(oc_consumed_keys, 0, sizeof oc_consumed_keys);   /* (no notes here: oc_notes is not read) */
+        bridge_keys(buttons, stick);
+        return;
+    }
+    /* (hookshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
+       player's: it counts with the game's window behind another one, so a test run can drive the game on one
+       monitor while the player works in the front window. HOS_INPUT_BACKGROUND still decides the pads. */
+    static int scripted_background = -1;
+    if (scripted_background < 0) {
+        scripted_background = env_on("HOS_INPUT_SCRIPT_BACKGROUND");
+        if (scripted_background) hos_log("hid: scripted input runs with the game in the background (HOS_INPUT_SCRIPT_BACKGROUND)");
+    }
+    const int front = game_in_front();
+    /* (the player's keyboard counts with the window in front only: the bridge's keys are read behind other windows too, and
+       a key the player holds in another window is not the game's) */
+    real_keys = front || scripted_background;
     oc_notes();   /* (marks the note rows' inputs consumed before the pads and keys below are read) */
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
@@ -964,21 +1001,16 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
        the presses add to theirs. HOS_INPUT_EXCLUSIVE=1: the script alone until 5 s after its last press, as before */
     static int exclusive = -1;
     if (exclusive < 0) exclusive = env_on("HOS_INPUT_EXCLUSIVE");
-    if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
+    if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000) {
+        bridge_keys(buttons, stick);
         return;
-    /* (hookshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
-       player's: it counts with the game's window behind another one, so a test run can drive the game on one
-       monitor while the player works in the front window. HOS_INPUT_BACKGROUND still decides the pads. */
-    static int scripted_background = -1;
-    if (scripted_background < 0) {
-        scripted_background = env_on("HOS_INPUT_SCRIPT_BACKGROUND");
-        if (scripted_background) hos_log("hid: scripted input runs with the game in the background (HOS_INPUT_SCRIPT_BACKGROUND)");
     }
-    if (!game_in_front() && !scripted_background) {   /* (the pads alone, when the player asked for them behind other windows) */
+    if (!front && !scripted_background) {   /* (the pads alone, when the player asked for them behind other windows) */
         static const char *env;
         static int looked;
         if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
         if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick);
+        bridge_keys(buttons, stick);   /* (and the bridge's keys: a test's, behind the player's window) */
         return;
     }
     {   /* (hookshot) while the Insert menu is open the pads are its own, as the keyboard is (key()), and after it

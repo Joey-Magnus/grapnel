@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 19
+#define MKWVK_API_VERSION 20
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -188,6 +188,10 @@ typedef struct MkwVkHost {
     /* (version 17, hookshot) what of the button prompts a change of face or controls reaches at once (host/prompts.c):
        HOS_PROMPTS_LIVE_* bits; 0 none (a mod's files, built without the prompts, or not loaded yet) */
     int (*prompts_live)(void);
+    /* (version 20, hookshot) a press of a key (a Windows virtual-key code) the control bridge sent (its key command,
+       host/control.c), taken: 1 once a press. For the Insert menu, which takes it as a press of the player's own key, also
+       with the game's window behind another one (a test drives the game while the player works in another window) */
+    int (*take_bridge_key)(int key);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
@@ -259,6 +263,11 @@ typedef struct MkwVkRenderer {
        to choose on this PC, -2 no step of a list row reaches value here, left as it was) */
     int (*setting)(int index, MkwVkSetting *out);
     int (*setting_set)(const char *key, int value, MkwVkSetting *out);
+    /* (version 20) shot's PNG, but of the window's picture as the player sees it, at the window's size: the Insert menu and the
+       FPS counter over the game's picture, letterboxing included. 0: not taken (too many waiting); done's ok is 0 when there is
+       no window (headless) or its images cannot be read back on this GPU. With HDR on, the PNG holds the window's 10-bit
+       or 16-bit values as 8 bits, without tone mapping */
+    int (*shot_window)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

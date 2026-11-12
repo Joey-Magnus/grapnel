@@ -77,6 +77,10 @@ static volatile int paused;
 static uint64_t seen_buttons[FRAMES];
 static int32_t seen_stick[FRAMES][4];
 static int seen_exclusive[FRAMES];
+/* (the keys: Insert, Up and Q held at each read, as bits 1, 2, 4; and the presses the Insert menu was told of) */
+static uint8_t seen_keys[FRAMES];
+static volatile int menu_presses[256];
+static volatile int window_shots;
 static char logged[64][300];
 static int nlogged;
 
@@ -104,6 +108,19 @@ static int fake_shot(const char *path, int64_t after, void (*done)(void *, int64
     s->done = done, s->ctx = ctx, s->after = after;
     start_thread(shot_thread, s);
     return 1;
+}
+static int fake_shot_window(const char *path, int64_t after, void (*done)(void *, int64_t, int), void *ctx) {
+    __atomic_fetch_add(&window_shots, 1, __ATOMIC_RELAXED);
+    return fake_shot(path, after, done, ctx);
+}
+static volatile int link_seen;   /* (Link updated lately: the fake's status says where he is) */
+static int fake_link(float pos[3], float *yaw, int *life) {
+    if (!link_seen) return 0;
+    pos[0] = 1.5f, pos[1] = -2.25f, pos[2] = 300.125f, *yaw = -90.0f, *life = link_seen > 1 ? -1 : 12;
+    return 1;
+}
+static void fake_key_press(int vk) {
+    if (vk > 0 && vk < 256) __atomic_fetch_add(&menu_presses[vk], 1, __ATOMIC_RELAXED);
 }
 static HosControlSetting settings[3] = {
     {"text_speed", "Text speed", "Normal", "gameplay", 0, 0, 3, 1, 0, 0},
@@ -209,12 +226,13 @@ static void fake_teleport_cancel(int ticket) {
     log_unlock();
 }
 static HosControlGame game = {
-    .frame = fake_frame, .frame_info = fake_frame_info, .shot = fake_shot, .setting = fake_setting,
+    .frame = fake_frame, .frame_info = fake_frame_info, .shot = fake_shot, .shot_window = fake_shot_window,
+    .key_press = fake_key_press, .setting = fake_setting,
     .setting_set = fake_setting_set, .mem_region = fake_mem_region, .mem_read = fake_mem_read,
     .mem_write = fake_mem_write, .save_root = fake_save_root, .log = fake_log, .quit = fake_quit,
     .renderer = fake_renderer, .version = "test", .map = fake_map, .destination = fake_destination,
     .teleport = fake_teleport, .teleport_result = fake_teleport_result, .teleport_cancel = fake_teleport_cancel,
-    .oot_state = fake_state};
+    .oot_state = fake_state, .link = fake_link};
 
 static void *game_thread(void *unused) {
     (void)unused;
@@ -240,6 +258,8 @@ static void *game_thread(void *unused) {
         }
         const int64_t f = fake_frame();
         if (f < FRAMES) seen_buttons[f] = b, memcpy(seen_stick[f], st, sizeof st), seen_exclusive[f] = ex;
+        if (f < FRAMES)
+            seen_keys[f] = (uint8_t)(hos_control_key_held(0x2D) | hos_control_key_held(0x26) << 1 | hos_control_key_held('Q') << 2);
         draws_total += (int64_t)draws_per_frame;
         __atomic_store_n(&frame, f + 1, __ATOMIC_RELEASE);
     }
@@ -681,6 +701,34 @@ int main(int argc, char **argv) {
     }
     puts("PASS: press A for 5 frames: exactly frames start..end-1");
 
+    /* key: the keyboard's keys held exactly their frames, the Insert menu told of each press once, at its start */
+    ask(c, "{\"id\":40,\"cmd\":\"key\",\"keys\":\"Insert+up\",\"frames\":4}\n", "40", line, sizeof line, 3000);
+    CHECK(strstr(line, "\"ok\":true"));
+    {
+        const long long s = num_after(line, "\"start\":"), e = num_after(line, "\"end\":");
+        CHECK(e == s + 4 && s >= 0);
+        CHECK((s == 0 || !seen_keys[s - 1]) && !seen_keys[e]);
+        for (long long i = s; i < e; i++) CHECK(seen_keys[i] == 3 && seen_buttons[i] == 0);
+        CHECK(menu_presses[0x2D] == 1 && menu_presses[0x26] == 1 && menu_presses['Q'] == 0);
+    }
+    ask(c, "{\"id\":41,\"cmd\":\"key\",\"keys\":\"Insert+Nope\"}\n", "41", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\"") && strstr(line, "not a key: Nope"));
+    ask(c, "{\"id\":42,\"cmd\":\"key\"}\n", "42", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
+    ask(c, "{\"id\":43,\"cmd\":\"key\",\"keys\":\"A+B+C+D+E+F+G+H+I\"}\n", "43", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\"") && strstr(line, "more than 8 keys"));
+    /* in a sequence, with buttons; F1-F24, letters and digits by themselves */
+    ask(c, "{\"id\":44,\"cmd\":\"sequence\",\"steps\":[{\"at\":0,\"keys\":[\"q\",\"F24\",\"9\"],\"frames\":2},"
+           "{\"at\":3,\"buttons\":\"A\",\"keys\":\"Up\",\"frames\":1}]}\n", "44", line, sizeof line, 3000);
+    {
+        const long long s = num_after(line, "\"start\":"), e = num_after(line, "\"end\":");
+        CHECK(e == s + 4);
+        CHECK(seen_keys[s] == 4 && seen_keys[s + 1] == 4 && seen_keys[s + 2] == 0);
+        CHECK(seen_keys[s + 3] == 2 && seen_buttons[s + 3] == 1 && !seen_keys[s + 4]);
+        CHECK(menu_presses['Q'] == 1 && menu_presses[0x87] == 1 && menu_presses['9'] == 1 && menu_presses[0x26] == 2);
+    }
+    puts("PASS: key: keys held exactly their frames, one press each for the Insert menu, bad names refused, keys in a sequence");
+
     ask(c, "{\"id\":6,\"cmd\":\"stick\",\"stick\":\"R\",\"x\":-1,\"y\":0.5,\"frames\":3,\"exclusive\":true}\n", "6", line,
         sizeof line, 3000);
     {
@@ -815,6 +863,12 @@ int main(int argc, char **argv) {
         ask(c, "{\"id\":20,\"cmd\":\"shot\",\"path\":\"/nonexistent-dir/x.png\"}\n", "20", line, sizeof line, 3000);
         CHECK(strstr(line, "\"error\":\"failed\""));
         puts("PASS: shots: the default folder, a relative path (the run folder), after a frame, an unwritable path");
+        ask(c, "{\"id\":45,\"cmd\":\"shot\",\"path\":\"window.png\",\"window\":true}\n", "45", line, sizeof line, 3000);
+        path_of(line, path, sizeof path);
+        CHECK(strstr(line, "\"ok\":true") && window_shots == 1 && file_exists(path));
+        ask(c, "{\"id\":46,\"cmd\":\"shot\",\"path\":\"/nonexistent-dir/x.png\",\"window\":true}\n", "46", line, sizeof line, 3000);
+        CHECK(strstr(line, "\"error\":\"failed\"") && strstr(line, "no window shot") && window_shots == 2);
+        puts("PASS: shot window: the window's shot, and its failure said as such");
     }
 
     /* the Insert menu's settings */
@@ -910,7 +964,17 @@ int main(int argc, char **argv) {
     /* (OoT) the map and the teleport */
     {
         ask(c, "{\"id\":70,\"cmd\":\"status\"}\n", "70", line, sizeof line, 2000);
-        CHECK(strstr(line, "\"map\":null") && strstr(line, "\"game\":null"));
+        CHECK(strstr(line, "\"map\":null") && strstr(line, "\"game\":null") && strstr(line, "\"link\":null"));
+        /* Link, once updated: where he is, the way he faces, his life (null when it could not be read) */
+        link_seen = 1;
+        ask(c, "{\"id\":701,\"cmd\":\"status\"}\n", "701", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"link\":{\"x\":1.50,\"y\":-2.25,\"z\":300.13,\"yaw\":-90.0,\"life\":12}") ||
+              strstr(line, "\"link\":{\"x\":1.50,\"y\":-2.25,\"z\":300.12,\"yaw\":-90.0,\"life\":12}"));
+        link_seen = 2;
+        ask(c, "{\"id\":702,\"cmd\":\"status\"}\n", "702", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"yaw\":-90.0,\"life\":null}"));
+        link_seen = 0;
+        puts("PASS: (OoT) Link in status: null until updated, then where he is, his yaw and his life");
         ask(c, "{\"id\":71,\"cmd\":\"teleport\"}\n", "71", line, sizeof line, 2000);
         CHECK(strstr(line, "\"destinations\":[{\"index\":0,\"child\":\"KokiriForest_Child\"") &&
               strstr(line, "{\"index\":2,\"child\":null,\"adult\":\"GerudoFortress_Adult\"}]"));

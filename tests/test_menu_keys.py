@@ -94,17 +94,25 @@ static bool take_key_press(int key) {
     queued_key = 0;
     return true;
 }
-static struct { bool (*take_key_press)(int); float (*aspect_ratio)(); } queue_host{take_key_press, nullptr}, *host;
+static int bridge_key;   // (the control bridge's key command: a press, focused or not)
+static bool take_bridge_key(int key) {
+    if (key != bridge_key) return false;
+    bridge_key = 0;
+    return true;
+}
+static struct { bool (*take_key_press)(int); float (*aspect_ratio)(); bool (*take_bridge_key)(int); }
+    queue_host{take_key_press, nullptr, take_bridge_key}, bridge_host{nullptr, nullptr, take_bridge_key}, *host;
 
-static bool keyboard_toggle(int mode, int key, bool queued, bool has_focus = true) {
+static bool keyboard_toggle(int mode, int key, bool queued, bool has_focus = true, bool bridged = false) {
     opts.menu_shortcut = mode;
     focused = has_focus;
     pad_last = true;
-    host = queued ? &queue_host : nullptr;
-    down_key = queued ? 0 : key;
-    queued_key = queued ? key : 0;
+    host = bridged ? (queued ? &queue_host : &bridge_host) : queued ? &queue_host : nullptr;
+    down_key = queued || bridged ? 0 : key;
+    queued_key = queued && !bridged ? key : 0;
+    bridge_key = bridged ? key : 0;
     // KEY_POLL
-    CHECK(!queued_key);   // Disabled keys still have to be consumed from the host queue.
+    CHECK(!queued_key && !bridge_key);   // Disabled keys still have to be consumed from the host queues.
     const bool toggle = press[0] || press[6];
     CHECK(pad_last != toggle);
     return toggle;
@@ -120,6 +128,13 @@ static void test_keyboard() {
             CHECK(!keyboard_toggle(mode, VK_F1, queued, false));
         }
     }
+    // (the control bridge's presses: with the Windows queue or without it (Linux), and with the window behind another)
+    for (bool queued : {false, true})
+        for (bool has_focus : {true, false}) {
+            CHECK(keyboard_toggle(0, VK_INSERT, queued, has_focus, true));
+            CHECK(!keyboard_toggle(1, VK_INSERT, queued, has_focus, true));   // (Menu shortcut F1: Insert stays off)
+            CHECK(keyboard_toggle(1, VK_F1, queued, has_focus, true));
+        }
     CHECK(!keyboard_toggle(1, VK_INSERT, false));
     CHECK(!keyboard_toggle(0, VK_INSERT, false));   // A held key still needs a new press after re-enabling it.
     CHECK(!keyboard_toggle(0, 0, false));
