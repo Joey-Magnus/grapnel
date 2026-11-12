@@ -3909,6 +3909,89 @@ bool desc_slots_kept(uint64_t reg_gen) {
         if (texture_slot_version((int)(e & 0xFFFFF)) != (uint32_t)(e >> 20)) return false;
     return true;
 }
+// ---- (hookshot) A draw that builds its uniform ranges alone ----
+// OoT binds a uniform buffer for nearly every draw, which moves bind_gen, so nine draws in ten built their whole set again (in
+// Hyrule Field 124 of 1262 kept their neighbour's): every storage buffer bound again, every texture's handle read, its view and
+// sampler looked up, the lists of what the build sampled copied, when all that had changed was the ranges of the uniform buffers.
+// About a third of the graphics picks there are "the same program, the same textures, a uniform buffer bound since" (the program
+// picks' log). Such a draw now writes the uniform ranges over the last build's, which still holds the rest, and bind_descriptors
+// pushes what differs, as it does anyway.
+// It is taken only when nothing the rest was made from can have moved since that build:
+//   - the same recording, the same program, and the last build is this program's and was bound (desc_built_prog);
+//   - the program reads its storage buffers through c0 and its texture handles through c2 of its own stages, writes none of them
+//     and has no images or texel buffers (program_uniform_only), so those are the stages' ssbo_gen and tex_gen and nothing else of
+//     the state: no handle program, no word of a uniform buffer;
+//   - those generations, the slots' versions and the samplers' and the destroy generations (desc_slots_kept), the texture epoch,
+//     the pools' and mirrors' stamp (gpu_bind_stamp: what a buffer binding resolves to) and the GPU-written generation (what the
+//     build kept of the textures it samples), each as it was before that build began.
+// The ranges are worked out by uniform_range, as in the full build. RX_VK_DESC_PARTIAL=0: every such draw builds its whole set,
+// as before. Off too with RX_VK_DESC_REUSE=never or 0, in a dump, and with the switches that log or count each binding
+thread_local const Program* desc_built_prog = nullptr;   // (the program dw() was last built whole for, once bound)
+thread_local uint64_t last_desc_tex[5]{}, last_desc_ssbo[5]{};   // (the graphics stages' tex_gen and ssbo_gen at that build)
+thread_local uint64_t last_desc_stamp = 0, last_desc_written = 0;
+thread_local uint32_t last_desc_epoch = 0;
+int64_t st_desc_uniform_only;
+bool desc_partial_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_DESC_PARTIAL");
+        if (e && env_value_off(e)) return false;
+        for (const char* diag : {"RX_VK_DRAW_STATS", "RX_VK_WATCH_PROG", "RX_VK_LOG_IMG", "RX_VK_PEEK_PROG", "RX_VK_DUMP_SSBO",
+                                 "RX_VK_DUMP_SAMPLED", "RX_VK_TRACE_TEX", "RX_VK_SLOW_DESC", "RX_VK_LOG_WRITTEN", "RX_VK_LOG_WRITEBACK",
+                                 "RX_VK_SSBO_STRETCH", "RX_VK_SSBO_WIDE", "RX_VK_HANDLES_LIVE", "RX_VK_PROBE", "RX_VK_ASYNC_IMPORT"})
+            if (getenv(diag)) return false;   // (they log, count, widen or copy each binding of each build)
+        return desc_slotgen_on();
+    }();
+    return on;
+}
+/// Whether all of p's descriptors but its uniform buffers are made from its stages' tex_gen and ssbo_gen alone (see above)
+bool uniform_only_of(const Program& p) {
+    if (p.compute || p.mesh || p.fallback || p.stages.empty()) return false;
+    for (const Stage& st : p.stages) {
+        if (st.nvn_stage < 0 || st.nvn_stage > 4) return false;   // (a task or mesh stage's c0 has the pointer table too)
+        const Shader::Info& info = st.info;
+        if (!info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty() || !info.image_descriptors.empty())
+            return false;
+        for (const auto& d : info.storage_buffers_descriptors)   // (one buffer, its address and size in the stage's table)
+            if (d.cbuf_index != 0 || d.count != 1 || d.is_written || d.cbuf_offset == 0xff0) return false;
+        for (const auto& d : info.texture_descriptors)
+            if (d.handle_program != ~0U || d.cbuf_index != 2 || (d.has_secondary && d.secondary_cbuf_index != 2)) return false;
+    }
+    return true;
+}
+bool program_uniform_only(const Program& p) {
+    int8_t v = p.uniform_only.load(std::memory_order_relaxed);
+    if (v < 0) p.uniform_only.store(v = uniform_only_of(p) ? 1 : 0, std::memory_order_relaxed);   // (the same answer from any thread)
+    return v != 0;
+}
+/// Whether what the last build made of p's storage buffers and textures stands for this draw (the caller has checked the
+/// recording, the program, the destroy generation and desc_slots_kept, as for a draw that keeps the whole set)
+bool desc_rest_stands(const NvnState& s, const Program& p) {
+    if (!desc_partial_on() || desc_built_prog != &p || !program_uniform_only(p) || dump_on()) return false;
+    if (last_desc_epoch != texture_epoch() || last_desc_stamp != gpu_bind_stamp() ||
+        last_desc_written != texture_written_generation())
+        return false;
+    for (int k = 0; k < 5; k++)
+        if (last_desc_tex[k] != s.tex_gen[k] || last_desc_ssbo[k] != s.ssbo_gen[k]) return false;
+    return true;
+}
+/// The uniform ranges of p for the bound state, over the last build's (in dw(), whose writes point at them). False: dw() is
+/// not p's build after all, and nothing was written
+bool rebuild_uniform_ranges(const NvnState& s, const Program& p) {
+    DescWriter& out = dw();
+    size_t n = 0;
+    for (const Stage& st : p.stages) {
+        for (const auto& d : st.info.constant_buffer_descriptors) n += d.count;
+        for (const auto& d : st.info.storage_buffers_descriptors) n += d.count;
+    }
+    if (out.prog != &p || out.bufs.size() != n) return false;
+    size_t at = 0;
+    for (const Stage& st : p.stages) {
+        for (const auto& d : st.info.constant_buffer_descriptors)
+            for (uint32_t k = 0; k < d.count; k++) out.bufs[at++] = uniform_range(s, st, d.index + k);
+        for (const auto& d : st.info.storage_buffers_descriptors) at += d.count;
+    }
+    return true;
+}
 thread_local VkPipeline last_pipeline = VK_NULL_HANDLE;
 struct LastVb { VkBuffer b[16]; VkDeviceSize o[16], z[16], s[16]; };
 thread_local LastVb last_vb;
@@ -6653,10 +6736,20 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
     }
     if (same_desc && slotgen && last_desc_reg != reg_gen) st_desc_slotgen_saves++;   // (the global check would have rebuilt)
-    if (!same_desc) {
+    // (hookshot) only a uniform buffer bound since the last build of this program: its ranges alone are built (desc_rest_stands)
+    bool uniform_only = !same_desc && !no_reuse && slotgen && last_desc_valid && last_desc_prog == &p && last_desc_dgen == dgen &&
+                        desc_slots_kept(reg_gen) && desc_rest_stands(s, p);
+    if (uniform_only) {
+        PROF_HOT(PROF_DESC);
+        uniform_only = rebuild_uniform_ranges(s, p);
+    }
+    if (!same_desc && !uniform_only) {
         PROF_HOT(PROF_DESC);
         FINE_N(FC_BUILDS, 1);
         trace_tex_hit = nullptr, trace_tex_mask = 0;
+        desc_built_prog = nullptr;   // (dw() is this build's from here; the next draw may build on it once it is bound, below)
+        // (read before the build: a mirror made or a texture written by the build itself moves them, and the next draw builds whole)
+        last_desc_stamp = gpu_bind_stamp(), last_desc_written = texture_written_generation(), last_desc_epoch = texture_epoch();
         build_descriptors(s, p);   // (textures first used here are uploaded by the recording's upload command buffer)
         FINE_N(FC_WRITES, (int64_t)dw().writes.size());
         static std::string last_logged;
@@ -6676,7 +6769,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (dump_on()) log_dump_draw(s, p, d);
     PROF_HOT(PROF_CMDS);
     texture_watch_prog(p.key);
-    if (!same_desc) gfx_sampled() = draw_sampled();
+    if (!same_desc && !uniform_only) gfx_sampled() = draw_sampled();   // (uniform ranges only: the last build's textures, kept)
     static const bool barrier_every = env_on("RX_VK_BARRIER_EVERY_DRAW");   // (an experiment: a pass each)
     if (barrier_every) end_pass(cmd);
     reactive_scene_draw(cmd, p, s, at);
@@ -6780,7 +6873,12 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_N(FC_BIND_PIPE, 1);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl), last_pipeline = pl;
     }
-    if (!same_desc) {
+    if (uniform_only) {   // (the rest is the last build's: what was kept of it (the slots it resolved, its generations) stands)
+        FINE_SCOPE(FT_BINDDESC);
+        if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
+        last_desc_bind = s.bind_gen, last_desc_ub = ub_gen;
+        st_desc_uniform_only++;
+    } else if (!same_desc) {
         FINE_SCOPE(FT_BINDDESC);
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
@@ -6788,6 +6886,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (slotgen)   // (Descriptor reuse: what its handles resolved; the next such draw may keep it through other slots' churn)
             last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
             last_desc_destroy = desc_destroy_seen;
+        desc_built_prog = &p;   // (built whole and bound: the next draw of it may build its uniform ranges alone)
+        for (int k = 0; k < 5; k++) last_desc_tex[k] = s.tex_gen[k], last_desc_ssbo[k] = s.ssbo_gen[k];
     } else {
         st_desc_reused++;
     }
@@ -9072,6 +9172,9 @@ void draw_records_log(uint64_t lo, uint64_t hi) {
 }
 int64_t draw_desc_reused() {
     return st_desc_reused;
+}
+int64_t draw_desc_uniform_only() {   // (draws that built their uniform ranges alone over the last build: desc_rest_stands)
+    return st_desc_uniform_only;
 }
 int64_t draw_slotgen_saves() {   // (Descriptor reuse: of those, what the global registrations' generation check would have rebuilt)
     return st_desc_slotgen_saves;

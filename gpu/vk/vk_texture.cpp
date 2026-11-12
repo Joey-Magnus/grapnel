@@ -3500,8 +3500,15 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
     return done;
 }
 
+// (hookshot) Bumped when a texture the GPU had not written becomes one it has: what a descriptor build kept of the textures it
+// samples (vk_draw.cpp draw_sampled: the written ones, for the pass hazards) is as of the build
+static std::atomic<uint64_t> written_gen{1};
+uint64_t texture_written_generation() {
+    return written_gen.load(std::memory_order_relaxed);
+}
 void texture_written(Texture* tex, const char* why) {
     if (!tex) return;
+    if (!tex->gpu_written) written_gen.fetch_add(1, std::memory_order_relaxed);
     if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) {   // (a parallel replay's order broken: see dry_mark_written)
         static int64_t n;
         if (n++ < 40 || n % 500 == 0)

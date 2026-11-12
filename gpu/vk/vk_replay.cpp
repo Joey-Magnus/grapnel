@@ -3068,7 +3068,7 @@ void log_frame_stats() {
         draw_stats3(&pskip, &pwaits, &pwait_ms);
         static int64_t l_pskip, l_pwaits;
         static double l_pwait_ms;
-        static int64_t l_reused, l_saves;
+        static int64_t l_reused, l_saves, l_uniform;
         int64_t links = 0, lib_hits = 0, lib_cold = 0, lib_built = 0;
         double link_ms = 0, lib_build_ms = 0;
         static int64_t l_links;
@@ -3078,9 +3078,11 @@ void log_frame_stats() {
             snprintf(libs, sizeof libs, "; %.2f library links tried (%.2f ms), %lld libraries the driver had and %lld cold in all; "
                      "%lld of the cold built by workers (%.0f ms)", (links - l_links) / 120.0, (link_ms - l_link_ms) / 120.0,
                      (long long)lib_hits, (long long)lib_cold, (long long)lib_built, lib_build_ms);
-        logf("vk: a frame: %.0f draws kept their neighbour's descriptors (%.0f of them through other slots' registrations)",
-             (draw_desc_reused() - l_reused) / 120.0, (draw_slotgen_saves() - l_saves) / 120.0);
-        l_reused = draw_desc_reused(), l_saves = draw_slotgen_saves();
+        logf("vk: a frame: %.0f draws kept their neighbour's descriptors (%.0f of them through other slots' registrations), "
+             "%.0f more built their uniform ranges alone",
+             (draw_desc_reused() - l_reused) / 120.0, (draw_slotgen_saves() - l_saves) / 120.0,
+             (draw_desc_uniform_only() - l_uniform) / 120.0);
+        l_reused = draw_desc_reused(), l_saves = draw_slotgen_saves(), l_uniform = draw_desc_uniform_only();
         logf("vk: a frame: %.1f draws left out (not ready), %.2f waits for shaders or pipelines (%.1f ms); "
              "translation %.0f ms in all, %d jobs queued%s",
              (pskip - l_pskip) / 120.0, (pwaits - l_pwaits) / 120.0, (pwait_ms - l_pwait_ms) / 120.0,

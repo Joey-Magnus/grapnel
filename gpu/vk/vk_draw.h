@@ -80,6 +80,7 @@ void draw_stats3(int64_t* pending_skips, int64_t* waits, double* wait_ms);
 bool draw_stats4(int64_t* links, double* link_ms, int64_t* lib_hits, int64_t* lib_cold, int64_t* lib_built, double* lib_build_ms);
 void draw_skip_report(double frames);   // (hookshot) skips by the line that made them
 int64_t draw_desc_reused();
+int64_t draw_desc_uniform_only();   // (hookshot: and those that built their uniform ranges alone, vk_draw.cpp desc_rest_stands)
 /// (Descriptor reuse) Of those, the reuses the global registrations' generation check would have rebuilt for
 int64_t draw_slotgen_saves();
 /// RX_VK_FLASH_RECORD=<key>,...: the last frames' draws of those programs, written to the log for frames around a flash
