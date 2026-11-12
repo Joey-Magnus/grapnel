@@ -265,7 +265,7 @@ The same keys close it; with every Menu shortcut, <kbd>Esc</kbd> goes back a pag
 <kbd>F1</kbd> always works. **Controls → Menu shortcut** can leave <kbd>Insert</kbd> free for another overlay (F1 only).
 With Insert or F1, or with F1 only, <kbd>Esc</kbd> does not open the menu: it only lets the mouse go. Options saved by
 an older version on Insert or F1, the default then, move to Insert, F1 or Esc; F1 only stays.
-The menu has five tabs, Graphics, Audio, Gameplay, Controls and Debug:
+The menu has six tabs, Graphics, Audio, Gameplay, Controls, Neural and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
@@ -348,6 +348,15 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
 | | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
+| Neural | Neural rendering | Off, On (DLSS 5 neural rendering, below; turned on while the game runs it can ask for a restart) | Off |
+| | Backend | Auto, NGX direct, Open (OpenDLSS-NR) | Auto |
+| | Model | Performance, Balanced, Quality, DLAA (NGX direct) | Quality |
+| | Style | Default, Natural, Cinematic | Default |
+| | Preset | Default, Preset A to Preset G (NGX direct) | Default |
+| | Passes | 1 to 10 (NGX direct) | 1 |
+| | Resolution scale | 50% to 100%, in steps of 5 | 100% |
+| | Intensity, Local tone, Local structure, Global tone, Skin structure | 0 to 100%, in steps of 10 | 100% |
+| | Auto mask | Off, On | Off |
 | Debug | Debug tools | Off, On (the tools below it while on) | Off |
 | | Developer: Descriptor reuse | Off, On (after a restart) | On |
 | | Developer: Sampler cache | Off, On (after a restart) | Off |
@@ -823,6 +832,41 @@ never an older FSR in its place), and why not when it did not start. Tested on a
 </details>
 
 <details>
+<summary>DLSS 5 neural rendering (optional; NVIDIA's model file or a model folder you supply, neither included)</summary>
+
+The menu's **Neural** tab is DLSS 5 neural rendering: a model that goes over each finished frame and rebuilds detail,
+tone and structure in it. It is not an upscaler and not ray reconstruction: it takes the picture, not the scene, so it
+works on this game and beside whatever the Upscaler and Frame generation are set to. It runs once for each of the
+game's frames, on the part of the frame that is shown, before frame generation, and is left out while HDR is Native
+(the model takes an SDR picture; HDR Expanded is made from its result). Off by default, and with it off the game runs
+and the GPU is set up exactly as without it. Its rows take effect on the next frame. Two things can run the model (the
+**Backend** row, `nr_backend` in `hookshot_options.ini`; `RX_VK_DLSS_NR_BACKEND=auto`, `ngx` or `open` for one run,
+`RX_VK_DLSS_NR=1` or `0` for the switch):
+
+- **NGX direct**: NVIDIA's own model through NVIDIA's NGX, the same session DLSS uses, so only in a game built with
+  NVIDIA's DLSS SDK (above), on an NVIDIA RTX GPU. It needs NVIDIA's `nvngx_dlssnr.dll`, which is NVIDIA's to ship and is
+  never included: put it in the game folder's `ngx` folder (or where `RX_VK_DLSS_DIR` points). NVIDIA's file runs on RTX
+  50 only; NGX refuses it on older cards, and loads a file without NVIDIA's signature (a community-patched one for RTX
+  20 to 40) only with NGX's own signature override, a registry value Hookshot reads for its log and never sets. On
+  Linux NVIDIA ships no `libnvidia-ngx-dlssnr.so` yet, so NGX direct cannot run there: the tab and the log say so.
+- **Open**: [OpenDLSS-NR](https://github.com/maanHimself/OpenDLSS-NR) (MIT), a Vulkan implementation of the same
+  network, built into every build, Windows and Linux, with no NVIDIA runtime. It needs a GPU with cooperative matrices
+  (NVIDIA RTX 40 or 50, AMD RX 7000 or 9000; the log's `vk: open NR` lines name what is missing) and **a model folder
+  you supply**: the network's weights in OpenDLSS-NR's layout (`manifest.json` and its stage files), in a folder called
+  `nr-model` in the game folder (`RX_VK_OPENNR_MODEL` names another, in the environment or a `HOS_ENV_FILE` file).
+  **Hookshot includes no weights and no way to get them.**
+
+**Auto** takes NGX direct where it can run, else Open where a model folder is there, and Open on a GPU that is not
+NVIDIA's. What a backend needs of the GPU is asked for when the game starts, and only if Neural rendering was on then
+(or, for Open, a model folder was in place): turn it on later and the row's hint says when a restart is needed.
+**Resolution scale** gives the model a smaller copy of the picture and adds its detail back at full size, the cheapest
+way to more frames with it on; **Passes** runs NVIDIA's model more than once over each frame.
+[docs/neural-rendering.md](docs/neural-rendering.md) has the design, what was measured and what was not (no run has yet
+shown NVIDIA's model a frame through NGX on Vulkan, and Open was measured on synthetic weights only).
+
+</details>
+
+<details>
 <summary>Switches for testing (hookshot_env.txt)</summary>
 
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
@@ -947,6 +991,10 @@ Hookshot exists thanks to the work of many people:
   SDK shaders; builds made with FSR 4 (optional; AMD's DLLs are never bundled) use AMD FidelityFX Super Resolution 4
   through AMD's MIT-licensed FSR API headers. Both are AMD's technology. AMD, Radeon and FidelityFX are trademarks of Advanced Micro
   Devices, Inc.
+- **[maanHimself/OpenDLSS-NR](https://github.com/maanHimself/OpenDLSS-NR)** (MIT): the open network behind the Neural
+  tab's Open backend, compiled into the renderer (`third_party/opendlss-nr`). **[clshortfuse/openNR](https://github.com/clshortfuse/openNR)**
+  (MIT): the NGX parameter names the NGX direct backend drives DLSS 5 neural rendering with. No model weights and
+  nothing of NVIDIA's are included.
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
   confirmed the mesh stage's control section.
