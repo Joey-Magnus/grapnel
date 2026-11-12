@@ -6,6 +6,7 @@
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
@@ -116,6 +117,29 @@ uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t 
     a64_icall(c, fn);
     c->x[30] = lr;
     return c->x[0];
+}
+
+/* The current guest thread's register x<i> (0..30), 0 with no guest thread: for host code without the context's type */
+uint64_t hos_guest_x(int i) {
+    Ctx *c = hos_ctx();
+    return c && i >= 0 && i < 31 ? c->x[i] : 0;
+}
+
+/* hos_call_guest on the current guest thread from a hook in the middle of guest code: every register (x0..x30, the vector
+   registers, NZCV) comes back as it was, so the code hooked goes on as if nothing ran. Returns the callee's x0, 0 with no
+   guest thread */
+uint64_t hos_call_guest_kept(uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
+    Ctx *c = hos_ctx();
+    if (!c) return 0;
+    uint64_t x[31], v[32][2];
+    const uint8_t f[4] = {c->n, c->z, c->c, c->v};
+    memcpy(x, c->x, sizeof x);
+    memcpy(v, c->vreg, sizeof v);
+    const uint64_t r = hos_call_guest(c, fn, a0, a1, a2, a3);
+    memcpy(c->x, x, sizeof x);
+    memcpy(c->vreg, v, sizeof v);
+    c->n = f[0], c->z = f[1], c->c = f[2], c->v = f[3];
+    return r;
 }
 
 /* HOS_HOSTCALL_STATS=1: at exit, how often each host call ran (the NVN surface a game really uses). */

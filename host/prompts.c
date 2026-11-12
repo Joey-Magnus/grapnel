@@ -1054,7 +1054,8 @@ static void mark_box(uint64_t box, uint32_t bits) {
    go. The hint bar's spacing (the layouts' part) is the bar's as it was made: it follows when the bar is shown again */
 #define SHOWN_BOXES 256
 #define TEXT_PICTURE 0x80e6e0e0ull   /* (the box's picture: (box, the draw's two words at +24), f_8152b670 calls it so) */
-uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);   /* hos_hostcall.c */
+uint64_t hos_guest_x(int i);   /* hos_hostcall.c */
+uint64_t hos_call_guest_kept(uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);   /* hos_hostcall.c */
 /* (state: 0 nothing to do, 1 marked by a change, 2 laid out again since, its picture to be made at its next draw) */
 static struct { uint64_t box, vt, text; uint32_t len; int state; } shown[SHOWN_BOXES];
 static SRWLOCK shown_lock = SRWLOCK_INIT;
@@ -1127,7 +1128,7 @@ static int shown_mark(void) {
 }
 
 /* at a box's draw: its picture made, when a change laid it out again and another thread makes its pictures. The game's
-   context is mid-call (the draw's own arguments still to be read): every register comes back as it was */
+   context is mid-call (the draw's own arguments still to be read): hos_call_guest_kept puts every register back */
 static void shown_picture(uint64_t box) {
     if (!shown_pending) return;
     int due = 0;
@@ -1136,17 +1137,8 @@ static void shown_picture(uint64_t box) {
         if (shown[i].box == box && shown[i].state == 2) due = 1, shown_drop(i);
     ReleaseSRWLockExclusive(&shown_lock);
     const uint32_t *flags = due ? (const uint32_t *)hos_guest_range(box + 380, 4) : NULL;
-    Ctx *g = flags && (*flags >> 2 & 1) ? hos_ctx() : NULL;
-    const uint64_t *info = g ? (const uint64_t *)hos_guest_range(g->x[2] + 24, 16) : NULL;
-    if (!info) return;
-    uint64_t x[31], v[32][2];
-    const uint8_t f[4] = {g->n, g->z, g->c, g->v};
-    memcpy(x, g->x, sizeof x);
-    memcpy(v, g->vreg, sizeof v);
-    hos_call_guest(g, TEXT_PICTURE, box, info[0], info[1], 0);
-    memcpy(g->x, x, sizeof x);
-    memcpy(g->vreg, v, sizeof v);
-    g->n = f[0], g->z = f[1], g->c = f[2], g->v = f[3];
+    const uint64_t *info = flags && (*flags >> 2 & 1) ? (const uint64_t *)hos_guest_range(hos_guest_x(2) + 24, 16) : NULL;
+    if (info) hos_call_guest_kept(TEXT_PICTURE, box, info[0], info[1], 0);
 }
 
 /* nx2/oot_patches.py, as the game lays a text box out (f_8152aec0, before it looks at the box's status: laid out now) */
