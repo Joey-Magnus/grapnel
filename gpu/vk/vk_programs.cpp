@@ -208,6 +208,7 @@ void load_work(LoadJob& job) {
                 }
             }
             census.load_programs++;
+            census.load_unlisted += !p->compute && notes == index_notes.end();
             job.made.push_back({key, std::move(p)});
         }
     }
@@ -220,31 +221,32 @@ void load_work(LoadJob& job) {
     std::lock_guard lk(load_ms_mu);
     if (load_ms.size() < 65536) load_ms.push_back((float)(ns / 1e6));
 }
+/// The job's work is done: the unit is ready (what it read is the job's until a pick asks for one of its keys)
 void load_done(LoadJob& job) {
+    const bool any = !job.made.empty();
+    {
+        std::lock_guard lk(life_mu);
+        table.loaded(job.unit, any);
+    }
+    census.units_loaded += any;
     {
         std::lock_guard lk(job.mu);
         job.state.store(2, std::memory_order_release);
     }
     job.cv.notify_all();
 }
-/// (shader_mu held) what the job read goes to the programs' lists, once; the unit is ready
+/// (shader_mu held, by the pick that asks for one of the job's keys) what the job read goes to the programs' lists, once.
+/// Only ever here, on the thread that picks: a worker never takes shader_mu, so a pick never waits for that lock behind a
+/// worker the system has set aside for busier threads (the workers run below normal priority, and a load is when every
+/// processor is busy)
 void load_publish(const std::shared_ptr<LoadJob>& job) {
-    bool any = false;
     {
         std::lock_guard lk(job->mu);
         if (job->published) return;
         job->published = true;
-        for (auto& [key, p] : job->made) {
-            programs[key].push_back(std::move(p));
-            any = true;
-        }
+        for (auto& [key, p] : job->made) programs[key].push_back(std::move(p));
         job->made.clear();
     }
-    {
-        std::lock_guard lk(life_mu);
-        table.loaded(job->unit, any);
-    }
-    census.units_loaded += any;
     std::lock_guard lk(jobs_mu);
     for (const uint64_t key : job->keys)
         if (const auto it = job_by_key.find(key); it != job_by_key.end() && it->second == job) job_by_key.erase(it);
@@ -255,7 +257,8 @@ void load_publish(const std::shared_ptr<LoadJob>& job) {
 /// kLoadGapMs the game is taken to be loading, and RX_VK_LOAD_WORKERS_LOADING run (the same number unless set: the signal is
 /// not proven enough to lift the cap by default)
 int workers_cap(bool loading) {
-    static const int play = std::clamp(getenv("RX_VK_LOAD_WORKERS") ? atoi(getenv("RX_VK_LOAD_WORKERS")) : 2, 1, 16);
+    // (0, a measurement: no worker at all, so only what a draw or dispatch asks for is loaded, by the draw itself)
+    static const int play = std::clamp(getenv("RX_VK_LOAD_WORKERS") ? atoi(getenv("RX_VK_LOAD_WORKERS")) : 2, 0, 16);
     static const int load = std::clamp(getenv("RX_VK_LOAD_WORKERS_LOADING") ? atoi(getenv("RX_VK_LOAD_WORKERS_LOADING")) : play, play, 16);
     return loading ? load : play;
 }
@@ -281,8 +284,6 @@ void load_worker(int index) {
         if (!job->state.compare_exchange_strong(queued, 1)) continue;   // (a first use took it)
         load_work(*job);
         load_done(*job);
-        std::lock_guard lk(shader_mu);
-        load_publish(job);
     }
 }
 } // namespace
@@ -344,18 +345,24 @@ void programs_load_wait(uint64_t key) {
         if (const auto it = job_by_key.find(key); it != job_by_key.end()) job = it->second;
     }
     if (!job) return;
-    const auto t0 = Clock::now();
-    int queued = 0;
-    if (job->state.compare_exchange_strong(queued, 1)) {   // (no worker began it: urgent means run here, as jobs_wait does)
-        load_work(*job);
-        load_done(*job);
-        census.units_run_by_draw++;
-    } else {
-        std::unique_lock lk(job->mu);
-        job->cv.wait(lk, [&] { return job->state.load(std::memory_order_acquire) == 2; });
-        census.units_waited++;
+    if (job->state.load(std::memory_order_acquire) != 2) {
+        const auto t0 = Clock::now();
+        int queued = 0;
+        if (job->state.compare_exchange_strong(queued, 1)) {   // (no worker began it: urgent means run here, as jobs_wait does)
+            load_work(*job);
+            load_done(*job);
+            census.units_run_by_draw++;
+        } else {
+            std::unique_lock lk(job->mu);
+            job->cv.wait(lk, [&] { return job->state.load(std::memory_order_acquire) == 2; });
+            census.units_waited++;
+        }
+        const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
+        census.unit_wait_ns += ns;
+        if (programs_life_flag)   // (the life log: every first use that met a load not done yet, with how long it took)
+            logf("vk: program life: use met load unit %016llx key %016llx %s ms %.2f", (unsigned long long)job->unit,
+                 (unsigned long long)key, queued == 0 ? "ran" : "waited", ns / 1e6);
     }
-    census.unit_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
     load_publish(job);
 }
 
@@ -379,7 +386,12 @@ void load_at_create(const nvn_prog& prog, const CreatedProgram& made) {
     } else {
         for (const Signature& sig : index_signatures) {
             const uint64_t key = program_created_key(prog.serial, sig.vattr, sig.color_types);
-            if (key && index_kept.count(key) && std::find(keys.begin(), keys.end(), key) == keys.end()) keys.push_back(key);
+            // (RX_VK_LOAD_UNLISTED=0: only programs a note names, as RX_VK_LOAD=start keeps ready only those; a kept program
+            // no list has a pipeline of is then read at its first draw, as there)
+            static const bool unlisted = !getenv("RX_VK_LOAD_UNLISTED") || atoi(getenv("RX_VK_LOAD_UNLISTED")) != 0;
+            if (key && index_kept.count(key) && (unlisted || index_notes.count(key)) &&
+                std::find(keys.begin(), keys.end(), key) == keys.end())
+                keys.push_back(key);
         }
     }
     bool queue;
@@ -589,12 +601,12 @@ void programs_census_log(const char* when) {
         alive = table.programs();
     }
     logf("vk: program loads at create (%s): %lld queued, %lld loaded (median %.2f ms, 99th percentile %.2f ms, worst %.2f ms, %.0f "
-         "ms and %.1f MB read in all); %lld programs (%lld of them compute variants without their code), %lld graphics pipelines (%lld not in a cache), %lld compute pipelines (%lld "
+         "ms and %.1f MB read in all); %lld programs (%lld of them compute variants without their code, %lld graphics programs no note names), %lld graphics pipelines (%lld not in a cache), %lld compute pipelines (%lld "
          "not in a cache); a first use ran %lld itself and waited for %lld (%.1f ms); %lld pipelines made at create taken by "
          "draws; %lld create calls with nothing kept for their stages, %lld before the index; units %zu (%zu ready, %zu "
          "loading), %zu programs alive",
          when, n(c.units_queued), n(c.units_loaded), median, p99, worst, c.load_ns.load() / 1e6, c.load_bytes.load() / 1048576.0,
-         n(c.load_programs), n(c.load_light), n(c.load_pipes), n(c.load_pipes_cold), n(c.load_computes), n(c.load_computes_cold),
+         n(c.load_programs), n(c.load_light), n(c.load_unlisted), n(c.load_pipes), n(c.load_pipes_cold), n(c.load_computes), n(c.load_computes_cold),
          n(c.units_run_by_draw), n(c.units_waited), c.unit_wait_ns.load() / 1e6, n(c.pipes_taken), n(c.units_nothing),
          n(c.units_early), units, ready, loading, alive);
 }

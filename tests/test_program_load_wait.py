@@ -37,6 +37,9 @@ def main():
     for bad in ("translate", "seed_", "shader_mu", "programs["):
         if bad in work:
             raise SystemExit("load_work must only read prepared data, with no lock a draw holds: found `%s`" % bad)
+    worker = block(src, "void load_worker(int index) {")
+    if "shader_mu" in worker or "load_publish" in worker or "shader_mu" in block(src, "void load_done(LoadJob& job) {"):
+        raise SystemExit("a load worker takes the picks' lock: a pick could wait for it behind a low-priority thread")
     if "p->ready" in work or "ready.store(false" in src:
         raise SystemExit("a load job must publish only finished programs: a draw uses a program it waited for as it is")
     types = block(src, "struct LoadJob {") + ";\n" + src[src.index("std::mutex jobs_mu;"):src.index("bool workers_started")]

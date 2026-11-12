@@ -78,6 +78,7 @@ struct ProgramCensus {
     std::atomic<int64_t> units_run_by_draw{0}, units_waited{0}, unit_wait_ns{0};   // (a first use ran the job itself, or waited)
     std::atomic<int64_t> load_programs{0}, load_pipes{0}, load_pipes_cold{0}, load_computes{0}, load_computes_cold{0};
     std::atomic<int64_t> load_light{0};         // (compute variants read without their code)
+    std::atomic<int64_t> load_unlisted{0};      // (graphics programs loaded that no note names: no pipeline is known for them)
     std::atomic<int64_t> load_ns{0}, load_bytes{0};
     std::atomic<int64_t> pipes_taken{0};        // (pipelines made at create that a draw then took)
 };
