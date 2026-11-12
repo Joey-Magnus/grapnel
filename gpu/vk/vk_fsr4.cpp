@@ -172,8 +172,10 @@ void* symbol(const char* name) {
 /// functions it is handed are ours where it makes buffers, layouts, shader modules and compute pipelines and records binds and
 /// dispatches. At once: the network's layers 64 lanes wide, the postpass's weights read from a tail of its storage buffer.
 /// Later: the layers with their loops unrolled (spirv_unroll.h), built on threads of their own (minutes the first time on a
-/// driver, its cache after) and bound in place of the library's once made. RX_VK_FSR4_TUNE=0: as AMD made them;
-/// RX_VK_FSR4_UNROLL=0: no unrolled layers. On AMD's GPUs only (measured on an RX 6700 XT)
+/// driver, its cache after) and bound in place of the library's once made: RX_VK_FSR4_UNROLL=1 only. Off by default: AMD's
+/// compiler took 40-55 GB of commit charge on the unrolled layers (RX 6700 XT, 16 GB RAM), some failed with out of host
+/// memory and were tried again at every start, and one such start ended in a system crash. RX_VK_FSR4_TUNE=0: as AMD made
+/// them. On AMD's GPUs only (measured on an RX 6700 XT)
 namespace tune {
 std::mutex mu;
 PFN_vkCreateBuffer real_cb = nullptr;
@@ -224,7 +226,7 @@ bool on() {
     return v;
 }
 bool unroll_on() {
-    static const bool v = env_switch("RX_VK_FSR4_UNROLL") != 0;
+    static const bool v = env_switch("RX_VK_FSR4_UNROLL") > 0;   // (opt-in: see above)
     return v;
 }
 
