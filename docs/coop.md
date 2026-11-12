@@ -17,9 +17,8 @@ You need your own copy of the game, as always. Nothing here comes with game file
   messages, not that they are the same build.
 - **A network path to the host.** One player hosts, the others join the host's address on TCP port **43400** (the
   Port row changes it). On one home network that works as it is. Friends in different homes need **Radmin VPN**
-  (free): everyone joins the same Radmin network and the joiners type the host's Radmin address. Every session so far
-  was played that way. The game only opens a plain TCP link: there is no relay and nothing to get through a router, so
-  the only other ways are another virtual network (Tailscale, ZeroTier) or the host forwarding the port.
+  (free): the game only opens a plain TCP link, with no relay and nothing to get through a router. The steps are in
+  [Linking up, step by step](#linking-up-step-by-step).
 - **Co-op's two data files, made once per game folder** (and again after a rebuild that replaces the folder). The
   build does not make them yet; from a clone, with the pipeline's Python packages installed:
 
@@ -30,6 +29,57 @@ You need your own copy of the game, as always. Nothing here comes with game file
 
   Without `coop\flags.bin` items are still shared, but progress flags are not. Without `mods\00-coop` the other
   players are drawn as the pause menu's Link, who stands stiff and slides, and there is no PvP.
+
+## Linking up, step by step
+
+This is the way every session so far was played: friends in different homes, joined through Radmin VPN.
+
+**Once, on every player's PC**
+
+1. Build Hookshot from your own copy of the game. Everyone must be on the same version of Hookshot.
+2. Make co-op's two data files (the two commands above). Do it again after a rebuild that replaces the game folder.
+3. Install **Radmin VPN** (free, from radmin-vpn.com), start it, and switch it on with the large button.
+
+**Once, for the group**
+
+4. The host, in Radmin VPN: **Network > Create Network**. Pick a network name and a password and send both to your
+   friends in private.
+5. Everyone else, in Radmin VPN: **Network > Join Network**, and type that name and password. Each player now sees the
+   others in the Radmin window.
+6. Every player has an address in the Radmin window, a number that starts with `26.`. The one that matters is the
+   **host's**. The joiners right-click the host's name there and copy the address. Treat it like a password: do not
+   show it on a stream. Hookshot keeps it off the screen for that reason.
+
+**Every time you play**
+
+7. Everyone starts Radmin VPN first and checks that the host shows as online in it. Then start Hookshot and load your
+   save (a slot you can afford to lose). With a randomizer, everyone must be on the same seed.
+8. **The host goes first.** Open the menu (Insert or F1), go to **Network**, set **Play as** to **Host**, set
+   **Your name**, then press Enter on **Connection**. The first time, Windows Firewall may ask about Hookshot: allow
+   it, or nobody can reach you.
+9. **Then each joiner.** In **Network**, set **Play as** to **Join**. On **Host address** press Enter, paste the
+   host's Radmin address with Ctrl+V, and press Enter again. Leave **Port** at 43400 unless the host changed theirs.
+   Set **Your name**, then press Enter on **Connection**.
+10. **Status** turns to Connected and names who is there, and the top left corner of the screen says the same. After a
+    moment everyone holds the same items and progress. The other players are Links with their name over their head;
+    if you are in different maps, press Enter on a player's **Go to player** row.
+11. PvP is off until two players both turn **PvP** on.
+12. To stop, press Enter on **Connection** again, or close the game. A game always starts not connected, so steps 8
+    and 9 are done each time; the name, the address and the port are remembered.
+
+**If it does not connect**
+
+- **Status** says why. Read it first.
+- Is the host connected before the joiners try? A joiner who was early presses Enter on **Connection** again.
+- Does Radmin VPN show the host as online for the joiner? If not, the trouble is in Radmin, not in Hookshot.
+- Did the joiner paste the **host's** address, not their own?
+- Is **Port** the same number for everyone?
+- Did the host allow Hookshot when Windows Firewall asked? If the question was closed or refused, allow Hookshot under
+  "Allow an app through Windows Firewall". Do not turn the firewall or the antivirus off.
+- Is everyone on the same version of Hookshot?
+
+On one home network Radmin is not needed: the joiners type the host's address on that network instead. Other virtual
+networks (Tailscale, ZeroTier) or a port forwarded to the host work the same way, but have not been tried.
 
 ## Playing
 
