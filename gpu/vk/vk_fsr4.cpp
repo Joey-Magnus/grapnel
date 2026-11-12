@@ -20,17 +20,24 @@
 
 #ifdef HOOKSHOT_FSR
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #ifndef _WIN32
 #include <dlfcn.h>
 #include <unistd.h>
 #endif
 
+#include "fsr4_tune.h"
+#include "spirv_unroll.h"
+#include "vk_gprof.h"
 #include "vk_paths.h"
 #include "vk_texture.h"
 
@@ -44,6 +51,8 @@
 namespace mkwvk {
 
 extern std::atomic<bool> present_native_pq;   // (vk_replay.cpp do_present: the game presents its own HDR10 picture, Native)
+VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeline* out);   // (vk_draw.cpp: through the pipeline cache kept across runs)
+void pipeline_cache_save_play();   // (vk_draw.cpp)
 
 namespace {
 int env_switch(const char* name) {   // (-1: unset)
@@ -159,6 +168,357 @@ void* symbol(const char* name) {
 #endif
 }
 
+/// (longshot) AMD's passes tuned as the library makes them (fsr4_tune.h: measured gains, outputs bit for bit AMD's): the device
+/// functions it is handed are ours where it makes buffers, layouts, shader modules and compute pipelines and records binds and
+/// dispatches. At once: the network's layers 64 lanes wide, the postpass's weights read from a tail of its storage buffer.
+/// Later: the layers with their loops unrolled (spirv_unroll.h), built on threads of their own (minutes the first time on a
+/// driver, its cache after) and bound in place of the library's once made. RX_VK_FSR4_TUNE=0: as AMD made them;
+/// RX_VK_FSR4_UNROLL=0: no unrolled layers. On AMD's GPUs only (measured on an RX 6700 XT)
+namespace tune {
+std::mutex mu;
+PFN_vkCreateBuffer real_cb = nullptr;
+PFN_vkCreateShaderModule real_csm = nullptr;
+PFN_vkCreateComputePipelines real_ccp = nullptr;
+PFN_vkCreateDescriptorSetLayout real_cdsl = nullptr;
+PFN_vkCreatePipelineLayout real_cpl = nullptr;
+PFN_vkDestroyPipeline real_dp = nullptr;
+PFN_vkCmdBindPipeline real_bind = nullptr;
+PFN_vkCmdDispatch real_dispatch = nullptr;
+PFN_vkCmdUpdateBuffer real_update = nullptr;
+PFN_vkCmdPipelineBarrier real_barrier = nullptr;
+constexpr uint64_t kTail = 64 << 10;   // (bytes added to the library's big storage buffer: the postpass's weights go there)
+VkBuffer big = VK_NULL_HANDLE;          // (its newest: each upscale context makes one)
+uint64_t big_size = 0;                  // (as the library asked for it: the tail starts there)
+std::vector<uint32_t> tail;             // (what the tail holds)
+std::atomic<bool> tail_due{false};      // (written before the first dispatch that reads it)
+std::unordered_map<VkShaderModule, uint8_t> module_kind;   // 1: 64 lanes, 2: reads the tail
+std::unordered_map<VkShaderModule, std::shared_ptr<std::vector<uint32_t>>> layer_code;   // (64-lane layers: kept to unroll)
+std::unordered_map<VkShaderModule, std::string> layer_name;
+std::unordered_map<VkPipeline, bool> reads_tail;
+std::unordered_map<VkCommandBuffer, VkPipeline> bound;
+int layers64 = 0;
+// (the library's descriptor set layouts and pipeline layouts as made, to make a job's own copies from)
+struct SetLayoutInfo {
+    VkDescriptorSetLayoutCreateFlags flags = 0;
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    std::vector<std::vector<VkSampler>> samplers;
+};
+std::unordered_map<VkDescriptorSetLayout, SetLayoutInfo> set_layouts;
+struct LayoutInfo {
+    std::vector<VkDescriptorSetLayout> sets;
+    std::vector<VkPushConstantRange> push;
+};
+std::unordered_map<VkPipelineLayout, LayoutInfo> layouts;
+// (the unrolled pipelines: made by jobs, bound in the library's place; a job whose pipeline was destroyed meanwhile drops
+// what it made)
+std::unordered_map<VkPipeline, VkPipeline> better;
+std::unordered_set<VkPipeline> pending, cancelled;
+std::atomic<int> better_count{0};
+std::mutex job_mu;   // (three jobs at a time: a first build is minutes of CPU, and the game's threads keep theirs)
+std::condition_variable job_cv;
+int job_slots = 3;
+int jobs_running = 0;   // (with mu)
+
+bool on() {
+    static const bool v = env_switch("RX_VK_FSR4_TUNE") != 0 && dev.props.vendorID == 0x1002;
+    return v;
+}
+bool unroll_on() {
+    static const bool v = env_switch("RX_VK_FSR4_UNROLL") != 0;
+    return v;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL create_buffer(VkDevice d, const VkBufferCreateInfo* ci, const VkAllocationCallbacks* a, VkBuffer* b) {
+    VkBufferCreateInfo c = *ci;
+    const bool grow = (ci->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) && ci->size > (64ull << 20);
+    if (grow) c.size += kTail;
+    const VkResult r = real_cb(d, &c, a, b);
+    if (r == VK_SUCCESS && grow) {
+        std::lock_guard lk(mu);
+        big = *b, big_size = ci->size, tail.clear(), tail_due = false;
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL create_set_layout(VkDevice d, const VkDescriptorSetLayoutCreateInfo* ci, const VkAllocationCallbacks* a,
+                                                 VkDescriptorSetLayout* l) {
+    const VkResult r = real_cdsl(d, ci, a, l);
+    if (r == VK_SUCCESS) {
+        std::lock_guard lk(mu);
+        set_layouts.erase(*l);   // (a handle the driver gave out before: not what it was)
+    }
+    if (r == VK_SUCCESS && !ci->pNext) {   // (one with extension structures is not copied: its pipelines are left as they are)
+        SetLayoutInfo s;
+        s.flags = ci->flags;
+        s.bindings.assign(ci->pBindings, ci->pBindings + ci->bindingCount);
+        s.samplers.resize(ci->bindingCount);
+        for (uint32_t i = 0; i < ci->bindingCount; i++)
+            if (ci->pBindings[i].pImmutableSamplers)
+                s.samplers[i].assign(ci->pBindings[i].pImmutableSamplers, ci->pBindings[i].pImmutableSamplers + ci->pBindings[i].descriptorCount);
+        std::lock_guard lk(mu);
+        set_layouts[*l] = std::move(s);
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL create_pipeline_layout(VkDevice d, const VkPipelineLayoutCreateInfo* ci, const VkAllocationCallbacks* a,
+                                                      VkPipelineLayout* l) {
+    const VkResult r = real_cpl(d, ci, a, l);
+    if (r == VK_SUCCESS) {
+        std::lock_guard lk(mu);
+        layouts.erase(*l);
+    }
+    if (r == VK_SUCCESS && !ci->pNext) {
+        LayoutInfo li;
+        li.sets.assign(ci->pSetLayouts, ci->pSetLayouts + ci->setLayoutCount);
+        li.push.assign(ci->pPushConstantRanges, ci->pPushConstantRanges + ci->pushConstantRangeCount);
+        std::lock_guard lk(mu);
+        layouts[*l] = std::move(li);
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL create_shader_module(VkDevice d, const VkShaderModuleCreateInfo* ci, const VkAllocationCallbacks* a,
+                                                   VkShaderModule* m) {
+    const uint32_t* code = ci->pCode;
+    const size_t words = ci->codeSize / 4;
+    const std::string entry = fsr4_tune::entry_name(code, words);
+    uint8_t kind = 0;
+    std::vector<uint32_t> tuned;
+    VkShaderModuleCreateInfo c = *ci;
+    {
+        std::lock_guard lk(mu);
+        if (fsr4_tune::wants_wave64(entry) && dev.subgroup_max >= 64 && !fsr4_tune::lane_dependent(code, words)) kind = 1;
+        if (fsr4_tune::is_postpass(entry) && big && tail.size() * 4 + 16384 <= kTail &&
+            fsr4_tune::arrays_to_buffer(code, words, (uint32_t)(big_size / 4 + tail.size()), tuned, tail)) {
+            c.codeSize = tuned.size() * 4, c.pCode = tuned.data(), kind = 2, tail_due = true;
+            logf("vk: AMD FSR 4: tuned %s: its constant arrays read from the end of its storage buffer (%zu words there)",
+                 entry.c_str(), tail.size());
+        }
+    }
+    const VkResult r = real_csm(d, &c, a, m);
+    if (r == VK_SUCCESS) {
+        std::lock_guard lk(mu);
+        module_kind.erase(*m), layer_code.erase(*m), layer_name.erase(*m);   // (a handle given out before)
+    }
+    if (r == VK_SUCCESS && kind) {
+        std::lock_guard lk(mu);
+        module_kind[*m] = kind;
+        if (kind == 1 && unroll_on()) {
+            layer_code[*m] = std::make_shared<std::vector<uint32_t>>(code, code + words);
+            layer_name[*m] = entry;
+        }
+    }
+    return r;
+}
+
+/// A job: the layer unrolled and built with copies of its layouts; bound in the library's pipeline's place when made
+void build_unrolled(VkPipeline original, std::shared_ptr<std::vector<uint32_t>> code, std::string name, VkComputePipelineCreateInfo ci,
+                    VkPipelineLayout layout, std::vector<VkDescriptorSetLayout> sets) {
+    {
+        std::unique_lock lk(job_mu);
+        job_cv.wait(lk, [] { return job_slots > 0; });
+        job_slots--;
+    }
+    struct Slot {
+        ~Slot() {
+            { std::lock_guard lk(job_mu); job_slots++; }
+            job_cv.notify_one();
+        }
+    } slot;
+    {
+        std::lock_guard lk(mu);
+        jobs_running++;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<uint32_t> unrolled;
+    int left = -1;
+    const bool ok = spirv_unroll::unroll_all(code->data(), code->size(), unrolled, code->size() * 10, 64, &left) && left == 0;
+    VkPipeline made = VK_NULL_HANDLE;
+    if (ok) {
+        VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mci.codeSize = unrolled.size() * 4, mci.pCode = unrolled.data();
+        VkShaderModule module = VK_NULL_HANDLE;
+        if (real_csm(dev.device, &mci, nullptr, &module) == VK_SUCCESS) {
+            VkPipelineShaderStageRequiredSubgroupSizeCreateInfo lanes{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+            lanes.requiredSubgroupSize = 64;
+            ci.stage.pNext = &lanes, ci.stage.module = module, ci.stage.pName = name.c_str(), ci.layout = layout;
+            ci.stage.pSpecializationInfo = nullptr;   // (only layers without one are taken)
+            ci.basePipelineHandle = VK_NULL_HANDLE, ci.basePipelineIndex = -1;
+            ci.flags &= ~(VkPipelineCreateFlags)VK_PIPELINE_CREATE_DERIVATIVE_BIT;
+            // (through the pipeline cache kept across runs, as FSR 3.1's: built once, loaded after. A failure is tried once more
+            // alone, when no other build is running: three of the largest at once can run the driver out of memory)
+            VkResult rr = shared_compute_pipeline(&ci, &made);
+            if (rr != VK_SUCCESS) {
+                made = VK_NULL_HANDLE;
+                logf("vk: AMD FSR 4: %s: its unrolled pipeline was not built (%d): tried again alone", name.c_str(), (int)rr);
+                for (;;) {
+                    {
+                        std::lock_guard lk(mu);
+                        if (jobs_running <= 1) break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
+                rr = shared_compute_pipeline(&ci, &made);
+                if (rr != VK_SUCCESS) made = VK_NULL_HANDLE, logf("vk: AMD FSR 4: %s: not built again (%d): AMD's stays", name.c_str(), (int)rr);
+            }
+            vkDestroyShaderModule(dev.device, module, nullptr);
+        }
+    }
+    vkDestroyPipelineLayout(dev.device, layout, nullptr);
+    for (VkDescriptorSetLayout s : sets) vkDestroyDescriptorSetLayout(dev.device, s, nullptr);
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    {
+        std::lock_guard lk(mu);
+        pending.erase(original);
+        if (cancelled.erase(original) || !made) {
+            if (made) real_dp(dev.device, made, nullptr);
+        } else {
+            better[original] = made;
+            better_count++;
+        }
+    }
+    bool last = false;
+    {
+        std::lock_guard lk(mu);
+        last = --jobs_running == 0 && pending.empty();
+    }
+    if (last) pipeline_cache_save_play();   // (all built: kept for the next start whether or not the game closes normally)
+    if (made) logf("vk: AMD FSR 4: tuned %s: its loops unrolled (%zu -> %zu words), bound in its place from now (%.1f s to build)",
+                   name.c_str(), code->size(), unrolled.size(), s);
+    else if (!ok) logf("vk: AMD FSR 4: %s not unrolled (%d loops left as they were)", name.c_str(), left);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL create_compute_pipelines(VkDevice d, VkPipelineCache cache, uint32_t n,
+                                                       const VkComputePipelineCreateInfo* ci, const VkAllocationCallbacks* a,
+                                                       VkPipeline* p) {
+    std::vector<VkComputePipelineCreateInfo> v(ci, ci + n);
+    std::vector<VkPipelineShaderStageRequiredSubgroupSizeCreateInfo> lanes(n);
+    std::vector<uint8_t> kind(n, 0);
+    {
+        std::lock_guard lk(mu);
+        for (uint32_t i = 0; i < n; i++) {
+            auto k = module_kind.find(ci[i].stage.module);
+            kind[i] = k == module_kind.end() ? 0 : k->second;
+            if (kind[i] != 1) continue;
+            // (its own lane count in place of the one asked: first in the stage's chain, or put first)
+            const VkBaseInStructure* s = (const VkBaseInStructure*)ci[i].stage.pNext;
+            if (s && s->sType != VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO) {
+                bool deeper = false;
+                for (const VkBaseInStructure* t = s; t; t = t->pNext)
+                    deeper |= t->sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
+                if (deeper) { kind[i] = 0; continue; }   // (not where it can be swapped: left as asked)
+            }
+            lanes[i] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+            lanes[i].requiredSubgroupSize = 64;
+            lanes[i].pNext = (void*)(s && s->sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO ? s->pNext : s);
+            v[i].stage.pNext = &lanes[i];
+            v[i].stage.flags &= ~(VkPipelineShaderStageCreateFlags)VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT;
+            layers64++;
+        }
+    }
+    const VkResult r = real_ccp(d, cache, n, v.data(), a, p);
+    if (r != VK_SUCCESS) return r;
+    std::lock_guard lk(mu);
+    for (uint32_t i = 0; i < n; i++) {
+        if (kind[i] == 2) reads_tail[p[i]] = true;
+        // (a layer whose creation carried nothing else: no specialization, no other structures)
+        if (kind[i] != 1 || ci[i].stage.pSpecializationInfo || lanes[i].pNext || ci[i].pNext) continue;
+        auto code = layer_code.find(ci[i].stage.module);
+        auto lay = layouts.find(ci[i].layout);
+        if (code == layer_code.end() || lay == layouts.end()) continue;
+        // (copies of its layouts, made now while the library's are alive: identically defined, so compatible with its sets)
+        std::vector<VkDescriptorSetLayout> sets;
+        bool ok = true;
+        for (VkDescriptorSetLayout s : lay->second.sets) {
+            auto sl = set_layouts.find(s);
+            if (sl == set_layouts.end()) { ok = false; break; }
+            std::vector<VkDescriptorSetLayoutBinding> b = sl->second.bindings;
+            for (size_t k = 0; k < b.size(); k++) b[k].pImmutableSamplers = sl->second.samplers[k].empty() ? nullptr : sl->second.samplers[k].data();
+            VkDescriptorSetLayoutCreateInfo sci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            sci.flags = sl->second.flags, sci.bindingCount = (uint32_t)b.size(), sci.pBindings = b.data();
+            VkDescriptorSetLayout copy = VK_NULL_HANDLE;
+            if (real_cdsl(d, &sci, nullptr, &copy) != VK_SUCCESS) { ok = false; break; }
+            sets.push_back(copy);
+        }
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        if (ok) {
+            VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            lci.setLayoutCount = (uint32_t)sets.size(), lci.pSetLayouts = sets.data();
+            lci.pushConstantRangeCount = (uint32_t)lay->second.push.size(), lci.pPushConstantRanges = lay->second.push.data();
+            ok = real_cpl(d, &lci, nullptr, &layout) == VK_SUCCESS;
+        }
+        if (!ok) {
+            for (VkDescriptorSetLayout s : sets) vkDestroyDescriptorSetLayout(d, s, nullptr);
+            continue;
+        }
+        pending.insert(p[i]);
+        VkComputePipelineCreateInfo job = ci[i];
+        job.pNext = nullptr, job.stage.pNext = nullptr;
+        std::thread(build_unrolled, p[i], code->second, layer_name[ci[i].stage.module], job, layout, std::move(sets)).detach();
+    }
+    static bool told = false;
+    if (!told && layers64) told = true, logf("vk: AMD FSR 4: tuned: its network's layers run 64 lanes wide (%d so far)", layers64);
+    return r;
+}
+VKAPI_ATTR void VKAPI_CALL destroy_pipeline(VkDevice d, VkPipeline pl, const VkAllocationCallbacks* a) {
+    {
+        std::lock_guard lk(mu);
+        auto b = better.find(pl);
+        if (b != better.end()) real_dp(d, b->second, nullptr), better.erase(b), better_count--;
+        if (pending.count(pl)) cancelled.insert(pl);
+        reads_tail.erase(pl);
+    }
+    real_dp(d, pl, a);
+}
+VKAPI_ATTR void VKAPI_CALL cmd_bind_pipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline pl) {
+    if (bp == VK_PIPELINE_BIND_POINT_COMPUTE && (tail_due.load(std::memory_order_relaxed) || better_count.load(std::memory_order_relaxed))) {
+        std::lock_guard lk(mu);
+        if (tail_due) bound[cb] = pl;
+        auto b = better.find(pl);
+        if (b != better.end()) pl = b->second;
+    }
+    real_bind(cb, bp, pl);
+}
+VKAPI_ATTR void VKAPI_CALL cmd_dispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) {
+    if (tail_due.load(std::memory_order_relaxed)) {
+        std::lock_guard lk(mu);
+        auto b = bound.find(cb);
+        if (tail_due && b != bound.end() && reads_tail.count(b->second) && big) {   // (the tail, before its first reader)
+            const size_t bytes = tail.size() * 4;
+            for (size_t o = 0; o < bytes; o += 65536)
+                real_update(cb, big, big_size + o, std::min<size_t>(65536, bytes - o), (const char*)tail.data() + o);
+            VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            real_barrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+            tail_due = false, bound.clear();
+        }
+    }
+    real_dispatch(cb, x, y, z);
+}
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL device_proc(VkDevice d, const char* name) {
+    PFN_vkVoidFunction f = vkGetDeviceProcAddr(d, name);
+    if (!f || !name) return f;
+    if (!strcmp(name, "vkCreateBuffer")) return real_cb = (PFN_vkCreateBuffer)f, (PFN_vkVoidFunction)&create_buffer;
+    if (!strcmp(name, "vkCreateShaderModule")) return real_csm = (PFN_vkCreateShaderModule)f, (PFN_vkVoidFunction)&create_shader_module;
+    if (!strcmp(name, "vkCreateComputePipelines"))
+        return real_ccp = (PFN_vkCreateComputePipelines)f, (PFN_vkVoidFunction)&create_compute_pipelines;
+    if (!strcmp(name, "vkCreateDescriptorSetLayout"))
+        return real_cdsl = (PFN_vkCreateDescriptorSetLayout)f, (PFN_vkVoidFunction)&create_set_layout;
+    if (!strcmp(name, "vkCreatePipelineLayout")) return real_cpl = (PFN_vkCreatePipelineLayout)f, (PFN_vkVoidFunction)&create_pipeline_layout;
+    if (!strcmp(name, "vkDestroyPipeline")) return real_dp = (PFN_vkDestroyPipeline)f, (PFN_vkVoidFunction)&destroy_pipeline;
+    if (!strcmp(name, "vkCmdBindPipeline")) return real_bind = (PFN_vkCmdBindPipeline)f, (PFN_vkVoidFunction)&cmd_bind_pipeline;
+    if (!strcmp(name, "vkCmdDispatch")) return real_dispatch = (PFN_vkCmdDispatch)f, (PFN_vkVoidFunction)&cmd_dispatch;
+    return f;
+}
+void prepare_device() {   // (what the hooks call that the library may never ask for)
+    real_update = (PFN_vkCmdUpdateBuffer)vkGetDeviceProcAddr(dev.device, "vkCmdUpdateBuffer");
+    real_barrier = (PFN_vkCmdPipelineBarrier)vkGetDeviceProcAddr(dev.device, "vkCmdPipelineBarrier");
+    real_dp = (PFN_vkDestroyPipeline)vkGetDeviceProcAddr(dev.device, "vkDestroyPipeline");
+    real_csm = (PFN_vkCreateShaderModule)vkGetDeviceProcAddr(dev.device, "vkCreateShaderModule");
+    real_ccp = (PFN_vkCreateComputePipelines)vkGetDeviceProcAddr(dev.device, "vkCreateComputePipelines");
+    real_cdsl = (PFN_vkCreateDescriptorSetLayout)vkGetDeviceProcAddr(dev.device, "vkCreateDescriptorSetLayout");
+    real_cpl = (PFN_vkCreatePipelineLayout)vkGetDeviceProcAddr(dev.device, "vkCreatePipelineLayout");
+}
+}  // namespace tune
+
 /// AMD's library on this device, once: false when FSR 4 cannot run here (g_why says why, the log too)
 bool load() {
     Library& l = lib();
@@ -204,6 +564,10 @@ bool load() {
         return no(FSR_NO_LIBRARY);
     }
     l.device_context = VkDeviceContext{dev.device, dev.physical, vkGetDeviceProcAddr};
+    if (tune::on()) {
+        tune::prepare_device();
+        l.device_context.vkDeviceProcAddr = &tune::device_proc;
+    }
     // (the library lists every upscaler this device can run: the newest 4.x is taken explicitly, so an FSR 3.1 provider never
     // stands in silently)
     ffxQueryDescGetVersions versions{};
@@ -427,9 +791,13 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     d.cameraNear = f.near_z, d.cameraFar = f.far_z, d.cameraFovAngleVertical = f.fov_y;
     d.viewSpaceToMetersFactor = 1.0f;
     d.flags = s.context->hdr ? 0u : (uint32_t)FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;   // (HDR: linear light)
-    ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (ffxDispatch records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
-    const ffxReturnCode_t r = l.dispatch(&s.context->context, &d.header);
-    note_work();   // (AMD's dispatches: full_barrier must not take the next barrier for a repeat of the one before them)
+    ffxReturnCode_t r;
+    {
+        GprofSpan timed(cmd, "fsr4 ffxDispatch (AMD's passes)");   // (RX_VK_PASS_TIMING=1: AMD's own GPU time, named)
+        ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (ffxDispatch records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
+        r = l.dispatch(&s.context->context, &d.header);
+        note_work();   // (AMD's dispatches: full_barrier must not take the next barrier for a repeat of the one before them)
+    }
 
     const VkImageMemoryBarrier2 out[4] = {barrier(f.color.image, VK_ACCESS_2_SHADER_READ_BIT, any, R, G),
                                           barrier(f.depth.image, VK_ACCESS_2_SHADER_READ_BIT, any, R, G),
