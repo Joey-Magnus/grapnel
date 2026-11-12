@@ -40,6 +40,13 @@ enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
 enum { HOS_OPT_CAMERA_SPEED = 48 };
 /* (HOS_OPT_PROMPTS, 46: the Button prompts row, host/prompts.c: 0 Auto, else HOS_PROMPT_* + 1; a change shows at once) */
 enum { HOS_OPT_PROMPTS = 46 };
+/* (HOS_OPT_HDR_TONEMAP, 47: HDR set to Native with its Tone mapper row on PsychoV35, vk_menu.cpp scene_tonemap_on; host/nn_vi.c
+   makes the scene buffer RGBA16F only then, so Native HDR with the row on Vanilla keeps the game's R11G11B10F and the
+   temporal upscalers, which take only that scene) */
+enum { HOS_OPT_HDR_TONEMAP = 47 };
+/* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
+/* 49 and 50 are reserved for Walk mode and Walk speed (#2345). */
+enum { HOS_OPT_FOV = 51 };
 /* (HOS_OPT_FIRST_PERSON, 54: Controls' view at Link's eyes, host/hos_first_person.c: 0 the game's camera, 1 his eyes;
    the Debug tab's free camera wins over it; 54: the first free id, main having since taken 47 for its HDR tonemap row) */
 enum { HOS_OPT_FIRST_PERSON = 54 };
@@ -227,7 +234,7 @@ typedef struct MkwVkRenderer {
                                 18 to 23: the Motion page (HOS_OPT_GYRO*: motion controls from a pad's gyroscope, host/pad_sdl.c;
                                 the horizontal and vertical sensitivity in percent, each turned around, the deadzone),
                                 27: the volume in percent, 28: no sound while another window has the focus (host/nn_audio.c),
-                                47: the view at Link's eyes (HOS_OPT_FIRST_PERSON), 52 its height over his origin and 53 its
+                                54: the view at Link's eyes (HOS_OPT_FIRST_PERSON), 52 its height over his origin and 53 its
                                 offset along the view, in hundredths of a metre (host/hos_first_person.c),
                                 48: the camera's turn speed in percent of the game's (host/nn_vi.c) */
     /* a submit with its queue */
