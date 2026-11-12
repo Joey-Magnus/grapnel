@@ -50,7 +50,8 @@ static int version;
 
 FIXTURE = r'''
 enum { NO_GUID = 1, NO_MAPPING = 2, NO_FREE = 4, NO_JOYSTICK = 8 };
-static int missing, unknown, gets, frees, wrong_symbols, unexpected_calls, checks, failures;
+/* (takes, not "gets": MinGW's stdio.h still declares gets(), and a variable of that name does not compile there) */
+static int missing, unknown, takes, frees, wrong_symbols, unexpected_calls, checks, failures;
 static char *allocated;
 static const char *mapping_text;
 static void dummy(void) { unexpected_calls++; }
@@ -67,7 +68,7 @@ static HosSdlGuid guid_of(void *pad) {
 }
 static char *mapping_of(void *pad) {
     (void)pad;
-    gets++;
+    takes++;
     if (!mapping_text) return NULL;
     allocated = malloc(strlen(mapping_text) + 1);
     if (allocated) strcpy(allocated, mapping_text);
@@ -108,7 +109,7 @@ static void connect_pad(int motion, int steam) {
 static void load(int absent) {
     memset(&f,0,sizeof f);
     missing = absent;
-    gets = frees = 0;
+    takes = frees = 0;
     logged[0] = 0;
     CHECK(get_all((HMODULE)(uintptr_t)1, version == 3));
 }
@@ -122,7 +123,7 @@ int main(void) {
         CHECK(strstr(logged,"guid=03000000341200007856000001000000") != NULL);
         CHECK(strstr(logged,"mapping=available; mapping-name=\"Test mapping\"") != NULL);
         CHECK(strstr(logged,mapping_text) != NULL);
-        CHECK(gets == 1 && frees == 1 && !allocated);
+        CHECK(takes == 1 && frees == 1 && !allocated);
         printf("SDL%d known: %s\n",version,logged);
 
         unknown = 1;
@@ -131,13 +132,13 @@ int main(void) {
         connect_pad(0,0);
         CHECK(strstr(logged,"guid=unknown; mapping=none; mapping-name=\"?\"") != NULL);
         CHECK(!strstr(logged,"with a gyroscope") && !strstr(logged,"Steam Input's"));
-        CHECK(gets == 1 && frees == 0);
+        CHECK(takes == 1 && frees == 0);
         printf("SDL%d unknown: %s\n",version,logged);
 
         load(NO_GUID | NO_MAPPING);
         connect_pad(0,0);
         CHECK(strstr(logged,"guid=unavailable; mapping=unavailable") != NULL);
-        CHECK(gets == 0 && frees == 0);
+        CHECK(takes == 0 && frees == 0);
         printf("SDL%d missing functions: %s\n",version,logged);
 
         unknown = 0;
@@ -145,21 +146,21 @@ int main(void) {
         load(NO_MAPPING);
         connect_pad(0,0);
         CHECK(strstr(logged,"guid=03000000341200007856000001000000; mapping=unavailable") != NULL);
-        CHECK(!gets && !frees);
+        CHECK(!takes && !frees);
         load(NO_GUID);
         connect_pad(0,0);
         CHECK(strstr(logged,"guid=unavailable; mapping=available") != NULL);
-        CHECK(gets == 1 && frees == 1);
+        CHECK(takes == 1 && frees == 1);
         if (version == 2) {   /* SDL3 already requires SDL_free to enumerate controllers. */
             load(NO_FREE);
             connect_pad(0,0);
             CHECK(strstr(logged,"mapping=unavailable") != NULL);
-            CHECK(!gets && !frees);   /* never allocate a string that cannot be freed */
+            CHECK(!takes && !frees);   /* never allocate a string that cannot be freed */
         } else {
             load(NO_JOYSTICK);
             connect_pad(0,0);
             CHECK(strstr(logged,"guid=unavailable; mapping=available") != NULL);
-            CHECK(gets == 1 && frees == 1);
+            CHECK(takes == 1 && frees == 1);
         }
         char long_mapping[1400];
         memset(long_mapping,'z',sizeof long_mapping);
@@ -180,7 +181,7 @@ int main(void) {
             CHECK(!strncmp(second,long_mapping+512,512) && second[512] == '"');
         }
         CHECK(strlen(logged) < 1400);
-        CHECK(gets == 1 && frees == 1 && !allocated);
+        CHECK(takes == 1 && frees == 1 && !allocated);
         CHECK(!wrong_symbols && !unexpected_calls);
     }
     printf("%s: %d checks, %d failures; SDL2/SDL3 connection diagnostics\n",failures ? "FAIL" : "PASS",checks,failures);
