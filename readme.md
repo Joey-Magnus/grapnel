@@ -355,6 +355,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Field of view | 50% to 150%, in steps of 5; applies immediately during gameplay | 100% (original) |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
+| | Skip title screen | Off, On (after a restart) | Off |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
 | | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
@@ -389,6 +390,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   world and lower brings it closer. The game's zoom changes remain relative to your choice.
   Aiming has been tested in the 50% to 150% range, including with ultrawide enabled.
   Cutscenes, the HUD and movies keep their own view. The setting is saved as `field_of_view` in `hookshot_options.ini`.
+- **Skip title screen** starts the game with your most recent save: Hookshot presses A through the title screen and its
+  file list as soon as the game has a save. Until you have saved once, it leaves the title screen alone, so a new game can
+  still be started. It applies after a restart; turn it off to watch the intro and use the title.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins

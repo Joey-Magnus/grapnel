@@ -97,6 +97,7 @@ struct Options {
     int menu_lang = 0;    // this menu's language: 0 Auto (the game's own, language.txt), else menu_i18n::kLangs[menu_lang - 1]
                           // (vk_menu_i18n.cpp). Saved as menu_language
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
+    int skip_title = 0;   // (hookshot) start with the most recent save, pressing through the title and its file list (host/oot_autoload.c); read at the start
 };
 extern Options opts;
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
