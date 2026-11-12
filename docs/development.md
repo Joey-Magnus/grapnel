@@ -201,6 +201,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one (`make_game.py` passes the shipped profile) |
 | `RX_HOT_OPT=<level>` | The hot pieces' optimisation level (default `O2`); `O1` for [a faster build for development](#a-faster-build-for-development) |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |
+| `RX_CPU_FLAGS=<flags>` | More flags after `-march` and `-ffp-contract=off` (for example `-mprefer-vector-width=256`). The game folder's `hookshot_flags.txt` records the whole set, and the log's second line prints it |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 

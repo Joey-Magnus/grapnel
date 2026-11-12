@@ -92,7 +92,7 @@ class HostMarch(unittest.TestCase):
         """'this CPU has no AVX2' only when the CPU chose the level: an RX_MARCH of znver2 (AVX2 and more) said it too"""
         build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
         start = build.index('MARCH = os.environ.get("RX_MARCH") or host_march()')
-        block = build[start:build.index("CPU = [", start)]
+        block = build[start:build.index("\nMTUNE = ", start)]
         for env, host, want in (({"RX_MARCH": "znver2"}, "x86-64-v3", "built for znver2 (RX_MARCH)"),
                                 ({"RX_MARCH": "x86-64-v3"}, "x86-64", ""),
                                 ({}, "x86-64-v2", "this CPU has no AVX2"),

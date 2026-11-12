@@ -45,6 +45,7 @@ import rtgen
 import logo_rgba
 import ui_fonts
 import toolchain
+import compile_flags
 import version
 import win_manifest
 
@@ -593,10 +594,9 @@ if os.environ.get("RX_MARCH"):
         print("build: the game is built for %s (RX_MARCH)" % MARCH, flush=True)
 elif MARCH != "x86-64-v3":
     print("build: this CPU has no AVX2: the game is built for %s (a little slower)" % MARCH, flush=True)
-CPU = ["-march=" + MARCH, "-ffp-contract=off"]
 MTUNE = os.environ.get("RX_MTUNE") or host_mtune()
-if MTUNE:
-    CPU += ["-mtune=" + MTUNE]
+# (the same list compile_flags.write puts in the game folder, and HOOKSHOT_COMPILE_FLAGS in hos_main.c)
+CPU = compile_flags.cpu_flags(MARCH, MTUNE, os.environ.get("RX_CPU_FLAGS", ""))
 OPT = "O1"   # (the lifted code's level; code_hot.c's is RX_HOT_OPT)
 
 
@@ -877,7 +877,9 @@ def main():
     # (which Hookshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
     # release name rebuilds them and nothing else)
     stamp_def = version.define()
+    flags_def = compile_flags.define(CPU)
     print("version: %s" % version.describe(), flush=True)
+    print("compile flags: %s" % compile_flags.text(CPU), flush=True)
     # (the lifted chunks include only the guest model: the emulator ABI header is a dependency of the shim alone)
     deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (gen, rt64) for f in sorted(os.listdir(d))
                     if f.endswith(".h"))
@@ -976,7 +978,7 @@ def main():
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
               (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
-              ([stamp_def] if os.path.basename(s) == "hos_main.c" else []) +
+              ([stamp_def, flags_def] if os.path.basename(s) == "hos_main.c" else []) +
               (["-I" + ZSTD] if os.path.basename(s) == "prompts.c" else []) +
               (dav1d_fl if os.path.basename(s) in ("nn_video.c", "dav1d_av1.c") else []),
               host_deps + (zstd_api if os.path.basename(s) == "prompts.c" else b"")) for s in host_srcs]
