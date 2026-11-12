@@ -1525,11 +1525,13 @@ def lift_sources():
     return sorted(seen)
 
 
-def lift_key(exefs, work, env):
+def lift_key(exefs, work, env, planning=True):
     """What the lift's output depends on: the game's code, the translator (lift_sources: the modules the lift imports from nx2/ and
     the vendored a64-kit, and their other files), the HLE functions host/ defines (hooked in the lift; the rest of host/ is compiled
     after it, so a change there alone does not lift again), the hot list, the chunk boundaries and the hot pieces, the lift's environment and the
-    Python running it. A file the lift never reads may be in it (a new build then lifts again); one it reads must be"""
+    Python running it. A file the lift never reads may be in it (a new build then lifts again); one it reads must be.
+    planning=False: all of it but the two files the lift itself writes for the next one (image/chunks.txt, image/hot_pieces.txt),
+    to tell whether anything else it reads changed while it ran"""
     import kit  # noqa: F401  (a64-kit on the path, for standalone)
     import standalone
     h = hashlib.sha1(sys.version.encode(), usedforsecurity=False)
@@ -1539,8 +1541,9 @@ def lift_key(exefs, work, env):
     files += [(ROOT, f) for f in lift_sources()]
     # (hot_pieces.txt: split_hot's pieces of the last lift, which the next split keeps. The pieces' C follows it, so two work folders
     # with other histories may lift the same game into other pieces: their keys differ too)
-    files += [(work, os.path.join(work, "hot_funcs.txt")), (work, os.path.join(work, "image", "chunks.txt")),
-              (work, os.path.join(work, "image", "hot_pieces.txt"))]
+    files += [(work, os.path.join(work, "hot_funcs.txt"))]
+    if planning:
+        files += [(work, os.path.join(work, "image", "chunks.txt")), (work, os.path.join(work, "image", "hot_pieces.txt"))]
     for base, f in files:
         if os.path.isfile(f):
             h.update(os.path.relpath(f, base).replace(os.sep, "/").encode() + bytes(1))
@@ -2171,14 +2174,18 @@ def main(a=None):
                             except OSError as e:
                                 fail("Could not remove earlier translated file %s: %s. The new translation has not started." %
                                      (os.path.join(gen_dir, f), e))
+                inputs = lift_key(exefs, work, env, planning=False)   # (what the lift reads and does not write, as it starts)
                 run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
                 if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
                     run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
                 # (the lift writes inputs of the next one: split_hot's kept pieces, image/hot_pieces.txt, which the key hashes. Its key is
                 # taken again now, from what the next build reads: taken before, in a fresh work folder (no hot_pieces.txt yet) it never
                 # matched the next build's, which translated the game again for nothing, ~5 minutes on Windows, and a player's first
-                # update after a new install did not keep the translation)
-                key = lift_key(exefs, work, env)
+                # update after a new install did not keep the translation). Only when nothing else it reads changed while it ran: a
+                # translator file edited during the lift would otherwise stamp C made from the old one with the new one's key, and the
+                # next build would skip a lift it needs. Then the key from before stays, and the next build translates again
+                if lift_key(exefs, work, env, planning=False) == inputs:
+                    key = lift_key(exefs, work, env)
                 write_lift_key(work, key)
             cut = lifted_cut_short(gen_dir)
             if not cut:
