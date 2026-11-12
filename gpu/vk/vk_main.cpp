@@ -23,6 +23,8 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
+#include "vk_dlssnr_ngx.h"   // (hookshot: DLSS 5 neural rendering through NGX: its device extensions, asked of NGX)
+#include "vk_opennr.h"       // (hookshot: open neural rendering's extensions and features, only when it was asked for)
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
 #include "vk_antilag.h"
@@ -314,6 +316,7 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    opennr::device_extensions(want, exts);   // (hookshot: open neural rendering's, vk_opennr.cpp; nothing unless asked for at the start)
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
     dlss_fg_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS Frame Generation's through NGX, asked of NGX)
@@ -321,6 +324,24 @@ bool create_device() {
     if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
     antilag_device_extensions(want, exts);   // (hookshot: AMD Anti-Lag 2's, vk_antilag.cpp)
+
+    // (hookshot) DLSS 5 neural rendering through NGX directly (vk_dlssnr_ngx.h) asks NGX for feature 18's set: a device
+    // made without a feature's extensions is where NGX creates the feature and fails (FAIL_PlatformError) while still
+    // reporting it available. Nothing unless the row is on at the start (dlssnr_ngx::device_extensions): with it off this
+    // device is made as without it. An extension this GPU does not have is named in the log and left out.
+    {
+        const char* nr_want[16] = {};
+        const size_t nr_n = dlssnr_ngx::device_extensions(dev.instance, dev.physical, nr_want, sizeof nr_want / sizeof *nr_want);
+        for (size_t i = 0; i < nr_n; i++) {
+            if (!has_extension(exts, nr_want[i])) {
+                logf("vk: dlss-nr wants %s, which this GPU does not have: NGX direct will be unavailable", nr_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : want) already = already || strcmp(have, nr_want[i]) == 0;
+            if (!already) want.push_back(nr_want[i]), logf("vk: dlss-nr wants %s: enabled", nr_want[i]);
+        }
+    }
 
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
@@ -433,6 +454,7 @@ bool create_device() {
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
+    opennr::device_features(tail);   // (hookshot: the network's matrix, float8 and CUDA launch features, when asked for at the start)
     VkPhysicalDevicePresentIdFeaturesKHR present_id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
     VkPhysicalDevicePresentWaitFeaturesKHR present_wait{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
     if (want_present_wait) {
@@ -596,6 +618,8 @@ bool create_device() {
     }
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
+    opennr::device_created();   // (hookshot: whether open neural rendering can run here, said in the log; nothing unless asked for)
+    dlssnr_ngx::device_created(want);   // (hookshot: what the device was made with, for the Neural rendering row turned on later)
     reflex_device_created();
     antilag_device_created();
     if (dev.push_descriptor) {

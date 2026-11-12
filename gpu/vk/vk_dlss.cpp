@@ -82,6 +82,7 @@ namespace {
 struct State {
     std::mutex mu;
     bool ngx_tried = false, ngx_ok = false;
+    bool ngx_started = false;   // (hookshot: NVSDK_NGX_VULKAN_Init succeeded, whether or not super resolution is available)
     NVSDK_NGX_Parameter* caps = nullptr;
     NVSDK_NGX_Parameter* params = nullptr;
     NVSDK_NGX_Handle* feature = nullptr;
@@ -256,6 +257,7 @@ bool ngx_init() {
         g_why = DLSS_NEEDS_RTX;
         return false;
     }
+    s.ngx_started = true;
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetCapabilityParameters(&s.caps)) || !s.caps) {
         logf("vk: NVIDIA DLSS: NGX has no capabilities for this device");
         g_why = DLSS_NEEDS_RTX;
@@ -513,6 +515,48 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     // (NVIDIA's own extensions: without them this is not an NVIDIA GPU, or not one NGX runs on. With them, NGX says, in
     // dlss_probe or at the first upscale: a GTX has them too)
     if (!both) g_why = DLSS_NEEDS_RTX;
+}
+
+bool dlss_ngx_session() {
+    if (!dlss_built() || dlss_why() == DLSS_ENV_OFF || !dev.device) return false;
+    ngx_init();   // (it takes the lock itself, and does nothing the second time)
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    return s.ngx_started;
+}
+
+bool dlss_ngx_runtime(const char* name, std::string* where, std::string* found) {
+    if (where) where->clear();
+    if (found) found->clear();
+    bool have = false;
+    std::error_code ec;
+    // (and the game folder itself, after them: NGX looks there too, which its own log shows with RX_VK_DLSS_LOG=1, and
+    // it is where the DLSS SDK's runtimes are usually put)
+    const fs::path game = game_dir();
+    if (game.empty() || game.is_relative()) return false;   // (as ngx_init: no game folder, no NGX)
+    std::vector<fs::path> dirs = runtime_dirs(game);
+    dirs.push_back(game);
+    for (const fs::path& d : dirs) {
+        if (where) *where += (where->empty() ? "" : ", ") + shown(d);
+        if (have) continue;
+        for (const auto& f : fs::directory_iterator(d, ec)) {
+            const std::string file = shown(f.path().filename());
+            if (file.rfind(name, 0) != 0) continue;
+            have = true;
+            if (found) *found = shown(f.path());
+            break;
+        }
+    }
+    return have;
+}
+
+const wchar_t* dlss_ngx_data_path() {
+    static const std::wstring path = [] {
+        const fs::path game = game_dir();
+        if (game.empty() || game.is_relative()) return std::wstring(L".");
+        return wide(game / "ngx");
+    }();
+    return path.c_str();
 }
 
 void dlss_probe() {
@@ -1085,6 +1129,13 @@ void dlss_fg_close() {
 #else  // (no NGX SDK in this build: DLSS is not there)
 
 bool dlss_built() { return false; }
+bool dlss_ngx_session() { return false; }
+const wchar_t* dlss_ngx_data_path() { return L"."; }
+bool dlss_ngx_runtime(const char*, std::string* where, std::string* found) {
+    if (where) where->clear();
+    if (found) found->clear();
+    return false;
+}
 const TemporalEngine* dlss_engine() { return nullptr; }
 void dlss_probe() {}
 void dlss_instance_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}

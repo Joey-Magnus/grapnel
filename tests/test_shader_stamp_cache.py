@@ -21,7 +21,9 @@ BUILD_SCRIPT = ROOT / "nx2" / "build.py"
 
 def production_code(path):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    names = {"tree_headers", "vk_sources", "flag_text", "object_key", "zstd_jobs"}
+    # (opennr_jobs: open neural rendering's sources; without third_party/opendlss-nr, as in this fixture's tree, it adds
+    # none)
+    names = {"tree_headers", "vk_sources", "flag_text", "object_key", "opennr_jobs", "zstd_jobs"}
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert {n.name for n in functions} == names
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
@@ -250,8 +252,10 @@ class NgxSdkTests(unittest.TestCase):
         self.assertEqual(self.ns["ngx_link"]("", "llvm-mingw"), [])
         self.assertEqual(self.ns["ngx_link"]("", ""), [])
         lib = os.path.join(sdk, "lib", "nvsdk_ngx_s.lib")
-        self.assertEqual(self.ns["ngx_link"](sdk, "llvm-mingw"), [lib, "-ladvapi32", "-Wl,-Xlink=/nodefaultlib:libcpmt"])
-        self.assertEqual(self.ns["ngx_link"](sdk, ""), [lib, "-ladvapi32"])   # (MSVC: its own runtime, nothing left out)
+        # (wintrust: Windows' own, for neural rendering's refusal report, vk_dlssnr_ngx.cpp signed_file)
+        self.assertEqual(self.ns["ngx_link"](sdk, "llvm-mingw"),
+                         [lib, "-ladvapi32", "-lwintrust", "-Wl,-Xlink=/nodefaultlib:libcpmt"])
+        self.assertEqual(self.ns["ngx_link"](sdk, ""), [lib, "-ladvapi32", "-lwintrust"])   # (MSVC: its own runtime, nothing left out)
 
 
 if __name__ == "__main__":

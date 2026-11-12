@@ -222,7 +222,9 @@ def ngx_link(sdk, mingw):
     libraries of Microsoft's are toolchain.native_link's /nodefaultlib already). Nothing without the SDK"""
     if not sdk:
         return []
-    return [ngx_library(sdk, False), "-ladvapi32"] + (["-Wl,-Xlink=/nodefaultlib:libcpmt"] if mingw else [])
+    # (hookshot: wintrust for DLSS 5 neural rendering's refusal report, vk_dlssnr_ngx.cpp signed_file: whether the
+    # nvngx_dlssnr.dll it found is one Windows trusts. Windows' own library, nothing of NVIDIA's)
+    return [ngx_library(sdk, False), "-ladvapi32", "-lwintrust"] + (["-Wl,-Xlink=/nodefaultlib:libcpmt"] if mingw else [])
 
 
 def vk_sources():
@@ -237,6 +239,35 @@ def vk_sources():
     vc = os.path.join(GPU, "third_party", "suyu", "video_core")
     out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (the WebGPU back end's unswizzle)
     return sorted(out)
+
+
+def opennr_jobs(cxx, vk, gen_dir, obj_dir, vflags, vdeps):
+    """(hookshot) Open neural rendering (gpu/vk/vk_opennr.h): OpenDLSS-NR's host sources and the adapter around them,
+    as deliberate jobs rather than through vk_sources(). Upstream's files are compiled from a copy in gen_dir with the
+    portability patches of scripts/opennr_kernels.py (third_party stays upstream's, byte for byte); its PTX kernels are
+    generated there from its Python generators and embedded as gen_dir/opennr_ptx.h. Returns the jobs, the bytes
+    vk_opennr.cpp depends on (the PTX header) and the PTX kernel count; ([], b"", 0) without the vendored folder."""
+    root = os.path.join(kit.HERE, "..")
+    adapter = os.path.join(vk, "opennr")
+    if not os.path.isdir(os.path.join(root, "third_party", "opendlss-nr", "src")) or not os.path.isdir(adapter):
+        return [], b"", 0
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("opennr_kernels", os.path.join(root, "scripts", "opennr_kernels.py"))
+    kernels = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kernels)
+    src = str(kernels.prepare_sources(os.path.join(gen_dir, "opendlss-nr", "src")))
+    ptx = os.path.join(gen_dir, "opennr-ptx")
+    kernels.generate_ptx(ptx)
+    header = os.path.join(gen_dir, "opennr_ptx.h")
+    count = kernels.write_ptx_header(ptx, header)
+    # (upstream's <volk.h> is the shim in gpu/vk/opennr, so it goes first; VK_NV_cuda_kernel_launch is a beta extension)
+    flags = vflags + ["-DVK_ENABLE_BETA_EXTENSIONS", "-I" + adapter, "-I" + src]
+    deps = vdeps + tree_headers(src)
+    jobs = [(cxx, os.path.join(src, f), os.path.join(obj_dir, "vk_opennr_upstream_" + f[:-4] + ".o"), flags, deps)
+            for f in kernels.RENDERER_SOURCES]
+    jobs += [(cxx, os.path.join(adapter, f), os.path.join(obj_dir, "vk_opennr_" + f[:-4] + ".o"), flags, deps)
+             for f in sorted(os.listdir(adapter)) if f.endswith(".cpp")]
+    return jobs, open(header, "rb").read(), count
 
 
 def zstd_jobs(cc, flags, obj_dir, prefix):
@@ -1065,6 +1096,9 @@ def main():
         # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
         ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
+        # (hookshot) the files that see NVIDIA's headers: DLSS super resolution and frame generation, and DLSS 5 neural
+        # rendering over the same NGX session (vk_ngx.cpp, vk_dlssnr_ngx.cpp)
+        ngx_files = ("vk_dlss.cpp", "vk_ngx.cpp", "vk_dlssnr_ngx.cpp")
         ngx_deps = tree_headers(os.path.join(NGX_SDK, "include")) if NGX_SDK else b""
         if NGX_SDK:
             print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
@@ -1079,6 +1113,10 @@ def main():
                                    os.path.join(GPU, "compat"))
         vdeps = tree_headers(vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
                              os.path.join(GPU, "third_party", "suyu", "video_core", "textures"))
+        # (hookshot) open neural rendering (gpu/vk/vk_opennr.cpp): OpenDLSS-NR's host sources and its generated PTX kernels
+        opennr, opennr_ptx, opennr_count = opennr_jobs(cxx, vk, gen_dir, obj_dir, vflags, vdeps)
+        print("vk: open neural rendering (OpenDLSS-NR): %s" % (("compiled in, %d PTX kernels" % opennr_count) if opennr
+                                                               else "left out (no third_party/opendlss-nr)"))
         # (hookshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
         # draws with it). Its objects see only its own headers; its headers are a dependency of the two files that include them
         imgui = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "imgui"))
@@ -1104,12 +1142,14 @@ def main():
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
-                            (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
+                            (ngx_flags if os.path.basename(src) in ngx_files else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
-                            (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
-                            (imgui_deps if os.path.basename(src) in imgui_users else b"")))
+                            (ngx_deps if os.path.basename(src) in ngx_files else b"") +
+                            (imgui_deps if os.path.basename(src) in imgui_users else b"") +
+                            (opennr_ptx if os.path.basename(src) == "vk_opennr.cpp" else b"")))
+        vk_jobs += opennr
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
             # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)

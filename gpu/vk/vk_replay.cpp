@@ -39,6 +39,7 @@
 #include "vk_paths.h"   // (game_module_path: the frame trace beside the game)
 #include "vk_gprof.h"
 #include "vk_framegen.h"
+#include "vk_dlssnr_ngx.h"   // (hookshot: nr::apply, whichever neural rendering backend runs)
 #include "vk_dlss.h"   // (hookshot: dlss_fg_idle)
 #include "vk_fps.h"
 #include "vk_menu.h"
@@ -3386,6 +3387,10 @@ void do_present(const nvn_tex* t, const int crop[4]) {
     uint32_t sw = 0, sh = 0;
     bool shot = false, interpolated = false;
     VkImage made_src = VK_NULL_HANDLE;
+    VkImage nr_image = VK_NULL_HANDLE;   // (hookshot: neural rendering's picture of this frame, shown in its place)
+    VkImageView nr_view = VK_NULL_HANDLE;
+    uint32_t nr_w = 0, nr_h = 0;         // (its size: the picture's, the crop's part of the game's image)
+    int nr_crop[4] = {0, 0, 0, 0};       // (and the whole of it, as a crop)
     {
         std::lock_guard lk(replay_mu);
         bench_frame(presents);
@@ -3468,6 +3473,15 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         dump_present(presents);
         if (src && (dev.offscreen || shots) && offscreen_init()) {
             if (dev.offscreen) {
+                // (hookshot) Neural rendering here too, as the window's frames get it below: with no window
+                // (HOS_HEADLESS) nothing is shown, and a headless run is how a backend is driven into a scene and measured.
+                // Whichever backend runs (nr::apply), as in a window; nothing with the row off
+                VkImageView off_view = VK_NULL_HANDLE;
+                if (const VkImage image = nr::apply(r.cmd, src, sw, sh, crop, &off_view, &nr_w, &nr_h); image && off_view) {
+                    // (the model's image is the picture alone: its whole, in place of the game's image and crop)
+                    nr_crop[2] = (int)nr_w, nr_crop[3] = (int)nr_h;
+                    src = image, sw = nr_w, sh = nr_h, crop = nr_crop;
+                }
                 image_barrier(r.cmd, off_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 blit_crop(r.cmd, src, sw, sh, crop, off_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           dev.swap_extent.width, dev.swap_extent.height);
@@ -3529,11 +3543,33 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         if (pushed.load() < value) pushed = value;
         done_max = std::max(done_max, value), signaled = std::max(signaled, value);
         shot_ask_take();   // (an earlier present's, when the GPU is past it)
-        if (fg_after) {
+        // (hookshot) DLSS 5 neural rendering (nr::apply: NGX direct or the open network), over the frame as the game
+        // finished it: once for each of the game's frames, here, before frame generation and before anything of ours is
+        // drawn on it, so the made frames are made from its picture. Not in present_image, which the display thread calls
+        // for every frame it shows: the model would run on each made frame too, its history fed frames that were never
+        // rendered. In the recording after the present's own, as frame generation's is and for the same reason: the game
+        // waits for the present's value before its next frame, and the model's GPU time would hold it back. It gives back
+        // an image of its own and the game's is left untouched; a frame it could not do goes on exactly as it always did.
+        // Not while the picture is the game's own HDR10 (the Insert menu's HDR set to Native): that one is PQ codes in
+        // RGB10A2, which the model's eight-bit SDR copy would crush; HDR's Expanded is made from the model's picture.
+        const bool nr_after = tex && src && !dev.offscreen && nr::wanted() &&
+                              !present_native_pq.load(std::memory_order_relaxed);
+        if (fg_after || nr_after) {
             // (its slot is free again once the next submit's value is reached: that one comes after it)
             Recording& g = begin_recording(value + 1);
-            interpolated = framegen_record(g.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample),
-                                           sw, sh, crop);
+            if (nr_after) {
+                full_barrier(g.cmd);   // (after the game's work for the frame: the present's recording, submitted above)
+                VkImageView view = VK_NULL_HANDLE;
+                if (const VkImage image = nr::apply(g.cmd, src, sw, sh, crop, &view, &nr_w, &nr_h); image && view) {
+                    // (the model's image is the picture alone: its whole, in place of the game's image and crop)
+                    nr_image = image, nr_view = view;
+                    nr_crop[2] = (int)nr_w, nr_crop[3] = (int)nr_h;
+                }
+            }
+            if (fg_after)
+                interpolated = nr_image ? framegen_record(g.cmd, nr_view, nr_w, nr_h, nr_crop)
+                                        : framegen_record(g.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample),
+                                                          sw, sh, crop);
             submit_recording(g, false);
         }
         // (frame generation at Off or Auto, where DLSS-G is not asked: its feature, if made, let go, vk_dlss.cpp)
@@ -3753,6 +3789,8 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         }
         log_frame_stats();
     }
+    // (hookshot: the model's picture in the game's place: the picture alone, so its own size and the whole of it)
+    if (nr_image) src = nr_image, direct_view = nr_view, sw = nr_w, sh = nr_h, crop = nr_crop;
     if (dev.offscreen) frame_log_present();   // (no window: the copy into the offscreen image above is its present)
     if (dev.offscreen || interpolated) return;
     present_image(src, sw, sh, crop, direct_view);

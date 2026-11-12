@@ -39,7 +39,8 @@ struct Frame {
 };
 
 /// FSR 3.1 is asked for at all: its upscaler (the Upscaler row) or its frame interpolation (the Frame generation row). The
-/// scene's camera is kept only then
+/// scene's camera is kept only then. (hookshot: or the open neural rendering backend's temporal path ran at one of the last
+/// presents, vk_opennr.h scene_motion_wanted)
 bool wanted();
 
 /// A draw into a scene-sized target with the vertex stage's uniform buffer 3 at `camera`: what vk_temporal.cpp's
@@ -59,6 +60,10 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out);
 /// The frame prepare made last, for frame interpolation at the present, once: false when none was made since the last take
 /// (or it is older than the frame before), so a present never interpolates with another frame's depth and motion
 bool take(Frame& out);
+
+/// (hookshot) The same frame without taking it: for the open neural rendering backend (vk_opennr.cpp), which reads this
+/// present's motion before frame generation takes the frame at the same present. False as take's
+bool latest(Frame& out);
 
 /// FSR 3.1's upscaler drew this frame, rw x rh into dw x dh: the host's jitter follows FSR (jitter_size)
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh);

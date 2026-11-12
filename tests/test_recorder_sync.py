@@ -96,7 +96,13 @@ C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\
 UI_RECORD_CALL = re.compile(r"\bui\s*::\s*record(?:_to)?\s*\(")
 NGX_RECORD_CALL = re.compile(r"\bNGX_(?:VULKAN_\w+_EXT|VK_\w+_DLSSG)\s*\(")   # (NVIDIA NGX's create/evaluate, DLSS's and frame generation's: its own commands into cmd)
 FFX_RECORD_CALL = re.compile(r"\bl\s*\.\s*dispatch\s*\(")   # (AMD FidelityFX's ffxDispatch, through its loaded pointer: its own commands into cmd)
-OPAQUE_RECORD_CALL = re.compile(UI_RECORD_CALL.pattern + "|" + NGX_RECORD_CALL.pattern + "|" + FFX_RECORD_CALL.pattern)
+# (neural rendering's backends hand cmd to code of someone else's too: NGX's generic create/evaluate (DLSS 5 neural
+# rendering through NGX, vk_ngx.cpp) and OpenDLSS-NR's network (vk_opennr.cpp))
+NR_NGX_RECORD_CALL = re.compile(r"\bNVSDK_NGX_VULKAN_(?:CreateFeature|EvaluateFeature)\s*\(")
+NR_OPEN_RECORD_CALL = re.compile(r"\bopennr_net\s*::\s*record\s*\(")
+NR_RECORD_CALLS = (("vk_ngx.cpp", NR_NGX_RECORD_CALL), ("vk_opennr.cpp", NR_OPEN_RECORD_CALL))
+OPAQUE_RECORD_CALL = re.compile("|".join([UI_RECORD_CALL.pattern, NGX_RECORD_CALL.pattern, FFX_RECORD_CALL.pattern] +
+                                         [call.pattern for _, call in NR_RECORD_CALLS]))
 B_DIRECT_BEFORE = re.compile(r"::\s*mkwvk\s*::\s*rec\s*::\s*boundary\s*\(\s*::\s*mkwvk\s*::\s*rec\s*::\s*B_DIRECT\s*\)\s*;\Z")
 
 
@@ -234,6 +240,13 @@ def check_sources():
         problems.append("vk_fsr4.cpp: no ffxDispatch call (l.dispatch) found: update FFX_RECORD_CALL")
     elif not direct_unbounded(fsr4.replace(B_DIRECT_STMT, "", 1), "vk_fsr4.cpp", FFX_RECORD_CALL):
         problems.append("the B_DIRECT check missed an ffxDispatch recording without its boundary")
+    # (each of neural rendering's backends records through someone else's code after a B_DIRECT boundary; control: its
+    # first boundary removed)
+    for name, call in NR_RECORD_CALLS:
+        text = (VK / name).read_text(encoding="utf-8")
+        problems += direct_unbounded(text, name, call)
+        if B_DIRECT_STMT in text and not direct_unbounded(text.replace(B_DIRECT_STMT, "", 1), name, call):
+            problems.append("the B_DIRECT check missed a recording without its boundary in %s" % name)
     # (and any other recording vk_work.h does not see must be registered: every hand-written note_work() follows a known one)
     for path in sorted(VK.glob("*.cpp")):
         problems += opaque_unregistered(path.read_text(encoding="utf-8"), path.name)

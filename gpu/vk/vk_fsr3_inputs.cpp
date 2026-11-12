@@ -21,6 +21,7 @@
 #include "dlss_math.h"
 #include "temporal_jitter.h"
 #include "vk_draw.h"   // (descriptors_disturbed)
+#include "vk_opennr.h"   // (hookshot: the open neural rendering backend's temporal path takes the scene's motion)
 #include "vk_fsr3.h"
 #include "vk_fsr3fi.h"
 #include "vk_texture.h"
@@ -207,7 +208,7 @@ VkImageView depth_view(Texture* t) {
 
 } // namespace
 
-bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0; }
+bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0 || opennr::scene_motion_wanted(); }
 
 void note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                      uint64_t camera_size) {
@@ -345,6 +346,14 @@ bool take(Frame& out) {
     std::lock_guard lk(s.mu);
     const bool have = s.have_frame && texture_frame_no() - s.frame.frame <= 1;
     s.have_frame = false;
+    if (have) out = s.frame;
+    return have;
+}
+
+bool latest(Frame& out) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    const bool have = s.have_frame && texture_frame_no() - s.frame.frame <= 1;
     if (have) out = s.frame;
     return have;
 }
