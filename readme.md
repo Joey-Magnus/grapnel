@@ -133,7 +133,6 @@ script: see [Linux, the AppImage from the command line](#build-from-source).
 enter the Deck's SSH address (for example `deck@steamdeck`). Set up SSH key access first: the builder connects without
 asking for a password. It reads the Deck's graphics driver and prepares the shaders and pipelines with this PC's CPU,
 moving the bulk of first-start preparation off the Deck. The Deck must stay reachable while the driver is read.
-The [builder screenshot](docs/images/linux-builder-steamdeck.png) shows the option selected.
 The driver stays in the builder cache; copy the complete game folder, including `hookshot_steamdeck_cache` and its
 shader and pipeline caches, to the Deck. These caches are for that GPU and driver: a SteamOS driver update can require
 preparation again. With a matching prepared cache, the game loads programs and pipelines as they are drawn, keeping
