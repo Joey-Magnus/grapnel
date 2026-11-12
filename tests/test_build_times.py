@@ -140,5 +140,38 @@ class EstimateTests(unittest.TestCase):
             self.assertEqual(build.plan_jobs([job])[0], [])
 
 
+class StartOrderTests(unittest.TestCase):
+    """The back end's files start the longest first; the jobs' lists, which the link follows, stay as they were"""
+    def jobs(self, d, sizes):
+        out = []
+        for name, size in sizes:
+            src = Path(d) / name
+            src.write_bytes(b"x" * size)
+            out.append(("cc", str(src), str(Path(d) / (name + ".o")), [], b""))
+        return out
+
+    def test_the_back_end_starts_its_biggest_file_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            game = self.jobs(d, [("code_hot.c", 10), ("code_001.c", 4000), ("host_main.c", 1)])
+            vk = self.jobs(d, [("imgui.cpp", 300), ("vk_bank.cpp", 50), ("vk_draw.cpp", 900), ("vk_menu.cpp", 300)])
+            jobs = game + vk
+            before, vk_before = list(jobs), list(vk)
+            order = build.start_order(jobs, vk, {})
+            self.assertEqual(order[:3], game)
+            self.assertEqual([Path(j[1]).name for j in order[3:]], ["vk_draw.cpp", "imgui.cpp", "vk_menu.cpp", "vk_bank.cpp"])
+            self.assertEqual((jobs, vk), (before, vk_before))
+
+    def test_measured_seconds_order_the_back_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            vk = self.jobs(d, [("ui_fonts.cpp", 5000), ("vk_draw.cpp", 900), ("vk_main.cpp", 100)])
+            order = build.start_order(vk, vk, {"ui_fonts.cpp": 2.0, "vk_draw.cpp": 47.0, "vk_main.cpp": 9.0})
+            self.assertEqual([Path(j[1]).name for j in order], ["vk_draw.cpp", "vk_main.cpp", "ui_fonts.cpp"])
+
+    def test_the_compile_starts_in_that_order(self):
+        main = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8").split("\ndef main(")[1]
+        self.assertIn("order = start_order(jobs, vk_jobs, history)", main)
+        self.assertIn("ex.submit(compile_one, job): job for job in order}", main)
+
+
 if __name__ == "__main__":
     raise SystemExit(unittest.main(verbosity=1))

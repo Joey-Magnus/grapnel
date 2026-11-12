@@ -89,7 +89,7 @@ class CompileRetryJobsTests(unittest.TestCase):
                 calls.append(job)
             return actual_compile(job)
 
-        self.scope.update(compile_one=observed_compile, jobs=jobs, a=SimpleNamespace(jobs=2),
+        self.scope.update(compile_one=observed_compile, jobs=jobs, order=jobs, a=SimpleNamespace(jobs=2),
                           subprocess=SimpleNamespace(Popen=Child, PIPE=subprocess.PIPE,
                                                      CompletedProcess=subprocess.CompletedProcess),
                           OBJ_CACHE=str(self.cache), PLANNED={(job[1], job[2]): keys[job[2]] for job in jobs},
