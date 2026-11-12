@@ -1,8 +1,9 @@
 """Linux source prerequisites stop the real builder before extraction or translation.
 
-All dependency answers and game bytes are authored, except the final compiler/linker
-probe (run with --cc gcc or --cc clang). HOOKSHOT_LINUX_PREFLIGHT_SOURCE selects
-another checkout's nx2 sources for the exact same fail-before checks.
+All dependency answers and game bytes are authored. The production C probe is also
+compiled (not linked) with --cc gcc or --cc clang: CI needs no game linker.
+HOOKSHOT_LINUX_PREFLIGHT_SOURCE selects another checkout's nx2 sources for the
+exact same fail-before checks.
 """
 import argparse
 import contextlib
@@ -115,7 +116,7 @@ class LinuxPreflightTests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, bool(bad), "", "")
         if "-o" in cmd:
             if self.real_compile:
-                return REAL_RUN(cmd, **kwargs)
+                return REAL_RUN([*cmd, "-c"], **kwargs)
             return subprocess.CompletedProcess(cmd, bool(self.compiler_error), "", self.compiler_error)
         self.fail("Unexpected command: %r" % cmd)
 
@@ -179,6 +180,20 @@ class LinuxPreflightTests(unittest.TestCase):
         self.assertNotIn("@@stage read", text)
         self.assertFalse((self.root / "work/exefs").exists())
         self.assertFalse((self.root / "work/sa").exists())
+
+    def test_injected_toolchain_check_keeps_game_free_steps_hermetic(self):
+        # Cache/missing-input fixtures inject this same boundary along with run().
+        # A future exception in their stand-in lift is not a production build mode.
+        self.modules_missing = {"lz4", "numpy", "capstone", "unicorn", "zstandard"}
+        self.pc_missing = {"libavcodec", "libswscale", "libswresample", "libavutil"}
+        self.cc.unlink()
+        self.cxx.unlink()
+        with mock.patch.object(self.make, "check_windows_sdk") as preflight:
+            self.assertEqual(self.invoke(), "game", self.output.getvalue())
+        preflight.assert_called_once_with(str(self.root / "work"))
+        self.assertEqual(self.events, ["read", "lift"])
+        self.assertEqual(self.module_queries, [])
+        self.assertEqual(self.processes, [])
 
     def test_valid_cpm_reaches_read_then_lift(self):
         expected = self.headers()
@@ -300,12 +315,12 @@ class LinuxPreflightTests(unittest.TestCase):
         self.assertTrue(any("--target=x86_64-w64-mingw32" in cmd for cmd in self.processes))
         self.assertEqual(self.events, ["read", "lift"])
 
-    @unittest.skipIf(os.name == "nt", "real Linux compile/link probe; authored routing cases run on Windows too")
-    def test_real_compiler_links_without_running_the_probe(self):
+    @unittest.skipIf(os.name == "nt", "real Linux C compile; authored routing cases run on Windows too")
+    def test_real_compiler_compiles_production_probe_without_a_linker(self):
         self.headers()
         self.cc = Path(COMPILER)
         self.real_compile = True
-        # Only compilation is real; the executable is never run and cannot open a GPU.
+        # The command still asks for lld, but compile-only needs no linker installed.
         with mock.patch.object(subprocess, "Popen", REAL_POPEN), mock.patch.dict(os.environ, {"PATH": REAL_PATH}):
             self.assertEqual(self.invoke(), "game", self.output.getvalue())
         self.assertTrue(any("-fuse-ld=lld" in cmd for cmd in self.processes))
