@@ -58,7 +58,43 @@ def main():
         costs = dict(l.split() for l in Path(d, chunks.COSTS).read_text().splitlines())
         check("every chunk and part has a cost", set(costs) == {os.path.basename(p) for p in [files[0]] + parts})
         check("a part's cost is its estimate", all(int(costs[os.path.basename(p)]) == chunks.text_cost(t) for p, t in zip(parts, texts)))
-    print("ok: %d parts, the functions as they were" % len(parts))
+    stopped_part_way(budget)
+    print("ok: %d parts, the functions as they were, and again after a worker stopped part way" % len(parts))
+
+
+def stopped_part_way(budget):
+    """A worker that stops after its first file (killed for memory) leaves the chunk whole: the lift's own run cuts it again"""
+    with tempfile.TemporaryDirectory(prefix="hookshot-chunk-stop-") as d:
+        big = [function(0x81000000 + 16 * i, 2000) for i in range(40)] + [function(0x81100000, 300000)] +               [function(0x81200000 + 16 * i, 2000) for i in range(200)]
+        path = os.path.join(d, "code_001.c")
+        Path(path).write_text(PREAMBLE + "".join(big), newline=chr(10))
+
+        class Stopped(Exception):
+            pass
+        real = chunks.whole_write.write_whole
+        writes = []
+
+        def stop_after_one(out, text, *a, **k):
+            if writes:
+                raise Stopped()
+            writes.append(out)
+            return real(out, text, *a, **k)
+        chunks.whole_write.write_whole = stop_after_one
+        try:
+            chunks._split_one((d, path, budget))
+            check("the chunk is cut into parts, so a worker can stop between two of them", False)
+        except Stopped:
+            pass
+        finally:
+            chunks.whole_write.write_whole = real
+        made = chunks.split_big(d, [path], budget=budget, jobs=1)
+        parts = [path] + sorted(made, key=lambda p: int(re.search(r"_(\d+)\.c$", p).group(1)))
+        texts = []
+        for p in parts:
+            with open(p, newline="") as f:
+                texts.append(f.read())
+        check("after a stopped worker the chunk is cut again", len(parts) >= 2)
+        check("after a stopped worker every function is still there", "".join(t[len(PREAMBLE):] for t in texts) == "".join(big))
 
 
 if __name__ == "__main__":

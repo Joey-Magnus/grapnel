@@ -409,13 +409,15 @@ def _split_one(job):
         run += c
     bounds = [marks[i] for i in cuts] + [len(text)]
     preamble = text[:marks[0]]
-    for j in range(len(cuts)):
+    # (the chunk itself last: a worker stopped part way leaves it whole, so the run again in the lift's process cuts it again,
+    # where a chunk already cut to its first part made no parts and split_big then removed the ones written)
+    for j in reversed(range(len(cuts))):
         out = path if j == 0 else os.path.join(gen_dir, "code_%s_%d.c" % (m.group(1), j))
         piece = text[:bounds[1]] if j == 0 else preamble + text[bounds[j]:bounds[j + 1]]
         whole_write.write_whole(out, piece)
         costs[os.path.basename(out)] = len(preamble) + sum(cost[cuts[j]:cuts[j + 1] if j + 1 < len(cuts) else len(cost)])
         if j:
-            made.append(out)
+            made.insert(0, out)
     return made, costs, "chunks: %s (%d MB, cost %d MB) in %d parts" % (os.path.basename(path), len(text) >> 20, total >> 20, len(cuts))
 
 
