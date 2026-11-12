@@ -27,10 +27,26 @@ int main() {
         Table t;
         const uint64_t lo = 0x117b427000, hi = lo + 0xf33080;   // (Hyrule Field's 15 MB pair)
         for (uint32_t i = 0; i < t.probation; i++) CHECK(!t.plan(lo, hi, cap, keep));
-        CHECK(t.plan(lo, hi, cap, keep) && keep.empty());
-        CHECK(t.plan(lo, hi, cap, keep) && keep.empty());
+        // (it ends 0x80 bytes into a page shared with what follows: that page alone is kept)
+        CHECK(t.plan(lo, hi, cap, keep) && keep.size() == 1 && keep[0].first == hi / 4096 * 4096 && keep[0].second == hi);
+        CHECK(t.plan(lo, hi, cap, keep) && keep.size() == 1);
+        CHECK(!t.read(hi - 0x40, hi + 0x200));   // (the CPU's write in that page: known, nothing stale)
         // another binding at the same start (the pool reused): its own probation
         CHECK(!t.plan(lo, hi + 4 * MB, cap, keep));
+    }
+    {   // a binding page-aligned at both ends, nobody touching it: left out entirely
+        Table t;
+        const uint64_t lo = 0x1179e9c000, hi = lo + 0x654000;
+        for (uint32_t i = 0; i < t.probation; i++) CHECK(!t.plan(lo, hi, cap, keep));
+        CHECK(t.plan(lo, hi, cap, keep) && keep.empty());
+    }
+    {   // a binding that starts and ends inside pages: both edge pages kept, clipped to it
+        Table t;
+        const uint64_t lo = 0x117df8b040, hi = lo + 0x44b040;
+        for (uint32_t i = 0; i < t.probation; i++) CHECK(!t.plan(lo, hi, cap, keep));
+        CHECK(t.plan(lo, hi, cap, keep) && keep.size() == 2);
+        CHECK(keep[0].first == lo && keep[0].second == lo / 4096 * 4096 + 4096);
+        CHECK(keep[1].first == hi / 4096 * 4096 && keep[1].second == hi);
     }
     {   // a large binding the CPU reads in full after every write (the 4.3 MB buffers): always written back in full
         Table t;
@@ -51,9 +67,10 @@ int main() {
             CHECK(!t.read(lo + 0x200000, lo + 0x202000));
         }
         CHECK(t.plan(lo, hi, cap, keep));
-        CHECK(keep.size() == 2);
+        CHECK(keep.size() == 3);   // (the two touched ranges, and the last page it shares)
         CHECK(keep[0].first == lo + 0x3000 && keep[0].second == lo + 0x4000);
         CHECK(keep[1].first == lo + 0x200000 && keep[1].second == lo + 0x202000);
+        CHECK(keep[2].first == lo + 0x654000 && keep[2].second == hi);
         // a touch that reaches past the binding is clipped to it
         CHECK(t.read(hi - 0x1000, hi + 0x1000));   // (new, in a binding planned in part: its last write-back left it out)
         CHECK(t.plan(lo, hi, cap, keep) && keep.size() == 3 && keep[2].first == hi - 0x1000 && keep[2].second == hi);

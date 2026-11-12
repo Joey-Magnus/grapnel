@@ -9,7 +9,8 @@
 //    sync copies such a page whole from guest memory, so with the plain cap the rest of the page went back to its stale bytes over
 //    the GPU's, ~700 pages a second.
 // So a large binding is written back whole for its first `probation` writes, the CPU's reads and writes meanwhile noted by range
-// (a write as its whole page). After that only the parts the CPU has read or written are written back, the rest left out. A range
+// (a write as its whole page). After that only the parts the CPU has read or written are written back, and the page at either end
+// when the binding starts or ends inside it (a page it shares with what is next to it); the rest is left out. A range
 // the CPU first touches after that (read more rarely than every `probation` writes) finds the stale copy that once, and is written
 // back from then on: read() says so, for the log. Past max_seen bindings or max_read ranges nothing more is left out (as
 // RX_VK_WB_MAX_KB=0).
@@ -51,8 +52,10 @@ public:
                 return false;
             }
             it = seen_.emplace(lo, Seen{hi, 0, false}).first;
+            edges(lo, hi);
         } else if (it->second.hi != hi) {
             it->second = Seen{hi, 0, false};   // (another binding at this start: its own probation)
+            edges(lo, hi);
         }
         if (it->second.writes < probation) {
             it->second.writes++;
@@ -107,6 +110,14 @@ private:
     std::map<uint64_t, uint64_t> read_;   // (start -> end, merged, none touching)
     bool full_ = false;
 
+    // (a binding that starts or ends inside a page shares that page with whatever is next to it, which the CPU may write: the 15 MB
+    // culling lists end 0x80 bytes into a page the CPU writes every frame, and a mirror sync copies that page whole. Those pages are
+    // always written back)
+    void edges(uint64_t lo, uint64_t hi) {
+        constexpr uint64_t kPage = 4096;
+        if (lo % kPage) add_read(lo / kPage * kPage, lo / kPage * kPage + kPage);
+        if (hi % kPage) add_read(hi / kPage * kPage, hi / kPage * kPage + kPage);
+    }
     bool covered(uint64_t lo, uint64_t hi) const {
         auto it = read_.upper_bound(lo);
         if (it == read_.begin()) return false;
