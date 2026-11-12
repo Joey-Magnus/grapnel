@@ -96,7 +96,10 @@ C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\
 UI_RECORD_CALL = re.compile(r"\bui\s*::\s*record(?:_to)?\s*\(")
 NGX_RECORD_CALL = re.compile(r"\bNGX_(?:VULKAN_\w+_EXT|VK_\w+_DLSSG)\s*\(")   # (NVIDIA NGX's create/evaluate, DLSS's and frame generation's: its own commands into cmd)
 FFX_RECORD_CALL = re.compile(r"\bl\s*\.\s*dispatch\s*\(")   # (AMD FidelityFX's ffxDispatch, through its loaded pointer: its own commands into cmd)
-OPAQUE_RECORD_CALL = re.compile(UI_RECORD_CALL.pattern + "|" + NGX_RECORD_CALL.pattern + "|" + FFX_RECORD_CALL.pattern)
+# (hookshot) AMD's ffxDispatch behind its guard (FSR 4's frame generation, vk_ffx.cpp): its own commands into cmd too
+FFX_GUARDED_RECORD_CALL = re.compile(r"\bguarded_dispatch\s*\(\s*s\s*\.\s*dispatch\b")
+OPAQUE_RECORD_CALL = re.compile(UI_RECORD_CALL.pattern + "|" + NGX_RECORD_CALL.pattern + "|" + FFX_RECORD_CALL.pattern + "|" +
+                                FFX_GUARDED_RECORD_CALL.pattern)
 B_DIRECT_BEFORE = re.compile(r"::\s*mkwvk\s*::\s*rec\s*::\s*boundary\s*\(\s*::\s*mkwvk\s*::\s*rec\s*::\s*B_DIRECT\s*\)\s*;\Z")
 
 
@@ -234,6 +237,13 @@ def check_sources():
         problems.append("vk_fsr4.cpp: no ffxDispatch call (l.dispatch) found: update FFX_RECORD_CALL")
     elif not direct_unbounded(fsr4.replace(B_DIRECT_STMT, "", 1), "vk_fsr4.cpp", FFX_RECORD_CALL):
         problems.append("the B_DIRECT check missed an ffxDispatch recording without its boundary")
+    # (hookshot: and so does AMD FSR 4's frame generation, through its guard; control: its first boundary removed)
+    ffx = (VK / "vk_ffx.cpp").read_text(encoding="utf-8")
+    problems += direct_unbounded(ffx, "vk_ffx.cpp", FFX_GUARDED_RECORD_CALL)
+    if not FFX_GUARDED_RECORD_CALL.search(blank_comments(ffx)):
+        problems.append("vk_ffx.cpp: no ffxDispatch call (guarded_dispatch(s.dispatch) found: update FFX_GUARDED_RECORD_CALL")
+    elif not direct_unbounded(ffx.replace(B_DIRECT_STMT, "", 1), "vk_ffx.cpp", FFX_GUARDED_RECORD_CALL):
+        problems.append("the B_DIRECT check missed a guarded ffxDispatch recording without its boundary")
     # (and any other recording vk_work.h does not see must be registered: every hand-written note_work() follows a known one)
     for path in sorted(VK.glob("*.cpp")):
         problems += opaque_unregistered(path.read_text(encoding="utf-8"), path.name)

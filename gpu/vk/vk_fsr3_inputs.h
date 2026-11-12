@@ -36,10 +36,18 @@ struct Frame {
     bool reset = false;                     ///< no history: the first frame, a new size, or a gap of more than two frames
     float frame_ms = 16.667f;               ///< since the frame before's
     uint64_t frame = 0;                     ///< texture_frame_no() when prepared
+    // (hookshot) For AMD FSR 4's frame generation (vk_ffx.h), which is handed whole images and the camera in the world
+    // (camera_vectors.h): the images of the three views above (R16G16B16A16_SFLOAT, R32_SFLOAT and
+    // R16G16_SFLOAT), and this frame's and the frame before's view-projection and this frame's projection, row major and
+    // without their jitter (have_previous: false on a reset, when there is no frame before)
+    VkImage color_image = VK_NULL_HANDLE, depth_image = VK_NULL_HANDLE, motion_image = VK_NULL_HANDLE;
+    float view_projection[16]{}, previous_view_projection[16]{}, projection[16]{};
+    bool have_previous = false;
 };
 
 /// FSR 3.1 is asked for at all: its upscaler (the Upscaler row) or its frame interpolation (the Frame generation row). The
-/// scene's camera is kept only then
+/// scene's camera is kept only then. (hookshot: or another frame generation method that takes these inputs,
+/// vk_framegen.h framegen_scene_inputs_wanted)
 bool wanted();
 
 /// A draw into a scene-sized target with the vertex stage's uniform buffer 3 at `camera`: what vk_temporal.cpp's

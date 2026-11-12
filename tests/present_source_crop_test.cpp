@@ -46,6 +46,10 @@ int fsr3fi_frame(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t
     CHECK(w == allocated_w && h == allocated_h && sequence > 0);
     ++fsr_calls; return fsr_result;
 }
+// (hookshot: AMD FSR 4's frame generation, vk_ffx.h: not chosen here, so no set is its own)
+namespace ffx { void reset() {} }
+bool ffx_set_wanted(int) { return false; }
+int ffx_frames(VkCommandBuffer, OutSet&, int, uint32_t, uint32_t, int, uint64_t) { std::abort(); }
 VkImageBlit last_blit{};
 int32_t copy_pc[4]{};
 void vkCmdBlitImage(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,

@@ -35,6 +35,7 @@
 #include "dlss_checks.h"
 #include "upscaler_rows.h"
 #include "vk_menu.h"
+#include "vk_framegen.h"   // (hookshot: framegen_by_auto, the Frame generation by row in effect)
 #include "vk_paths.h"
 #include "vk_reactive.h"
 #include "vk_temporal.h"
@@ -594,7 +595,9 @@ bool fg_possible() {
 /// while the game runs)
 bool fg_asked() {
     static const bool forced = env_switch("RX_VK_DLSS_FG") > 0;
-    return fg_possible() && (forced || opts.framegen_by == 0);
+    // (hookshot: Auto as the row shows it, vk_framegen.cpp framegen_by_auto: a saved AMD method that does not run on this
+    // PC is Auto too, where the raw value would leave every set to the renderer's own under a row reading "Auto")
+    return fg_possible() && (forced || framegen_by_auto());
 }
 
 /// A 4x4 inverse in doubles (a float one of a projection with a far plane in the thousands loses what reprojection needs)

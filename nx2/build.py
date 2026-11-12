@@ -1068,8 +1068,8 @@ def main():
         ngx_deps = tree_headers(os.path.join(NGX_SDK, "include")) if NGX_SDK else b""
         if NGX_SDK:
             print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
-        # (AMD FSR 4, a build's option too: only vk_fsr4.cpp sees AMD's headers; without them it is the stubs that say FSR is
-        # not there)
+        # (AMD FSR 4, a build's option too: only vk_fsr4.cpp and vk_ffx.cpp, its frame generation, see AMD's headers; without
+        # them it is the stubs that say FSR is not there)
         fsr_flags = ["-DHOOKSHOT_FSR", "-I" + os.path.join(kit.HERE, "..", "third_party", "fidelityfx")] if FSR else []
         if FSR:
             print("the Vulkan back end: with AMD FSR 4 (AMD's FSR API headers, third_party/fidelityfx)", flush=True)
@@ -1106,7 +1106,7 @@ def main():
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
-                            (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
+                            (fsr_flags if os.path.basename(src) in ("vk_fsr4.cpp", "vk_ffx.cpp") else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
                             (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
                             (imgui_deps if os.path.basename(src) in imgui_users else b"")))

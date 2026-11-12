@@ -23,6 +23,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
+#include "vk_ffx.h"
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
 #include "vk_antilag.h"
@@ -596,6 +597,7 @@ bool create_device() {
     }
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
+    ffx::probe();   // (hookshot: what AMD's FSR 4 runtime offers here, asked once, now: gpu/vk/vk_ffx.h)
     reflex_device_created();
     antilag_device_created();
     if (dev.push_descriptor) {

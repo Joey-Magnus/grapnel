@@ -37,6 +37,9 @@
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
+// (hookshot: the Frame generation by row's AMD values)
+#include "framegen_methods.h"
+#include "vk_framegen.h"   // (framegen_here: what AMD's frame generation makes on this PC)
 #include "vk_dlss.h"
 #include "vk_bug_report.h"   // (the Gameplay tab's Bug report: what it writes, and how)
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
@@ -694,11 +697,32 @@ const char* hn_framegen(int v, int variant) {
     return b[std::clamp(v, 2, 8)];
 }
 MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
-const char* tx_framegen_by(int v) { return v ? "Built-in" : "Auto"; }
-MENU_HINTS(hn_framegen_by, 0,
-           "NVIDIA DLSS Frame Generation where it runs (RTX 40 and newer, with the Upscaler's depth and motion), else the "
-           "built-in one.",
-           "The renderer's own: made from the finished picture alone.")
+// (hookshot) The Frame generation by row's values past Auto and Built-in: AMD's frame generation, of what runs here
+// (framegen_methods.h; vk_framegen.cpp framegen_here: each backend keeps its own answer, asked at the start)
+namespace fgm = framegen_methods;
+unsigned framegen_by_available() { return fgm::available(framegen_here()); }
+/// The row's value when `want` is asked from v (set_row): Auto and Built-in, and AMD's where they run here
+int framegen_by_pick(int v, int want, int dir) {
+    return fgm::pick(fgm::effective(v, framegen_by_available()), want, dir, framegen_by_available());
+}
+const char* tx_framegen_by(int v) {
+    static const char* const t[fgm::kMethods] = {"Auto", "Built-in", "AMD FSR 4", "AMD FSR 3.1"};
+    return t[fgm::effective(v, framegen_by_available())];
+}
+const char* hn_framegen_by(int v, int variant) {
+    static const char* const t[fgm::kMethods] = {
+        "NVIDIA DLSS Frame Generation where it runs (RTX 40 and newer, with the Upscaler's depth and motion), else the "
+        "built-in one.",
+        "The renderer's own: made from the finished picture alone.",
+        "AMD's FSR 4 frame generation, through AMD's files beside the game (Windows), from the scene's depth and motion. "
+        "It can smear the HUD; a set it does not make is the built-in one's.",
+        "AMD's FSR 3.1 frame interpolation, at 2x only (it makes the frame halfway between two of the game's). It can smear "
+        "the HUD; 3x and up are the built-in one's.",
+    };
+    if (variant < 0) v = fgm::effective(v, framegen_by_available());
+    else if (variant > 0) return nullptr;
+    return t[std::clamp(v, 0, fgm::kMethods - 1)];
+}
 const char* tx_vsync(int v) {
     static const char* const t[] = {"Auto", "On", "Off"};
     return t[std::clamp(v, 0, 2)];
@@ -821,7 +845,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
-    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, 1, 1, tx_framegen_by,
+    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, framegen_methods::kMethods - 1, 1, tx_framegen_by,
      "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation needs a temporal Upscaler (DLSS, DLAA or FSR) for "
      "the scene's depth and motion. Changes at once.", hn_framegen_by, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
@@ -1920,6 +1944,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
     if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
+    if (r.value == &opts.framegen_by) v = framegen_by_pick(*r.value, v, dir);   // (hookshot: AMD's values where they run)
     if (r.value == &opts.resolution) {
         int up = upscaler(), res = *r.value;
         ur::step_render(upscaler(), *r.value, dir, &up, &res);

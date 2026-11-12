@@ -303,7 +303,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native. With Off: Auto, 100%, 75%, 67%, 50%, 33% | Auto |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Frame generation | Off, Auto, 2x to 8x | Off |
-| | Frame generation by | Auto (NVIDIA DLSS Frame Generation where it runs: RTX 40 and newer, with a temporal Upscaler; else the built-in one), Built-in (changes at once) | Auto |
+| | Frame generation by | Auto (NVIDIA DLSS Frame Generation where it runs: RTX 40 and newer, with a temporal Upscaler; else the built-in one), Built-in, and AMD FSR 4 and AMD FSR 3.1 (2x only) where they run on this PC (changes at once) | Auto |
 | | Frame pacing | Off, On | Off |
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS, Uncapped (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
@@ -370,7 +370,12 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
   show artifacts. The renderer's own interpolation makes the frames; at 2x, AMD FSR 3.1's frame interpolation can make
-  it instead with `RX_VK_FSR_FG=1` (below: it moves the HUD with the scene, so it is not the default). **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
+  it instead with `RX_VK_FSR_FG=1` (below: it moves the HUD with the scene, so it is not the default). **Frame generation
+  by** says who makes the frames at 2x and up: **Auto** (NVIDIA DLSS Frame Generation where it runs, else the built-in
+  one), **Built-in**, and where they run on this PC **AMD FSR 4** (AMD's frame generation through AMD's DLLs, Windows:
+  the AMD FSR 4 section below) and **AMD FSR 3.1** (its frame interpolation, 2x only). AMD's two are yours to choose and
+  never Auto's: they are given the finished picture with the HUD in it, and can smear the HUD. A set a method does not
+  make whole, or a frame it refuses, is the built-in one's: a frame is never left out. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
   the frames that frame generation shows, so it has no effect while Frame generation is Off.
 - **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
@@ -704,7 +709,8 @@ cd ~/Games/Hookshot
 
 **AMD FSR 3.1** in the Graphics tab's **Upscaler** row (`dlss=3` in `hookshot_options.ini`; `RX_VK_FSR=1` for one run,
 `RX_VK_FSR=0` never) upscales in place of the game's own network, and with **Frame generation** at 2x its frame
-interpolation can make the frame in between with `RX_VK_FSR_FG=1` (opt-in: the game draws its HUD into the same picture
+interpolation can make the frame in between with **Frame generation by** on **AMD FSR 3.1** (`frame_generation_by=3`) or
+`RX_VK_FSR_FG=1` (opt-in: the game draws its HUD into the same picture
 and FSR 3.1 has no HUD-less colour to keep it still, so the HUD smears; by default the renderer's own makes it). Both are AMD's FidelityFX
 SDK 1.1.4 shaders (`third_party/fidelityfx-sdk`, MIT), compiled into the renderer: no AMD runtime or DLL is needed, and
 the row offers FSR 3.1 on any Vulkan 1.3 GPU with push descriptors, extended storage image formats and storage writes
@@ -816,6 +822,15 @@ in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to 
   the build says so. They are AMD's, under
   [AMD's FSR SDK license](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/docs/license.md)
   (`LICENSE-AMD-FSR-SDK.md` beside them). On Linux the flag does nothing but say so.
+
+**AMD FSR 4's frame generation** (Windows) is the **Frame generation by** row's **AMD FSR 4**, shown in a game built with
+FSR 4 once AMD's `amd_fidelityfx_framegeneration_vk.dll`, from the same `signedbin` folder of the FidelityFX SDK, is
+beside the loader (`--fetch-fsr-runtime` does not fetch that one: put it there yourself; `RX_VK_FFX_DIR` names another
+folder, as `RX_VK_FSR_DIR` does). It takes the scene's depth and motion and the presented picture, with any Upscaler. It
+makes one frame between two of the game's, so 2x sets, unless `RX_VK_FFX_FG_MAX=<1-4>` asks AMD's runtime for more; a set
+it does not make whole is the built-in one's. `RX_VK_FG_METHOD=auto|builtin|fsr4|fsr3` picks the row's value for one run,
+`RX_VK_FFX_FG=0` leaves AMD's frame generation out and `RX_VK_FFX=0` keeps its DLLs from being loaded for it. The log's
+`vk: amd fsr 4:` lines say what AMD's runtime answered. It has not been run on an AMD card yet: reports are welcome.
 
 The log's `vk: AMD FSR 4:` lines say which of AMD's upscalers it found for the card and which it uses (the newest FSR 4;
 never an older FSR in its place), and why not when it did not start. Tested on an RX 6700 XT (RDNA 2).

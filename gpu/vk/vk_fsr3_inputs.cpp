@@ -21,6 +21,7 @@
 #include "dlss_math.h"
 #include "temporal_jitter.h"
 #include "vk_draw.h"   // (descriptors_disturbed)
+#include "vk_framegen.h"   // (hookshot: the frame generation methods that take them)
 #include "vk_fsr3.h"
 #include "vk_fsr3fi.h"
 #include "vk_texture.h"
@@ -207,7 +208,7 @@ VkImageView depth_view(Texture* t) {
 
 } // namespace
 
-bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0; }
+bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0 || framegen_scene_inputs_wanted(); }
 
 void note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                      uint64_t camera_size) {
@@ -321,6 +322,12 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out) 
                      ? (float)std::min(250.0, std::chrono::duration<double, std::milli>(t - s.last_time).count())
                      : 16.667f;
     f.frame = now;
+    f.color_image = s.color.image, f.depth_image = s.depth.image, f.motion_image = s.motion.image;
+    std::memcpy(f.view_projection, cam.current, sizeof f.view_projection);
+    dlss_math::unjitter(f.view_projection, cam.jitter);
+    std::memcpy(f.previous_view_projection, previous, sizeof f.previous_view_projection);
+    std::memcpy(f.projection, projection, sizeof f.projection);
+    f.have_previous = motion;
     s.frame = f, s.have_frame = true;
     s.last_time = t;
     s.last_frame = now;
