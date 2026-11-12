@@ -936,7 +936,7 @@ bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init)
 // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
 // starts empty and is not saved; the driver's own shader cache is all there is)
 bool pcache_load_off() {
-    static const bool off = getenv("RX_VK_PCACHE_LOAD") && atoi(getenv("RX_VK_PCACHE_LOAD")) == 0;
+    static const bool off = [] { const char* e = getenv("RX_VK_PCACHE_LOAD"); return e && env_value_off(e); }();   // (hookshot_env.h: 0/off/false/no)
     return off;
 }
 /// (hookshot) The pipeline cache's files go when they were made for another translator than this one (program_cache_stamp,
@@ -946,7 +946,7 @@ bool pcache_load_off() {
 /// (prepared_for.warmed), whatever its record says. RX_VK_PCACHE_STAMP=0: kept whatever made them, as before
 bool pcache_drop_stale() {
     static const bool dropped = [] {
-        static const bool by_stamp = !getenv("RX_VK_PCACHE_STAMP") || atoi(getenv("RX_VK_PCACHE_STAMP")) != 0;
+        static const bool by_stamp = [] { const char* e = getenv("RX_VK_PCACHE_STAMP"); return !e || !env_value_off(e); }();
         if (pcache_load_off() || !by_stamp) return false;
         char exe[MAX_PATH];
         const DWORD n = game_module_path(exe, MAX_PATH);
