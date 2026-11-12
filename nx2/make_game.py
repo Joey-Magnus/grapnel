@@ -2183,9 +2183,12 @@ def main(a=None):
                 # matched the next build's, which translated the game again for nothing, ~5 minutes on Windows, and a player's first
                 # update after a new install did not keep the translation). Only when nothing else it reads changed while it ran: a
                 # translator file edited during the lift would otherwise stamp C made from the old one with the new one's key, and the
-                # next build would skip a lift it needs. Then the key from before stays, and the next build translates again
+                # next build would skip a lift it needs. Then the key from before stays, and the next build translates again. The key is
+                # taken before that comparison: a file edited between the two is caught by it, and one edited after it is in no key that is
+                # kept (SimonKimDev, #2686)
+                after = lift_key(exefs, work, env)
                 if lift_key(exefs, work, env, planning=False) == inputs:
-                    key = lift_key(exefs, work, env)
+                    key = after
                 write_lift_key(work, key)
             cut = lifted_cut_short(gen_dir)
             if not cut:

@@ -119,15 +119,17 @@ def check_key_after_lift():
     src = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
     body = src[src.index("    def translate():"):src.index("\n    translate()\n")]
     split = body.index('"nx2/split_hot.py"')
-    again = body.find("key = lift_key(exefs, work, env)", split)
+    again = body.find("after = lift_key(exefs, work, env)", split)
     write = body.find("write_lift_key(work, key)", split)
     check("the key is taken again after the lift and split_hot, then written", split < again < write)
     check("translate() sets the build's key, which keep_translation uses after the build", "nonlocal key" in body)
     start = body.find("inputs = lift_key(exefs, work, env, planning=False)")
     lift = body.index('"nx2/lift.py"')
     guard = body.find("if lift_key(exefs, work, env, planning=False) == inputs:", split)
+    taken = body.find("key = after", guard)
     check("what the lift reads and does not write is taken as it starts", 0 <= start < lift)
-    check("the key is taken again only if that did not change while it ran", split < guard < again)
+    check("the key taken after the lift is kept only if that did not change while it ran", split < guard < taken < write)
+    check("the key is taken before that comparison, so an edit between the two is caught by it", again < guard)
     with tempfile.TemporaryDirectory(prefix="hookshot-lift-key-after-") as d:
         d = Path(d)
         exefs, work = d / "exefs", d / "work"

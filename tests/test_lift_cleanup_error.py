@@ -189,7 +189,7 @@ class LiftCleanupErrorTests(unittest.TestCase):
         """A translator file edited while the lift ran: its C is from the old file, so the new key must not vouch for it"""
         self.inputs = ["i" * 40, "j" * 40]
         self.exercise()
-        self.assertEqual(self.events, ["lift", "key"])
+        self.assertEqual(self.events, ["lift", "rekey", "key"])   # (taken, then not kept: the comparison came after it)
         self.assertTrue(self.namespace["lifted_before"](str(self.work), "b" * 40))
         self.assertFalse(self.namespace["lifted_before"](str(self.work), "c" * 40))
 
