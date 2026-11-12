@@ -912,8 +912,8 @@ Row rows[] = {
     {TAB_CONTROLS, "First person", &opts.first_person, 0, 1, 1, tx_onoff,
      "The view at Link's eyes while he walks and runs, turned by the mouse or the right stick as in third person. The "
      "game's own camera takes over for aiming, shops and cutscenes, and may for targeting, climbing and swimming. The "
-     "view keeps the game's camera angles, with their downward tilt, and is not held back by walls.", nullptr, false,
-     true},
+     "view keeps the game's camera angles, their rest tilt lifted a little toward level, and is not held back by "
+     "walls.", nullptr, false, true},
     {TAB_CONTROLS, "First person height", &opts.fp_height, 50, 250, 5, tx_metres,
      "How high the first person eye sits over Link's origin, in metres: 1.50 is about adult Link's eyes, 1.00 a "
      "child's. Applies at once while he walks.", nullptr, false, true},

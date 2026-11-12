@@ -33,8 +33,9 @@
      frees the old one is a new pointer here, never a dangling read — and a new pointer is held one frame before it is
      trusted. The position must be finite, and the head within a few metres of the game's own target point.
 
-   Known limits, on purpose for a first version: the view keeps the game's camera angles, so it inherits their downward
-   tilt at rest and their swing when the boom shortens against a wall; and the eye is not checked against walls (the game
+   Known limits, on purpose for a first version: the view keeps the game's camera angles — their downward tilt at rest
+   is lifted a little toward level (HOS_FP_PITCH, 0.12 radians) — and their swing when the boom shortens against a wall;
+   and the eye is not checked against walls (the game
    still collides its third-person one). The head is the actor's origin (+796, host/hos_main.c) plus so many metres up
    and so many along the view: the menu's First person height (0.5 to 2.5, 1.5: adult Link's eyes; a child's are nearer
    1) and First person offset (0 to 1, 0.15: past the face), live; HOS_FP_UP and HOS_FP_FORWARD win for a run. */
@@ -51,6 +52,7 @@ uint64_t oot_gameplay_view(Ctx *c);      /* (hos_main.c: camera zero's view) */
 int rx_option(int id, int otherwise);    /* (rx_backend.c) */
 
 enum { STATE_AT = 0x204 };               /* the player camera's state (mouse_native.c: 3 follows Link, 4 the player turns) */
+enum { LIMITS_AT = 0x178 };              /* its pitch limits, degrees (mouse_native.c: {-85, 89} in the field: the up one) */
 #define VT_VIEW 0x84c18a88ULL            /* the view class's vtable, as the free camera checks it (host/hos_main.c) */
 #define EVENTMGR_SLOT 0x84c9e090ULL      /* the EventMgr singleton's slot, as SeqOneShotRequestEvent loads it (host/hos_main.c) */
 #define PLAYER_LIVE_NS 250000000LL       /* (Link updated within this: the view uses his position) */
@@ -128,6 +130,20 @@ static double fp_forward(void) {
     if (forced >= 0.0) return forced;
     const int row = rx_option(HOS_OPT_FP_OFFSET, 15);
     return (row >= 0 && row <= 100 ? row : 15) / 100.0;
+}
+
+/* the pitch lifted from the game's line toward level, in radians (HOS_FP_PITCH, 0.12: about seven degrees): the follow
+   camera looks down at Link, so its eye-to-target line carries the rest tilt, and at his eyes that is a bias, not a
+   view. Conservative on purpose — the rows above place the eye and are the player's dial to turn; this only takes the
+   systematic downward angle out, and (below) never past the camera's own up limit */
+static double fp_pitch_correct(void) {
+    static double v = -1;
+    if (v < 0) {
+        const char *e = getenv("HOS_FP_PITCH");
+        v = e && *e ? atof(e) : 0.12;
+        if (!(v > -1.5 && v < 1.5)) v = 0.12;   /* (and NaN: not a value) */
+    }
+    return v;
 }
 
 /* an event (a cutscene) playing: the EventMgr singleton's Main sequence, the expression the teleport check logs
@@ -208,6 +224,15 @@ void hos_first_person(Ctx *c, uint64_t view) {
             return;
         }
         yaw = atan2(x, z), pitch = atan2(y, hypot(x, z));
+        /* the rest tilt out: the correction lifts the direction toward level before the matrix is built from it, never
+           past the camera's own up limit (+0x178, degrees) — the game would not show a view above that either */
+        {
+            float lo;
+            memcpy(&lo, GP(cam + LIMITS_AT), 4);
+            const double least = (double)lo * (3.14159265358979323846 / 180.0);
+            pitch -= fp_pitch_correct();
+            if (pitch < least) pitch = least;
+        }
         held_yaw = yaw, held_pitch = pitch, held_at = now;
     }
     /* Link's head: the snapshot his own update left. A new actor (a door, a loading transition) is held a frame before the

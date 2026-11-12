@@ -6,7 +6,8 @@ it serves (nx2/oot_patches.py patch_view). The aim's own view passes untouched �
 remembered — and the hold of the last good view (a recenter, state 2) neither fights the aim's frames nor flashes the
 view from before it once the aim lets go: a state not the view's drops the hold, and another camera drawing within the
 hold's span drops it too. The states that drive the view (3 and 4) still write it, at Link's head as the menu's rows
-place it, live.
+place it, live, with the follow camera's rest tilt lifted toward level (HOS_FP_PITCH, 0.12) and never past the camera's
+own up limit.
 python -I -B tests/test_first_person_view.py   (Linux: host/posix's windows.h)
 """
 import shutil
@@ -103,6 +104,8 @@ static int mine(uint64_t at) { return mf(at, 0) != 12345; }
 static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
 static int close_to(float a, float b) { return fabsf(a - b) < 1e-3f; }
+#define PITCH_CORRECT 0.12   /* the rest tilt taken out (HOS_FP_PITCH's default, host/hos_first_person.c) */
+#define LINE_LEVEL (10 * tan(PITCH_CORRECT))   /* an eye this high over the target: the corrected pitch is level */
 
 int main(void) {
     fake_heap = (uint8_t *)calloc(64, 4096);
@@ -111,17 +114,28 @@ int main(void) {
     putf(CAM + 0x178, -85), putf(CAM + 0x17c, 89);   /* (the camera's pitch limits, as the game keeps them) */
 
     /* walking (state 4): the view at Link's head, placed by the menu's rows */
-    line(0, 0);
+    line(LINE_LEVEL, 0);
     frame(VIEW, 0);   /* (a new actor is held a frame before the view trusts it) */
     game_view(VIEW), frame(VIEW, 0);
     CHECK(mine(VIEW));   /* the twelve floats are ours */
-    /* the line (0,0,10)->(0,0,0) is yaw 0 pitch 0: back (0,0,1), the head (1, 2+up, 3-offset) */
+    /* the line corrected is yaw 0 pitch 0: back (0,0,1), the head (1, 2+up, 3-offset) */
     CHECK(close_to(mf(VIEW, 0), 1) && close_to(mf(VIEW, 1), 0) && close_to(mf(VIEW, 2), 0) && close_to(mf(VIEW, 3), -1));
     CHECK(close_to(mf(VIEW, 7), -(2 + 1.5)) && close_to(mf(VIEW, 11), -(3 - 0.15)));
     menu_height = 200;   /* the rows are live: the next frame takes the new height */
     game_view(VIEW), frame(VIEW, 0);
     CHECK(mine(VIEW) && close_to(mf(VIEW, 7), -(2 + 2.0)));
     menu_height = 150;
+
+    /* the rest tilt taken out: a line pitched down by atan2(3,10) shows the correction's 0.12 less of it, and a line
+       already above where the correction would point stops at the camera's own up limit */
+    state(4), line(3, 0);
+    game_view(VIEW), frame(VIEW, 0);
+    CHECK(mine(VIEW) && close_to(mf(VIEW, 9), sin(atan2(3, 10) - PITCH_CORRECT)));   /* row 2's back vector, its y */
+    putf(CAM + 0x178, -5);   /* (an up limit five degrees over level, as the camera keeps it) */
+    line(-1, 0);   /* (the game's line looks up: atan2(-1,10), and the correction would point past the limit) */
+    game_view(VIEW), frame(VIEW, 0);
+    CHECK(mine(VIEW) && close_to(mf(VIEW, 9), sin(-5 * 3.14159265358979 / 180)));
+    putf(CAM + 0x178, -85), line(LINE_LEVEL, 0);
 
     /* the recenter (the Z tap, state 2) within the hold: the last view held, not this frame's line */
     game_view(VIEW), frame(VIEW, 0);   /* (state 4 still: the hold seeded from the level line) */
@@ -137,7 +151,7 @@ int main(void) {
     /* the aim lets go straight to a recenter (state 2, no walking between): no flash of the view from before it. The
        aim's last pass is older than the hold now, so what stands down is the park's end of the held view */
     clock_ns += 400000000LL;
-    state(2), line(0, 0);
+    state(2), line(LINE_LEVEL, 0);
     game_view(VIEW), frame(VIEW, 0);
     CHECK(!mine(VIEW));
     /* and while an aim is close — its view a frame ago — a recenter does not pick the hold up either: it would fight
@@ -153,7 +167,7 @@ int main(void) {
     CHECK(!mine(AIM_VIEW));
 
     /* walking again after all that: the view ours at once */
-    state(3), line(0, 0), game_view(VIEW), frame(VIEW, 0);
+    state(3), line(LINE_LEVEL, 0), game_view(VIEW), frame(VIEW, 0);
     CHECK(mine(VIEW) && close_to(mf(VIEW, 7), -(2 + 1.5)));
 
     /* the switches: the free camera owns the view, the row off: nothing written */

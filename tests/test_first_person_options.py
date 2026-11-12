@@ -73,6 +73,13 @@ def main():
             raise SystemExit("%s does not read the menu's row" % fn)
         if body.index("rx_option") < body.index("getenv") or "return forced" not in body:
             raise SystemExit("%s caches the menu's row, or the environment does not win" % fn)
+    # the rest tilt's correction, no row of its own: HOS_FP_PITCH over the default for a run, and clamped at the camera's
+    # own up limit so it never points above where the game would
+    pitch = block(fp, fp.index("static double fp_pitch_correct(void) {"))
+    if 'getenv("HOS_FP_PITCH")' not in pitch or "0.12" not in pitch:
+        raise SystemExit("the pitch correction is not HOS_FP_PITCH over a 0.12 default")
+    if "LIMITS_AT" not in fp or "pitch < least" not in fp:
+        raise SystemExit("the corrected pitch is not clamped at the camera's own up limit")
     if "| | First person height | 0.50 m to 2.50 m, in steps of 0.05 | 1.50 m |" not in readme or \
        "| | First person offset | 0.00 m to 1.00 m, in steps of 0.05 | 0.15 m |" not in readme:
         raise SystemExit("readme.md's option table has no first person place rows")

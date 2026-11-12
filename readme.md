@@ -471,7 +471,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   may for targeting, climbing and swimming — its own first person aim view (the slingshot, the bow, the hookshot) passes
   through untouched, and the view is back at Link's eyes as he walks again, with no flash of where he looked before he
   aimed. A camera recentering (the Z tap) holds the view briefly rather than pop. The view keeps the game's camera
-  angles, so it looks down at rest as the game's camera does, and the eye itself is not checked against walls. **First person height** places the eye over
+  angles — their rest tilt is lifted a little toward level, by `HOS_FP_PITCH` (0.12 radians) — and the eye itself is not
+  checked against walls. **First person height** places the eye over
   Link's origin (1.50 m is about adult Link's eyes, 1.00 m a child's) and **First person offset** moves it along the
   view (0.15 m, past the face); both apply at once while he walks, for trying variations in game. `HOS_FIRST_PERSON=1`
   turns it on for one run; `HOS_FP_UP` and `HOS_FP_FORWARD` (in metres) move the eye for one run over the rows. Disable
