@@ -2,9 +2,9 @@
 
 The flags are a64-kit's for lifted code (its build.py, cmd_native): -O1, LoopRotate's header copies capped (most of
 the compile time in goto-dense giant functions otherwise), capture tracking past LLVM's 100 uses (the context
-parameter is A64_NOESC), one section per function. The guest model is the 64-bit window (rtgen.py), shadowing the
-vendored rt/, with the loop-header interrupt polls on (A64_POLLING, nx2/poll.py). Incremental: an object is rebuilt
-only when its source or the flags changed.
+parameter is A64_NOESC), one section per function, no lifetime markers. The guest model is the 64-bit window
+(rtgen.py), shadowing the vendored rt/, with the loop-header interrupt polls on (A64_POLLING, nx2/poll.py).
+Incremental: an object is rebuilt only when its source or the flags changed.
 
 hookshot_game.dll = the lifted chunks + a64-kit's tables and runtime + nx2/rt/eden_shim.c (the emulator ABI, mkw_host.h)
 + mkw_info.c (the image base and main's build id, generated here from work/image/image.json). Linking it is also the
@@ -605,7 +605,9 @@ def flags(gen, rt64, opt, polls):
     return target() + CPU + [
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-I" + NX2_RT, "-Wno-everything",
         "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
-        "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
+        "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000",
+        # (a compiler's peak memory ~10% lower on a lifted chunk and on a hot piece, clang 23; the lifted code runs as fast)
+        "-Xclang", "-disable-lifetime-markers"] + \
         (["-DA64_POLLING"] if polls else []) + WRITE_TRACK
 
 
