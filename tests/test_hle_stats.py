@@ -2,7 +2,8 @@
 NVN exports (host/nvn_native.c nvn2_dispatch), and logs every 5 s how often each ran (host/hos_hostcall.c), in the lines
 scripts/cpu_report.py --calls reads. Off (the default) nothing is counted and host calls keep their direct path. The real
 macro and the real host-call and dispatch code are compiled with stubs for the rest of the runtime; the report is read
-with cpu_report.py's own parser, with another thread's line logged in between. Six broken variants must fail.
+with cpu_report.py's own parser, with another thread's line logged in between. Long overloads keep distinct counts.
+Seven broken variants must fail.
 
 python -I -B tests/test_hle_stats.py [--cxx clang++]
 """
@@ -22,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # (env_on, the switches' rule, before the code cut out of the sources)
 ENV_ON_H = str(ROOT / "gpu" / "vk" / "compat" / "hookshot_env.h")
 LONG_NAME = "_ZN2nn5audio42SetI3dl2ReverbLateReverbDecayHighFrequencyRatioEPNS0_15I3dl2ReverbTypeEf"
+OVERLOAD_A = "_ZN2nn2os25InitializeMultiWaitHolderEPNS0_19MultiWaitHolderTypeEPNS0_9EventTypeE"
+OVERLOAD_B = "_ZN2nn2os25InitializeMultiWaitHolderEPNS0_19MultiWaitHolderTypeEPNS0_10ThreadTypeE"
 MANY = 200   # (host calls called once each: more rows than any fixed cap)
 
 
@@ -93,6 +96,8 @@ DISPATCH
 HLE(_ZN2nn2os9LockMutexEPNS0_9MutexTypeE) { c->x[0] += 1; }
 HLE(_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE) { c->x[0] += 2; }
 HLE(LONG_NAME) { c->x[0] += 4; }
+HLE(OVERLOAD_A) { c->x[0] += 8; }
+HLE(OVERLOAD_B) { c->x[0] += 16; }
 static int submits;
 static void submit(Ctx *c, void *user) { (void)c; (void)user; submits++; }
 static void call_host(Ctx *c, uint64_t addr) {   /* (as lifted code does: the direct function a64_lookup gave, else a64_call_miss) */
@@ -108,7 +113,9 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 30; i++) imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE(&c);
     for (int i = 0; i < 10; i++) imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE(&c);
     imp_LONG_NAME(&c);
-    if (c.x[0] != 30 + 20 + 4) { puts("FAIL: an HLE function's body did not run once a call"); return 1; }
+    for (int i = 0; i < 60; i++) imp_OVERLOAD_A(&c);
+    for (int i = 0; i < 40; i++) imp_OVERLOAD_B(&c);
+    if (c.x[0] != 30 + 20 + 4 + 60 * 8 + 40 * 16) { puts("FAIL: an HLE function's body did not run once a call"); return 1; }
     const uint64_t addr = hos_hostcall("nvnQueueSubmit", submit, NULL);
     printf("direct %d\n", a64_lookup_host(addr) != NULL);
     for (int i = 0; i < 7; i++) call_host(&c, addr);
@@ -164,9 +171,9 @@ def check(hle_calls, folder, out, on):
     if direct:
         return "on: a host call kept its direct path (not counted)"
     want = {"_ZN2nn2os9LockMutexEPNS0_9MutexTypeE": 30, "_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE": 10,
-            "nvnQueueSubmit": 10, LONG_NAME[:64]: 1}
+            "nvnQueueSubmit": 10, LONG_NAME: 1, OVERLOAD_A: 60, OVERLOAD_B: 40}
     want.update(("h%03d" % i, 1) for i in range(MANY))
-    if head != (51 + MANY, 4 + MANY, 5.0) or rows != want:
+    if head != (151 + MANY, 6 + MANY, 5.0) or rows != want:
         missing = {k: (rows.get(k), v) for k, v in want.items() if rows.get(k) != v}
         return "on: the first report reads %r, %d rows; wrong or missing: %r" % (head, len(rows), dict(list(missing.items())[:6]))
     counts = [want[n] for n in order]
@@ -182,7 +189,8 @@ def run(compiler, folder, hle_calls, sources, tag):
     """None when both runs read right, else what went wrong"""
     header, hostcall, dispatch = sources
     src = (HARNESS.replace("HLE_MACRO", hle_macro(header)).replace("HOSTCALL", hostcall).replace("DISPATCH", dispatch)
-           .replace("LONG_NAME", LONG_NAME).replace("MANY", str(MANY)))
+           .replace("LONG_NAME", LONG_NAME).replace("OVERLOAD_A", OVERLOAD_A).replace("OVERLOAD_B", OVERLOAD_B)
+           .replace("MANY", str(MANY)))
     (folder / (tag + ".cpp")).write_text(src, encoding="utf-8")
     exe = folder / (tag + (".exe" if os.name == "nt" else ""))
     subprocess.run([compiler, "-std=c++17", "-include", ENV_ON_H, "-O1", "-w", str(folder / (tag + ".cpp")), "-o",
@@ -206,6 +214,10 @@ def main():
         raise SystemExit("C++ compiler not found: " + args.cxx)
     report = load_parser()
     hle_calls = report.hle_calls
+    assert OVERLOAD_A[:64] == OVERLOAD_B[:64] and OVERLOAD_A != OVERLOAD_B
+    for name in (LONG_NAME, OVERLOAD_A, OVERLOAD_B):
+        if report.calls_key("imp_" + name) != name:
+            raise SystemExit("FAIL: the report merges distinct full HLE function names")
     # (an HLE body the compiler did not inline is the symbol hle_<sym> in the linker map: the report names it as its
     # imp_<sym> entry, so its samples meet its call counts)
     with tempfile.TemporaryDirectory(prefix="hle-map-") as temporary:
@@ -230,7 +242,8 @@ def main():
         raise SystemExit("FAIL: host/hos_main.c starts the counters after the game's memory is set up")
 
     real = (header, hostcall, dispatch)
-    edits = (("an HLE macro that never counts", 0, "if (hos_hle_stats) hos_hle_counted(", "if (0) hos_hle_counted("),
+    edits = (("truncated names merge HLE overloads", 1, 'hos_log("hle: %lu %s;",', 'hos_log("hle: %lu %.64s;",'),
+             ("an HLE macro that never counts", 0, "if (hos_hle_stats) hos_hle_counted(", "if (0) hos_hle_counted("),
              ("an HLE macro that counts with the switch off", 0, "if (hos_hle_stats) hos_hle_counted(", "if (1) hos_hle_counted("),
              ("host calls kept direct with the switch on", 1, '|| hos_trace || hos_hle_stats || env_on("HOS_HOSTCALL_SLOW")',
               '|| hos_trace || env_on("HOS_HOSTCALL_SLOW")'),
@@ -253,7 +266,7 @@ def main():
                 raise SystemExit("FAIL: the check passed " + what)
     print("PASS: HOS_HLE_STATS off counts nothing and keeps host calls direct; on, every HLE function, host call and NVN "
           "export call is counted, and each 5 s report, read by cpu_report.py with another line in between, has every "
-          "function's calls since the last (across the 32-bit wrap), most called first, names cut at 64 characters; "
+          "function's calls since the last (across the 32-bit wrap), most called first, full names kept distinct; "
           "%d broken variants caught" % len(edits))
 
 

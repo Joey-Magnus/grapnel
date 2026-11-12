@@ -331,7 +331,7 @@ def log_stats(folder):
 def hle_calls(folder, blocks=4):
     """HOS_HLE_STATS=1's "hle:" summaries (every 5 s) in game.log: calls a second of each HLE entry, from the last `blocks`
     summaries (a run stops at the end of its measured window, so those are play). Names as the counter prints them: nn
-    functions mangled without the "imp_" prefix (cut at 64 characters), NVN ones without the "n_" prefix."""
+    functions mangled without the "imp_" prefix, NVN ones without the "n_" prefix."""
     log = os.path.join(folder, "game.log")
     if not os.path.exists(log):
         return {}, None
@@ -354,9 +354,9 @@ def hle_calls(folder, blocks=4):
 
 
 def calls_key(sym):
-    """the counter's name for a frame key: imp__ZN... -> _ZN... (64 characters), n_nvnX -> nvnX"""
+    """the counter's name for a frame key: imp__ZN... -> _ZN..., n_nvnX -> nvnX"""
     if sym.startswith("imp_"):
-        return sym[4:][:64]
+        return sym[4:]
     if sym.startswith("n_nvn"):
         return sym[2:]
     return sym

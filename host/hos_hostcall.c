@@ -109,7 +109,7 @@ int a64_call_miss(Ctx *c, uint64_t target) {
 
 /* HOS_HLE_STATS=1 (off by default): every 5 s, how often each HLE function (hos.h's HLE) and each host call ran in that
    time, the most called first: "hle: <total> calls of <n> functions in 5 s", then lines of "<count> <name>;" (HLE functions
-   by their mangled name, cut at 64 characters). scripts/cpu_report.py --calls reads them. HLE functions called from host
+   by their full mangled name). scripts/cpu_report.py --calls reads them. HLE functions called from host
    code (one HLE function calling another) count too; the sdk's NVN exports count as their host call (nvn2_dispatch). */
 int hos_hle_stats;
 static HleCount *volatile hos_hle_list;
@@ -150,11 +150,8 @@ static void hos_hle_report(void) {
     qsort(row, n, sizeof *row, hos_hle_row_cmp);
     /* (every row is printed: a row left out would lose its counts for good, as its baseline moved on) */
     hos_log("hle: %llu calls of %d functions in 5 s", total, n);
-    char line[1024];
-    int len = 0;
     for (int i = 0; i < n; i++) {
-        len += snprintf(line + len, sizeof line - len, " %lu %.64s;", row[i].n, row[i].name);
-        if (len > 800 || i == n - 1) { hos_log("hle:%s", line); len = 0; }
+        hos_log("hle: %lu %s;", row[i].n, row[i].name);
     }
 }
 static DWORD WINAPI hos_hle_thread(void *p) {
