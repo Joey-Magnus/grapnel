@@ -37,6 +37,9 @@
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_progcache.h"
+#ifdef _WIN32
+#include <psapi.h>
+#endif
 
 namespace mkwvk {
 
@@ -703,6 +706,61 @@ static bool prepare_ram_guard_on() {
     return env_on("HOOKSHOT_PREPARE_RAM_GUARD") || env_on("RX_VK_PREPARE_RAM_GUARD");
 }
 
+void prepare_process_mb(uint64_t* ws_mb, uint64_t* peak_mb) {
+    uint64_t ws = 0, peak = 0;
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS_EX pm{};
+    pm.cb = sizeof pm;
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm)) {
+        ws = (uint64_t)pm.WorkingSetSize >> 20;
+        peak = (uint64_t)pm.PeakWorkingSetSize >> 20;
+    }
+#else
+    if (FILE* f = fopen("/proc/self/status", "r")) {
+        char line[128];
+        while (fgets(line, sizeof line, f)) {
+            unsigned long kb = 0;
+            if (sscanf(line, "VmRSS: %lu kB", &kb) == 1) ws = kb >> 10;
+            else if (sscanf(line, "VmHWM: %lu kB", &kb) == 1) peak = kb >> 10;
+        }
+        fclose(f);
+    }
+#endif
+    if (ws_mb) *ws_mb = ws;
+    if (peak_mb) *peak_mb = peak;
+}
+
+/// (hookshot) scripts/prepare_workers_bench.py writes this beside the game: one line with the worker count that won its A/B
+static std::string prepare_workers_file_path() {
+    char exe[MAX_PATH];
+    const unsigned long n = game_module_path(exe, MAX_PATH);
+    if (!n || n >= MAX_PATH) return {};
+    std::string path(exe, n);
+    const size_t slash = path.find_last_of("\\/");
+    if (slash == std::string::npos) return {};
+    return path.substr(0, slash + 1) + "hookshot_prepare_workers.txt";
+}
+
+static unsigned prepare_workers_from_file(const char** why) {
+    const std::string path = prepare_workers_file_path();
+    if (path.empty()) return 0;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return 0;
+    char line[64] = {};
+    const bool got = fgets(line, sizeof line, f) != nullptr;
+    fclose(f);
+    if (!got) return 0;
+    // (allow "12", "workers=12", or a trailing comment after #)
+    char* p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!strncmp(p, "workers=", 8)) p += 8;
+    char* end = nullptr;
+    const long v = strtol(p, &end, 10);
+    if (end == p || v < 1 || v > 64) return 0;
+    if (why) *why = "hookshot_prepare_workers.txt";
+    return (unsigned)v;
+}
+
 unsigned prepare_pool_workers(PreparePool pool, const char** why) {
     const unsigned usable = usable_cpus();
     const char* reason = "auto";
@@ -714,6 +772,9 @@ unsigned prepare_pool_workers(PreparePool pool, const char** why) {
     if (override_env) {
         n = std::clamp(n, 1u, 64u);
         reason = override_env;
+    } else if (const unsigned from_file = prepare_workers_from_file(&reason)) {
+        n = from_file;
+        // (reason already "hookshot_prepare_workers.txt")
     } else if (pool == PreparePool::Background) {
         const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
         n = std::min(quarter, usable);
@@ -755,10 +816,13 @@ unsigned prepare_pool_workers(PreparePool pool, const char** why) {
 void prepare_resources_log(const char* when) {
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
     const unsigned usable = usable_cpus(), half = half_cpus();
-    uint64_t avail_mb = 0, total_mb = 0;
+    uint64_t avail_mb = 0, total_mb = 0, ws_mb = 0, peak_mb = 0;
     prepare_ram_mb(&avail_mb, &total_mb);
-    logf("vk: prepare resources %s: %u usable CPUs (half %u, hardware %u), RAM %llu MB available / %llu MB total%s",
+    prepare_process_mb(&ws_mb, &peak_mb);
+    logf("vk: prepare resources %s: %u usable CPUs (half %u, hardware %u), RAM %llu MB available / %llu MB total, "
+         "process %llu MB (peak %llu)%s",
          when ? when : "", usable, half, hw, (unsigned long long)avail_mb, (unsigned long long)total_mb,
+         (unsigned long long)ws_mb, (unsigned long long)peak_mb,
          prepare_ram_guard_on() ? ", RAM guard on" : "");
 }
 

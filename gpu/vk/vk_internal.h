@@ -368,7 +368,9 @@ enum class PreparePool : unsigned { Translate, Pipelines, Background };
 unsigned prepare_pool_workers(PreparePool pool, const char** why = nullptr);   // vk_progcache.cpp
 /// (hookshot) Available and total physical RAM in MB (0 if unknown). Shared by the prepare log and the RAM guard
 void prepare_ram_mb(uint64_t* avail_mb, uint64_t* total_mb);   // vk_progcache.cpp
-/// (hookshot) One line: usable/half CPUs and available/total RAM, for prepare diagnosis (no behavior change)
+/// (hookshot) This process's working set and peak working set in MB (0 if unknown)
+void prepare_process_mb(uint64_t* ws_mb, uint64_t* peak_mb);   // vk_progcache.cpp
+/// (hookshot) One line: usable/half CPUs, available/total RAM, and process WS/peak, for prepare diagnosis
 void prepare_resources_log(const char* when);   // vk_progcache.cpp
 /// (hookshot) The driver's shader cache folders' size, logged with when: at the start, after the prediction
 void driver_cache_log(const char* when);   // vk_draw.cpp
