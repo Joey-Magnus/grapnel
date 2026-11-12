@@ -52,6 +52,7 @@
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
 #include "driver_faults.h"
+#include "fallback_size_policy.h"
 
 #include "shaders/clear_f_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
@@ -2201,11 +2202,10 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         // tables) hung the GPU when the driver's optimizer built them: a device lost one to four minutes into Kokiri, each time with
         // another of them first (RX 6600, issues 461 and 484); never in runs where they were built without it. They are built
         // without it on AMD. RX_VK_MESH_OPT=1: with it, as the others)
-        static const bool amd = [] {
-            VkPhysicalDeviceProperties pr{};
-            vkGetPhysicalDeviceProperties(dev.physical, &pr);
-            return pr.vendorID == 0x1002;
-        }();
+        // (hookshot) Not on Mesa's RADV: there the task programs built without it run long enough to reset the GPU while the
+        // save loads at the Great Deku Tree (Steam Deck OLED, RX 6800 XT; issue 1000). Built with it, that reset is gone; other
+        // RADV hangs remain (issue 1000).
+        static const bool amd = dev.props.vendorID == 0x1002 && dev.driver_id != VK_DRIVER_ID_MESA_RADV;
         static const bool mesh_opt = env_on("RX_VK_MESH_OPT");
         if (amd && !mesh_opt) {
             bool mesh = false;
@@ -5939,6 +5939,35 @@ bool fallback_compute_pipelines(Program& p) {
         std::lock_guard lk(mu);
         if (!p.fallback_compute.empty()) return true;
         if (failed.count({p.key, p.variant})) return false;
+    }
+    // (hookshot) none of its stages given to a compiler that would never finish one: RADV on GCN 1-4 grew past 25 GB on the two
+    // biggest mesh programs and kept the memory on its thread (fallback_size_policy.h). Left out, as a refused one is below.
+    // RX_VK_FALLBACK_PHI_LIMIT=<n>: another limit, 0 none
+    static const uint32_t phi_limit = [] {
+        uint32_t limit = fallback_size::kRadvGcnPhiLimit;
+        const char* e = getenv("RX_VK_FALLBACK_PHI_LIMIT");
+        if (e && !fallback_size::parse_limit(e, limit)) {
+            limit = fallback_size::kRadvGcnPhiLimit;
+            logf("vk: RX_VK_FALLBACK_PHI_LIMIT=%s is not a number from 0 to 4294967295: ignored", e);
+        }
+        if (dev.radv_gcn || e)
+            logf("vk: mesh fallback compute stages with more than %u phis are not built on RADV GCN 1-4 cards%s", limit,
+                 limit ? "" : " (0: none left out)");
+        return limit;
+    }();
+    for (size_t i = 0; i < p.stages.size(); i++) {
+        const Stage& st = p.stages[i];
+        if (st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT || !fallback_size::too_big(dev.radv_gcn, st.phis, phi_limit)) continue;
+        {
+            std::lock_guard lk(mu);
+            failed.insert({p.key, p.variant});
+        }
+        static std::atomic<int> told{0};
+        if (told++ < 8)
+            logf("vk: fallback: the compute pipeline of %016llx (stage %zu of %zu, %u phis, the most %u) is not built: RADV on this GCN "
+                 "card would not finish it (RX_VK_FALLBACK_PHI_LIMIT); its draws are left out",
+                 (unsigned long long)p.key, i, p.stages.size(), st.phis, phi_limit);
+        return false;
     }
     std::vector<VkPipeline> made(p.stages.size(), VK_NULL_HANDLE);
     bool any = false;
