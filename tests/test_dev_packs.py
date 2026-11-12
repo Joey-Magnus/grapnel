@@ -124,6 +124,30 @@ def test_inputs_beside_the_objects():
     check("another source alone: only the version differs there", not md(["host/nvn_native.c"], "host/hos_main.c"))
 
 
+def refused(what, argv):
+    try:
+        packs.main(argv)
+    except SystemExit as e:
+        check(what + " refused with a reason (%r)" % e.code, isinstance(e.code, str))
+    else:
+        check(what + " refused", False)
+
+
+def test_guards(d):
+    base = d / "base"
+    write(base / "game" / "user" / "save0.bin", b"played")
+    refused("a base built into a played game folder", ["base", str(base), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)])
+    f = packs.pack_folders(str(base))
+    refused("adopting the packs' own work folder", ["adopt", str(base), "--work", f["game_work"], "--game", str(base / "game"),
+                                                    "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)])
+    write(base / "game" / packs.GAME, b"g")
+    write(base / "game" / packs.RENDERER, b"r")
+    packs.write_base(str(base), {"commit": "c" * 40, "work": str(d / "w"), "game": str(base / "game"), "romfs": "r", "exefs": "e"})
+    for name in ("../game", "..", "a/b", str(d)):
+        refused("the pack name %r" % name, ["pack", str(base), name, "--tree", str(ROOT)])
+    check("the base is still there", (base / "game" / "user" / "save0.bin").exists())
+
+
 def test_pack_folders(d):
     """The lift key hashes the work and game folders' paths (make_game passes them to the lift as OOT_WORK and OOT_DUMP): a game
     pack reuses a translation only when every pack of a base builds in the same two folders"""
@@ -161,7 +185,8 @@ def test_generated_and_runtime(d):
     write(game / "prompts" / "Common.bntx", b"base prompts")
     write(game / "hookshot_pipeline_states_shipped.bin", b"shipped")
     write(game / "hookshot_options.ini", b"[menu]")
-    write(game / "hookshot.map", b"map")
+    if packs.MODULES[0][1]:   # (the game's map: Windows only)
+        write(game / packs.MODULES[0][1], b"map")
     outputs = packs.build_outputs(str(game))
     write(game / "user" / "save0.bin", b"a save, made in play")
     write(game / "hookshot_env.txt", b"HOS_X=1")
@@ -219,7 +244,8 @@ def main():
     test_inputs_beside_the_objects()
     with tempfile.TemporaryDirectory(prefix="hookshot-dev-packs-") as d:
         d = Path(d)
-        for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime)):
+        for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime),
+                        ("guard", test_guards)):
             (d / name).mkdir()
             t(d / name)
     print("test_dev_packs: ok")

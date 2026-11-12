@@ -280,6 +280,14 @@ def pack_folders(d):
             "renderer_work": os.path.join(d, "renderer-work")}
 
 
+def check_folders(d, b):
+    """A base whose work or game folder is one of its packs' folders would be rebuilt by its own packs, and compared with itself"""
+    mine = {os.path.normcase(os.path.abspath(f)) for f in pack_folders(d).values()}
+    for what in ("work", "game"):
+        if os.path.normcase(os.path.abspath(b[what])) in mine:
+            sys.exit("the base's %s folder %s is where its packs are built: give the base other folders" % (what, b[what]))
+
+
 def link_objects(base_work, work):
     """A new work folder with the base's compiled objects (hard links: the object cache's keys hold no folder path) and the note of
     the compiler's headers they were made with, so only what a change touches compiles"""
@@ -303,6 +311,8 @@ def cmd_base(a):
         sys.exit("%s has uncommitted or untracked sources (%s): a base is a commit" % (tree, ", ".join(sorted(dirty)[:5])))
     d = os.path.abspath(a.dir)
     work, game = os.path.join(d, "work"), os.path.join(d, "game")
+    if os.path.isdir(game) and os.listdir(game):   # (its files are recorded as what the build made: a played folder holds saves)
+        sys.exit("%s is not empty: a base is built into a new game folder" % game)
     os.makedirs(game, exist_ok=True)
     if a.seed:
         for c in CACHES:
@@ -323,6 +333,7 @@ def cmd_base(a):
 
 def cmd_adopt(a):
     d = os.path.abspath(a.dir)
+    check_folders(d, {"work": a.work, "game": a.game})
     os.makedirs(d, exist_ok=True)
     write_base(d, {"commit": git(os.path.abspath(a.tree), "rev-parse", "HEAD"), "work": os.path.abspath(a.work),
                    "game": os.path.abspath(a.game), "romfs": os.path.abspath(a.romfs), "exefs": os.path.abspath(a.exefs)})
@@ -331,6 +342,9 @@ def cmd_adopt(a):
 def cmd_pack(a):
     d, tree = os.path.abspath(a.dir), os.path.abspath(a.tree)
     b = read_base(d)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", a.name):   # (a plain name: packs/<name> is deleted and made again)
+        sys.exit("a pack's name is letters, digits, '.', '_' and '-': %r" % a.name)
+    check_folders(d, b)
     if subprocess.run(["git", "-C", tree, "merge-base", "--is-ancestor", b["commit"], "HEAD"]).returncode:
         sys.exit("%s is not built on the base %s: rebase it on the base, or make a new base" % (tree, b["commit"][:8]))
     changed = changed_files(tree, b["commit"])
