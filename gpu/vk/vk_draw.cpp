@@ -1373,7 +1373,11 @@ void pipeline_note(uint64_t key, const Program& p, const NvnState& s, const Targ
 // ("memory busted", out-of-memory crashes, Discord and issues 1228/1245, 2026-11-09), where play dispatches a few hundred. With the list
 // only those are kept ready; the rest stay on disk and are made when first dispatched, from the driver's and our pipeline cache (the
 // prepare warmed both: milliseconds, at the dispatch). Keys only, no stamp: a key no longer kept is just made in play.
-// RX_VK_PRECOMPILE_COMPUTES=all: every kept compute program, as before; =none: none ----
+// This file is what this install's own play dispatched. The shipped pipeline state list names compute programs too
+// (StateRec2::kCompute: from the pipeline tour and the contributed lists), and the precompile keeps ready those and these, each
+// once (computes_plan): a program this install's play has not reached yet is ready the first time it is dispatched.
+// RX_VK_PRECOMPILE_COMPUTES=all: every kept compute program, as before; =none: none; =learned: this file's alone, the shipped
+// list's left out; =listed: the shipped list's and this file's on a first start too, where every kept one is the default ----
 constexpr char kComputesMagic[8] = {'H', 'K', 'C', 'O', 'M', 'P', '1', 0};
 std::mutex compute_note_mu;
 FILE* compute_note_file = nullptr;
@@ -1421,7 +1425,12 @@ void compute_note(uint64_t key) {
 // (state_targets: attachment_format; pipeline_topology; color_types_of), so one list made on one PC prepares the pipelines another
 // GPU's draws will ask for, the mesh fallback's included. A record with variant 0 and no answers or questions stands for the variant
 // nothing bound makes (seed_plain_of: each texture as its instruction declares it), as lists converted from records that hold no
-// texture answers have them. Version 1 lists (a play folder's own from an older build) are still read ----
+// texture answers have them. Version 1 lists (a play folder's own from an older build) are still read.
+// A version 2 record of kind kCompute names a compute program play dispatched, by its compute stage's code key in code[0] and
+// nothing else (every other field 0): no pipeline state, a compute pipeline has none. It is the key hookshot_computes.bin holds,
+// a hash of the game's stage like the others, the same on every GPU and with any settings. The record's size and the magic are
+// unchanged: lists without such records are what they were, and a build from before them drops one (its sample count, 0, is
+// not one a pipeline can have: targets_ok), so it never takes one for a graphics pipeline ----
 constexpr char kStateMagic[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '1'};
 constexpr char kStateMagic2[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '2'};
 /// A version 1 record as the file has it, and in memory any record resolved for this device (state_list_read): the Vulkan formats
@@ -1460,7 +1469,9 @@ struct StateRec2 {
     uint32_t nanswers, nquestions;
     uint32_t answers[24];    // (stages numbered as answers_portable numbers them)
     uint8_t questions[32];
-    uint32_t pad[2];
+    uint32_t kind;           // 0: a graphics or mesh pipeline (all the lists held before it); kCompute: a compute program
+    uint32_t pad;
+    static constexpr uint32_t kCompute = 1;   // (code[0]: the compute stage's code key, Program::key; the other fields 0)
 };
 static_assert(sizeof(StateRec2) == 552 && std::is_trivially_copyable_v<StateRec2>, "the state list's record is a file format");
 std::string state_list_path(const char* name) {
@@ -1527,7 +1538,8 @@ bool state_v2_resolve(const StateRec2& v, StateRec& r) {
     return formats_ok(r.n, r.color_format, r.has_depth, r.depth_format);
 }
 /// The records of a state list of either version, each resolved for this device (none when it is not one). *version: the file's
-/// (0: not a list)
+/// (0: not a list). Only its pipelines: the compute programs it names (StateRec2::kCompute) have nothing to resolve and are read by
+/// state_list_computes; a kind this build does not know is left out
 std::vector<StateRec> state_list_read(const std::string& path, int* version = nullptr) {
     std::vector<StateRec> out;
     if (version) *version = 0;
@@ -1551,18 +1563,69 @@ std::vector<StateRec> state_list_read(const std::string& path, int* version = nu
             StateRec2 v;
             StateRec r;
             while (fread(&v, sizeof v, 1, f) == 1)
-                if (state_v2_resolve(v, r)) out.push_back(r);
+                if (!v.kind && state_v2_resolve(v, r)) out.push_back(r);
         }
     }
     fclose(f);
     return out;
+}
+/// The compute programs a state list names, as the file has them (each maybe more than once), and nothing else of it: no record
+/// resolved, no device asked (precompile_run reads the shipped list at every start for these alone, some 20 MB of it pipelines)
+std::vector<uint64_t> state_list_computes(const std::string& path) {
+    std::vector<uint64_t> keys;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return keys;
+    char magic[8];
+    uint32_t size = 0;
+    if (fread(magic, 8, 1, f) == 1 && fread(&size, 4, 1, f) == 1 && !memcmp(magic, kStateMagic2, 8) && size == sizeof(StateRec2)) {
+        std::vector<StateRec2> some(256);   // (whole records only: one cut short at the end is not read)
+        for (size_t n; (n = fread(some.data(), sizeof(StateRec2), some.size(), f)) > 0;)
+            for (size_t i = 0; i < n; i++)
+                if (some[i].kind == StateRec2::kCompute && some[i].code[0]) keys.push_back(some[i].code[0]);
+    }
+    fclose(f);
+    return keys;
+}
+/// The compute programs the precompile keeps ready before play (precompile_run). which: RX_VK_PRECOMPILE_COMPUTES, null when not set.
+/// keys, each once: those this install's play dispatched (hookshot_computes.bin: learned) and those the shipped state list names
+/// (every one of them: a list is bounded where it is made, nx2/pipeline_states.py check and read_sent, never cut short here, where
+/// a program left out would only show as a stall in play; not when state_lists is false or which is "learned").
+/// all: every kept compute program instead:
+///  - a first start, with nothing learned yet (and whenever nothing names any, or which is "all"). The shipped list names what
+///    someone's play dispatched, not what this player's will: a program it misses would be loaded and its pipeline made at its
+///    first dispatch, which a first start has never done. It costs that start the memory of every program (the comment at
+///    hookshot_computes.bin); from the second start on only the listed ones are kept, as before;
+///  - which "listed" takes the shipped list's alone on a first start too: far less memory there, and a program the list
+///    misses is made at its first dispatch.
+/// none: which is "none"
+struct ComputePlan {
+    std::unordered_set<uint64_t> keys;
+    bool all = false, none = false, learned_only = false;
+    size_t shipped = 0, learned = 0;   // (the keys the shipped list names, and those play dispatched here)
+    size_t fresh = 0;                  // (the shipped list's that this install's play has not dispatched)
+};
+ComputePlan computes_plan(const char* which, bool state_lists) {
+    ComputePlan plan;
+    plan.learned_only = which && !strcmp(which, "learned");
+    plan.keys = computes_read();
+    plan.learned = plan.keys.size();
+    if (state_lists && !plan.learned_only) {
+        std::unordered_set<uint64_t> seen;
+        for (const uint64_t k : state_list_computes(state_list_path("hookshot_pipeline_states_shipped.bin")))
+            if (seen.insert(k).second) plan.shipped++, plan.fresh += plan.keys.insert(k).second;
+    }
+    const bool listed = which && !strcmp(which, "listed");
+    plan.all = which && !plan.learned_only && !listed ? !strcmp(which, "all") : listed ? plan.keys.empty() : !plan.learned;
+    plan.none = !plan.all && which && !strcmp(which, "none");
+    return plan;
 }
 std::mutex state_mu;
 FILE* state_file = nullptr;
 std::unordered_set<uint64_t> state_seen;
 /// (state_mu held) the state list opened for this run's new pipelines, the records it holds hashed. precompile_run opens it before
 /// play: the first new pipeline in play read and hashed the whole list on the thread replaying, 8-18 ms. A version 1 list (an older
-/// build's) is kept as hookshot_pipeline_states_v1.bin, which the prepare reads too, and this build's records start a version 2 one
+/// build's) is kept as hookshot_pipeline_states_v1.bin, which the prepare reads too, and this build's records start a version 2 one.
+/// RX_VK_NO_STATE_LIST=1: never called
 void state_open_locked() {
     const std::string path = state_list_path("hookshot_pipeline_states.bin");
     bool keep = false;
@@ -1587,6 +1650,17 @@ void state_open_locked() {
     if (state_file && !keep) {
         const uint32_t size = sizeof(StateRec2);
         fwrite(kStateMagic2, 8, 1, state_file), fwrite(&size, 4, 1, state_file);
+    }
+    // (the compute programs this install's play dispatched before, hookshot_computes.bin: in the list too, each once, so that
+    // the list a player sends (Save my pipeline list) names them all, not only those of the runs since this build)
+    if (state_file) {
+        bool added = false;
+        for (const uint64_t key : computes_read()) {
+            StateRec2 r{};
+            r.code[0] = key, r.kind = StateRec2::kCompute;
+            if (key && state_seen.insert(state_hash(r)).second) fwrite(&r, sizeof r, 1, state_file), added = true;
+        }
+        if (added) fflush(state_file);
     }
 }
 /// (the draw's state; topo: the pipeline's, pipeline_topology's) the pipeline as the game asked for it, in the list once
@@ -1623,6 +1697,17 @@ void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrim
     if (!state_file) state_open_locked();
     if (state_file && state_seen.insert(h).second) fwrite(&r, sizeof r, 1, state_file), fflush(state_file);
 }
+/// (a compute program's first dispatch of this run: dispatch) the program in the list once, by its key alone, as a kCompute record
+void state_record_compute(uint64_t key) {
+    static const bool off = env_on("RX_VK_NO_STATE_LIST");
+    if (off || !key) return;
+    StateRec2 r{};
+    r.code[0] = key, r.kind = StateRec2::kCompute;
+    const uint64_t h = state_hash(r);
+    std::lock_guard lk(state_mu);
+    if (!state_file) state_open_locked();
+    if (state_file && state_seen.insert(h).second) fwrite(&r, sizeof r, 1, state_file), fflush(state_file);
+}
 /// (hookshot) The player's own state list as it is now, whole records only (state_mu held, so no record is half written): what
 /// the menu's Save my pipeline list zips (vk_menu.cpp). *present: whether there is one
 std::string state_list_bytes(bool* present) {
@@ -1644,6 +1729,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
     if (env_on("RX_VK_NO_STATE_LIST")) return;
     const auto t0 = std::chrono::steady_clock::now();
     int shipped_version = 0;
+    // (the shipped list's compute programs are not pipelines to note: precompile_run keeps them ready, computes_plan)
     std::vector<StateRec> recs = state_list_read(state_list_path("hookshot_pipeline_states_shipped.bin"), &shipped_version);
     const size_t shipped = recs.size();
     // (the player's own: this build's, and an older build's version 1 list, state_open_locked)
@@ -8108,19 +8194,25 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     }
     std::unordered_set<uint64_t> wanted;
     for (const auto& n : notes) wanted.insert(n->prog);
-    // (the compute programs: those play dispatched (hookshot_computes.bin), or every kept one when there is no list yet)
-    const char* which = getenv("RX_VK_PRECOMPILE_COMPUTES");
-    const std::unordered_set<uint64_t> used = computes_read();
-    const bool all_computes = which ? !strcmp(which, "all") : used.empty();
-    if (!all_computes && !(which && !strcmp(which, "none"))) wanted.insert(used.begin(), used.end());
+    // (the compute programs: those this install's play dispatched (hookshot_computes.bin) and those the shipped state list names,
+    // each once; every kept one on a first start, with nothing dispatched yet: computes_plan)
+    const ComputePlan plan = computes_plan(getenv("RX_VK_PRECOMPILE_COMPUTES"), !env_on("RX_VK_NO_STATE_LIST"));
+    if (!plan.all && !plan.none) wanted.insert(plan.keys.begin(), plan.keys.end());
     std::vector<Program*> computes, fallbacks;
+    std::unordered_set<uint64_t> listed_here;   // (the listed keys this install has a program of)
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
         ensure_layout(p);
-        if (p.compute) computes.push_back(&p);
-        else if (p.fallback) fallbacks.push_back(&p);   // (hookshot: the mesh fallback's compute pipelines too, before play)
-    }, all_computes, true);
-    logf("vk: precompile: compute programs: %s (%zu keys listed as dispatched in play)",
-         all_computes ? "every kept one" : (which && !strcmp(which, "none")) ? "none" : "those play dispatched", used.size());
+        if (p.compute) {
+            computes.push_back(&p);
+            if (plan.keys.count(p.key)) listed_here.insert(p.key);
+        } else if (p.fallback) fallbacks.push_back(&p);   // (hookshot: the mesh fallback's compute pipelines too, before play)
+    }, plan.all, true);
+    // (a listed key with no program here: another game version's, or a program this install did not keep. Nothing is made of it)
+    logf("vk: precompile: compute programs: %s (%zu keys listed: %zu in the shipped list, %zu dispatched in play here, %zu of the "
+         "shipped not among those; %zu of the listed have a program here, %zu variants)",
+         plan.all ? (plan.learned ? "every kept one" : "every kept one (nothing dispatched in play here yet: a first start)")
+                  : plan.none ? "none" : plan.learned_only ? "those play dispatched here" : "those listed",
+         plan.keys.size(), plan.shipped, plan.learned, plan.fresh, listed_here.size(), computes.size());
     const double read_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     const size_t total = notes.size() + computes.size() + fallbacks.size();
     // (the workers' state on the heap: a start whose last pipelines never finish (two of 4926 on an RX 5700 XT, "stuck at
@@ -8130,6 +8222,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         std::vector<std::unique_ptr<PipeNote>> notes;
         std::vector<Program*> computes, fallbacks;
         std::atomic<size_t> next{0}, done{0};
+        std::atomic<size_t> computes_cached{0}, computes_compiled{0}, computes_failed{0};
         std::mutex mu, first_graphics;
         std::atomic<bool> graphics_begun{false};
         bool abandoned = false;
@@ -8158,7 +8251,16 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 pin_subgroup(ci.stage, p.workgroup[0]);
                 ci.layout = p.layout;
                 VkPipeline made = VK_NULL_HANDLE;
-                if (cached_compute(&ci, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
+                // (asked of the caches first, as a dispatch asks: the prepare left it there, and the log's line can then say how
+                // many were compiled now. Where the driver cannot say, each is just made, and counted as compiled)
+                if (dev.vk13.pipelineCreationCacheControl) {
+                    VkComputePipelineCreateInfo asked = ci;
+                    asked.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+                    if (cached_compute(&asked, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
+                }
+                if (made) pre->computes_cached++;
+                else if (cached_compute(&ci, &made) == VK_SUCCESS && made) pre->computes_compiled++;
+                else made = VK_NULL_HANDLE, pre->computes_failed++;
                 std::lock_guard lk(pre->mu);
                 if (!pre->abandoned) p.compute_pipeline = made;
                 else if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (the game went on: it builds its own)
@@ -8224,15 +8326,23 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
             break;
         }
     }
+    size_t cs_cached = 0, cs_compiled = 0, cs_failed = 0;
+    const auto compute_counts = [&] {
+        cs_cached = pre->computes_cached.load(), cs_compiled = pre->computes_compiled.load(), cs_failed = pre->computes_failed.load();
+    };
     if (gone_on) {
+        compute_counts();   // (as far as they got: the stragglers go on)
         for (std::thread& t : threads) t.detach();
     } else {
         for (std::thread& t : threads) t.join();
+        compute_counts();
         delete pre;
     }
     logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines, %zu mesh fallback programs in %.0f ms (%.0f ms "
          "of it the caches opened, the notes and programs read)", programs_n, graphics_n, computes_n, fallbacks_n,
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), read_ms);
+    logf("vk: precompile: compute pipelines: %zu kept ready (%zu from the pipeline caches, %zu compiled now), %zu not made",
+         cs_cached + cs_compiled, cs_cached, cs_compiled, cs_failed);
     predicted_check();
 }
 
@@ -8825,7 +8935,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (taau_stand_in(cmd, s, p)) return void(st_dispatches++);
     if (!p.compute_pipeline) SKIP_HERE();
     dump_ssbos(cmd, p, "before");
-    if (!p.dispatched.exchange(true, std::memory_order_relaxed)) compute_note(p.key);
+    if (!p.dispatched.exchange(true, std::memory_order_relaxed)) compute_note(p.key), state_record_compute(p.key);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.compute_pipeline);
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) SKIP_HERE();
     push_constants(cmd, p, nullptr);

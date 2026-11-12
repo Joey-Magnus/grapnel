@@ -28,6 +28,8 @@ HEAD = r'''
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -40,14 +42,17 @@ constexpr VkResult VK_SUCCESS=0; constexpr uintptr_t VK_NULL_HANDLE=0;
 constexpr int VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO=10;
 constexpr int VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO=11;
 constexpr int VK_SHADER_STAGE_COMPUTE_BIT=12;
+constexpr int VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT=0x100;
 struct VkComputePipelineCreateInfo {
  int sType; struct {int sType=0,stage=0;uintptr_t module=0;const char*pName=nullptr;} stage;
- uintptr_t layout=0;
+ uintptr_t layout=0; int flags=0;
 };
-struct {uintptr_t device=0x1234;}dev;
+// (no pipelineCreationCacheControl: the arm makes each pipeline with one call, the one guarded here. With it the arm asks the
+// caches first, through the same cached_compute: tests/test_pipeline_state_computes.py)
+struct {uintptr_t device=0x1234;struct{bool pipelineCreationCacheControl=false;}vk13;}dev;
 VkPipelineCache pcache=0x5678;
 struct Program {struct Stage{uintptr_t module;};std::vector<Stage>stages{{0x2468}};unsigned workgroup[3]{32,1,1};uintptr_t layout=0x1357;VkPipeline compute_pipeline=0xbeef;};
-struct Pre {std::mutex mu;bool abandoned=false;};
+struct Pre {std::mutex mu;bool abandoned=false;std::atomic<size_t> computes_cached{0},computes_compiled{0},computes_failed{0};};
 int mode=0,calls=0,destroys=0,logged=0; bool completed=false;
 void logf(const char*,...){++logged;}
 int faults_noted=0; void note_driver_fault(){++faults_noted;}
@@ -108,6 +113,7 @@ int main(int argc,char**argv){
  mode=which==1?1:which==2?2:0;pre.abandoned=which==3;
  std::thread worker([&]{actual_arm(program,&pre);});worker.join();
  CHECK(completed&&calls==1);
+ CHECK(pre.computes_cached==0&&pre.computes_compiled==(which==0||which==3?1u:0u)&&pre.computes_failed==(which==1||which==2?1u:0u));
  if(which==0)CHECK(program.compute_pipeline==0xcafe&&destroys==0);
  if(which==1||which==2)CHECK(program.compute_pipeline==0&&destroys==0);
  if(which==3)CHECK(program.compute_pipeline==0xbeef&&destroys==1);

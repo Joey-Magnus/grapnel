@@ -260,6 +260,20 @@ record is a pipeline the game asked for: its shaders' hashes, the program varian
 vertex formats and draw state it was made with (`nx2/pipeline_states.py` has the layout). It holds no game code: a
 player's build turns the hashes back into shaders from their own `hookshot_shaders.bin`.
 
+A record can also name a compute program the game ran, by the hash of its shader alone (the record's kind says which;
+the file format is the same, and lists from before read as they did). The game writes one the first time a run
+dispatches a program. Every start keeps the pipelines of the listed compute programs ready before the title: the
+shipped list's, and the ones in the game folder's `hookshot_computes.bin`, which holds what this install's play has
+dispatched (the same programs its own state list names). Without a list entry, a program is loaded and its pipeline
+made at its first dispatch, and a dispatch whose pipeline takes more than 50 ms is skipped. The log's
+`precompile: compute programs` and `compute pipelines` lines say how many were listed, from where, and how many
+pipelines came from the caches or were compiled. A first start, before this install's play has dispatched anything,
+keeps every compute program the game has, as it did before the list named any: a program the list misses is then ready
+too, at the cost of that start's memory. `RX_VK_PRECOMPILE_COMPUTES=listed` keeps only the listed ones on a first
+start as well; `learned` leaves the shipped list's out, to compare; `all` keeps every one at every start and `none`
+keeps none. The game keeps every compute program a shipped list names and never drops one: the bound is
+`pipeline_states.py check`, which stops on a merged list that names more than `COMPUTE_MOST`, for someone to decide.
+
 `nx2/make_game.py` merges the sources at every build into the game folder's `hookshot_pipeline_states_shipped.bin`. It
 takes the tour's list first, then the contributed ones by name, and keeps each pipeline once. The same sources always
 give the same bytes, and the first start's shader preparation builds those pipelines before the title. Without them a
@@ -295,7 +309,9 @@ Players send theirs to issue #2034 with **Save my pipeline list** (the menu's De
 one runs with `--json`). It checks the list as `pipeline_states.py --check` does and writes
 `hookshot-pipelines-<date>.zip` to the Downloads folder with exactly two files, the list and `hookshot_pipeline_report.txt`
 (the issue's template filled in from the run or from the game folder's log and `hookshot_options.ini`), then copies the
-template, shows the folder and opens the issue; never with `HOS_HEADLESS`. `tests/test_pipeline_share.py` checks the zip,
+template, shows the folder and opens the issue; never with `HOS_HEADLESS`. The list is zipped as the game wrote it, compute
+records included (the report's `Pipelines` line counts them); `pipeline_states.py --check` and `add` take a sent list only
+when it is exactly a list (`read_sent`). `tests/test_pipeline_share.py` checks the zip,
 the template and the refusals for both. By hand: `python -I nx2/pipeline_share.py <game folder> [--out-dir <folder>]`.
 
 Refresh the tour's list before each release, and after a change to the shaders' translation or to the state a pipeline
