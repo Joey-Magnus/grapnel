@@ -220,6 +220,11 @@ bool memory_take_capture(uint64_t value, uint64_t completed);
 bool memory_capture_now(uint64_t value, uint64_t completed);   // (hookshot: made and taken at once)
 /// The submission the replay records next (bindings note it: a pool's mirror is in use until it is done)
 void memory_recording_value(uint64_t value, uint64_t completed);
+// (hookshot) The recording being made, as vk_replay.cpp numbers them (Recording::part), and the newest of them in which
+// the GPU reads guest memory in place (a pool bound with no mirror, a mirror's dirty pages copied from guest memory, a
+// mirror made): a CPU read of GPU results that returned before such a part let the game write what that part still reads
+void memory_recording_part(uint64_t part);
+uint64_t memory_in_place_part();
 /// RX_VK_TEX_CAPTURE (on with the capture; =0 off): the storage of a texture uploaded from guest memory joins the
 /// capture (its pool up to 256 MB, else its 2 MB regions), and what the capture took of it is kept for the uploads
 void memory_note_texture_upload(uint64_t guest, uint64_t size);

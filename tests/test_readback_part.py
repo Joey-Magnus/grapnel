@@ -14,7 +14,10 @@ meanwhile. The statements are cut from the source and run against stand-ins for 
     written in place and that submission is not done, or when the map has no such part; a part noted and not yet
     submitted (the replay's thread is between its write-back and its submit) is waited for, 250 ms at most;
   - a readback takes the look at the stopped queues after a CPU signal nobody has looked at since, also one made while a
-    look was under way, and not otherwise.
+    look was under way; every time while a queue is stopped at an event nobody has set (its value is guest memory's,
+    where a store meets the wait with no signal); and not otherwise;
+  - the part wait gives way to the last part when a part after the range's own reads guest memory in place (a pool
+    with no mirror, a mirror's pages no capture holds): vk_memory.cpp notes each such read.
 
 python -I -B tests/test_readback_part.py [--cxx g++]
 """
@@ -92,6 +95,9 @@ static bool replay_behind() { return false; }
 static void wait_queue_empty() {}
 static bool readback_wait_value(uint64_t) { waited_whole_value++; return true; }
 static const bool by_part = true, unforced = true;
+static uint64_t in_place_part;   // (the newest part that reads guest memory in place, as vk_memory.cpp keeps it)
+static uint64_t memory_in_place_part() { return in_place_part; }
+static int held_back;
 /// what a readback of [guest, guest + size) waits for: the recording (0: none)
 static uint64_t readback(uint64_t guest, uint64_t size) {
     bool w = false;
@@ -108,6 +114,11 @@ struct QueueRun { bool waiting = false; const uint8_t* p = nullptr; };
 std::map<uint64_t, QueueRun> qruns;
 std::atomic<int> blocked_n{0};
 /* COUNTERS */
+#include <unordered_map>
+std::unordered_map<uint64_t, uint32_t> ev_values;   // (the events the stream or nvnEventSignal has set)
+struct WaitEvent { uint64_t gpu; };
+static WaitEvent wait_at(const uint8_t* p) { return {*reinterpret_cast<const uint64_t*>(p)}; }
+/* MEMORY_EVENT */
 static int looks, signal_during_look;
 static void cpu_signal() { ev_cpu_signals.fetch_add(1, std::memory_order_release); }
 static bool wait_met_at(const uint8_t*) {
@@ -176,9 +187,22 @@ int main() {
     check(ms >= 200 && ms < 2000, "after 250 ms");
     check(readback(3 * P, 2 * P) == 6, "an older in-place write that is done does not bring the whole wait back");
     check(!wait_recorded_part(0, 0, nullptr) && !wait_recorded_part(99, 0, nullptr), "no part, or one not known: no wait made");
+    // a part after the range's own reads guest memory in place (a pool with no mirror, a mirror's pages from no capture):
+    // the game, let go after the range's part, would write what that part still reads. The last part, as before
+    done_value = 10;
+    held_back = 0;
+    in_place_part = 4;
+    check(readback(4 * P, 64) == 4 && held_back == 0, "guest memory read in place in the range's own part: that part is enough");
+    in_place_part = 5;
+    check(readback(4 * P, 64) == 5 && held_back == 1, "guest memory read in place in a later part: the submission's last part");
+    in_place_part = 0;
 
     // the look at the stopped queues: only after a CPU signal nobody has looked at
+    const uint64_t event = 0x1000;
+    ev_values[event] = 1;   // (an event the stream has set: its value is the replay's, not memory's)
     qruns[1].waiting = true;
+    qruns[1].p = reinterpret_cast<const uint8_t*>(&event);
+    check(!waits_on_memory_event(), "a queue stopped at an event the stream has set does not wait on guest memory");
     check(!sync_settle_met() && looks == 0, "nothing stopped: no look");
     blocked_n = 1;
     check(!sync_settle_met() && looks == 0, "a queue stopped, no CPU signal since the last look: no look (its wait is not met)");
@@ -190,6 +214,15 @@ int main() {
     check(sync_settle_met() && looks == 2, "a signal, and another made while the queues are looked at");
     check(sync_settle_met() && looks == 3, "the one made during the look is still to be looked at");
     check(!sync_settle_met() && looks == 3, "then none");
+    // an event neither the stream nor nvnEventSignal ever set: its value is guest memory's, a store there meets the wait
+    // with no signal counted. While a queue is stopped at one the readback looks every time, as before
+    ev_values.clear();
+    check(waits_on_memory_event(), "a queue stopped at an event nobody has set waits on guest memory");
+    ev_wait_in_memory = waits_on_memory_event();   // (as update_blocked stores it)
+    check(sync_settle_met() && sync_settle_met() && looks == 5, "then the readback looks every time, with no signal");
+    qruns[1].waiting = false;
+    ev_wait_in_memory = waits_on_memory_event();
+    check(!waits_on_memory_event() && !sync_settle_met() && looks == 5, "and no longer once that queue has gone on");
     if (failures) return 1;
     std::printf("PASS: a readback waits for the part that writes its pages back, and looks at the stopped queues only after a CPU signal\n");
     return 0;
@@ -218,14 +251,28 @@ def main():
     # (the settle before the lookup goes through sync_settle_met with per-queue fences)
     before = inv[:inv.index(lookup)]
     assert "else if (sync_settle_met())" in before, "the readback's look at the stopped queues is no longer sync_settle_met's"
-    counters = between(replay, "std::atomic<uint64_t> ev_cpu_signals{0}", ";")
+    counters = between(replay, "std::atomic<uint64_t> ev_cpu_signals{0}", ";") + "\n" + between(replay, "std::atomic<bool> ev_wait_in_memory{", ";")
+    blocked = block(replay, "void update_blocked() {")
+    assert "ev_wait_in_memory.store(n && waits_on_memory_event()" in blocked, \
+        "update_blocked no longer says whether a stopped queue waits on an event in guest memory"
+    assert "const bool in_place_after = memory_in_place_part() > part;" in choice and "!in_place_after &&" in choice, \
+        "the readback's part wait no longer gives way to guest memory read in place after its part"
+    memory_src = memory
+    for site in ("return remember({p->buffer, off, size, 0});", "vkCmdCopyBuffer(upload_command_buffer(), p.buffer, p.mirror,",
+                 "vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all);"):
+        at = 0
+        while (at := memory_src.find(site, at)) >= 0:
+            assert "note_in_place_read();" in memory_src[max(0, at - 200):at], \
+                "a read of guest memory in place is not noted for the readback's part wait: " + site
+            at += 1
     signal = block(replay, "void event_signal_queued(")
     assert signal.index("ev_cpu_pending.emplace_back") < signal.index("ev_cpu_signals.fetch_add"), \
         "a CPU signal must be counted after it is in the pending list (schedule's count comes before its tests)"
     fixture = (FIXTURE.replace("/* PAGES */", pages).replace("/* BOOKKEEPING */", bookkeeping).replace("/* WAITS */", waits)
                .replace("/* CHOICE */", choice).replace("/* COUNTERS */", counters)
                .replace("/* SCHEDULE */", block(replay, "void schedule() {"))
-               .replace("/* SETTLE */", block(replay, "bool sync_settle_met() {")))
+               .replace("/* SETTLE */", block(replay, "bool sync_settle_met() {"))
+               .replace("/* MEMORY_EVENT */", block(replay, "bool waits_on_memory_event() {")))
     with tempfile.TemporaryDirectory(prefix="readback-part-") as temp:
         src = Path(temp) / "readback_part.cpp"
         exe = Path(temp) / "readback_part.exe"   # (the name llvm-mingw writes on Windows; any name runs on Linux)

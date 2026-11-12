@@ -368,6 +368,7 @@ Recording& begin_recording(uint64_t value) {
     gprof_begin_recording(r.slot, r.cmd, r.upload);
     r.value = value;
     r.part = ++rec_part_next;
+    memory_recording_part(r.part);
     memory_recording_value(value, completed());
     texture_begin_recording(r.upload, value);
     draw_begin_recording(r.slot, r.cmd, value);
@@ -504,6 +505,10 @@ std::atomic<bool> ev_cpu_any{false};
 // (hookshot) how many signals the CPU has made, and how many of them a look at the stopped queues has been taken since
 // (schedule, whole): equal, no queue is stopped at a wait the CPU has met and nobody has looked at (sync_settle_met)
 std::atomic<uint64_t> ev_cpu_signals{0}, ev_cpu_settled{0};
+// (and whether a stopped queue waits on an event neither the stream nor nvnEventSignal has ever set: its value is read
+// from guest memory (event_value_in), where a store of the CPU's or a write-back can meet the wait with no signal counted;
+// update_blocked)
+std::atomic<bool> ev_wait_in_memory{false};
 std::unordered_set<uint64_t> cpu_events;   // (events the CPU has signalled, nvnEventSignal; ev_cpu_mu)
 void ev_cpu_apply() {
     if (!ev_cpu_any.load(std::memory_order_acquire)) return;
@@ -1424,6 +1429,7 @@ Recording& begin_segment_recording(uint64_t value) {
     vkBeginCommandBuffer(r.cmd, &bi);
     r.value = value;
     r.part = 0;   // (a parallel replay's segment: it writes nothing back itself, and its submit is not on the recordings' timeline)
+    memory_recording_part(++rec_part_next);   // (a number of its own all the same: what it reads in place comes after the parts before it)
     return r;
 }
 
@@ -1872,9 +1878,16 @@ bool hold_releases() {
     static const bool v = !getenv("RX_VK_RELEASE_DRAIN") || atoi(getenv("RX_VK_RELEASE_DRAIN")) == 0;
     return v;
 }
+/// Whether a stopped queue waits on an event whose value is guest memory's (never set by the stream or nvnEventSignal)
+bool waits_on_memory_event() {
+    for (const auto& [queue, q] : qruns)
+        if (q.waiting && !ev_values.count(wait_at(q.p).gpu)) return true;
+    return false;
+}
 void update_blocked() {
     int n = 0;
     for (const auto& [queue, q] : qruns) n += q.blocked();
+    ev_wait_in_memory.store(n && waits_on_memory_event(), std::memory_order_release);
     if (n && !blocked_n.load()) blocked_since = std::chrono::steady_clock::now();
     blocked_n = n;
     if (!n) {   // (the stopped work has gone on: its releases now)
@@ -2151,12 +2164,16 @@ void sync_settle() {
 /// a signal in the stream, replayed under sync_order_mu by a thread that looks at the queues before it lets the mutex go.
 /// Without this test the readback took the mutex whenever anything was stopped, and waited for whoever held it: the
 /// presenting thread, for the whole replay of its submission and for its present (Hyrule Field: a job thread blocked there
-/// at 24 % of all instants, 3.9 ms a frame, for a look that let nothing on). True when it looked.
+/// at 24 % of all instants, 3.9 ms a frame, for a look that let nothing on). An event the stream and nvnEventSignal never
+/// set is the exception: its value is read from guest memory, where a plain store can meet a wait; while a queue is stopped
+/// at such a wait the readback looks every time, as before (ev_wait_in_memory). True when it looked.
 /// RX_VK_READBACK_SETTLE_ALWAYS=1: whenever anything is stopped, as before
 bool sync_settle_met() {
     static const bool always = env_on("RX_VK_READBACK_SETTLE_ALWAYS");
     if (!blocked_n.load()) return false;
-    if (!always && ev_cpu_settled.load(std::memory_order_acquire) == ev_cpu_signals.load(std::memory_order_acquire)) return false;
+    if (!always && !ev_wait_in_memory.load(std::memory_order_acquire) &&
+        ev_cpu_settled.load(std::memory_order_acquire) == ev_cpu_signals.load(std::memory_order_acquire))
+        return false;
     sync_settle();
     return true;
 }
@@ -2457,10 +2474,11 @@ void invalidate(uint64_t gpu, uint64_t size) {
             // out here too). RX_VK_PER_QUEUE_FENCES=0 waits for every queue's work instead: the game's readbacks 19-87 ms
             // each on an RX 5500M, against ~1 ms here
             const bool unforced = !async_on() && sync_waits_on() && !per_queue_fences_off();
-            static std::atomic<int64_t> settled{0};
+            static std::atomic<int64_t> settled{0}, held_back{0};
             if (behind0 && !no_catchup) {   // (work handed over may write it back too)
-                if (!unforced) wait_queue_empty(), w = true;
-                else if (sync_settle_met()) settled++, w = true;
+                if (!unforced) wait_queue_empty();
+                else if (sync_settle_met()) settled++;
+                w = true;
             }
             const auto w1 = std::chrono::steady_clock::now();
             // (hookshot) what is waited for is the part of the submission that writes the range back, when its pages come
@@ -2485,7 +2503,13 @@ void invalidate(uint64_t gpu, uint64_t size) {
             }
             if (v > completed()) {
                 int ok = 0;
-                const bool parted = unforced && by_part && part && whole <= completed() && wait_recorded_part(part, UINT64_MAX, &ok);
+                // (and not when a part after it reads guest memory in place, on a card whose pools are not all mirrored
+                // or whose mirrors take pages no capture holds: the game, let go after the first part, would write what
+                // those parts still read. Then the last part, as before)
+                const bool in_place_after = memory_in_place_part() > part;
+                if (by_part && part && in_place_after) held_back++;
+                const bool parted = unforced && by_part && part && whole <= completed() && !in_place_after &&
+                                    wait_recorded_part(part, UINT64_MAX, &ok);
                 if (!parted && !(unforced && wait_recorded(v, UINT64_MAX, &ok))) {
                     if (unforced && replay_behind()) wait_queue_empty();   // (not recorded whole: as before)
                     readback_wait_value(v);
@@ -2508,7 +2532,9 @@ void invalidate(uint64_t gpu, uint64_t size) {
             if (++calls % 3000 == 0) {
                 const int64_t n = waited.exchange(0);
                 logf("vk: readbacks of GPU results: %lld of 3000 waited for their write-back, %.2f ms each; %lld looked at the "
-                     "stopped queues first", (long long)n, n ? ns.exchange(0) / (double)n / 1e6 : 0.0, (long long)settled.exchange(0));
+                     "stopped queues first, %lld waited for their submission's last part (guest memory read in place after theirs)",
+                     (long long)n, n ? ns.exchange(0) / (double)n / 1e6 : 0.0, (long long)settled.exchange(0),
+                     (long long)held_back.exchange(0));
             }
         }
     }

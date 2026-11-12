@@ -87,7 +87,7 @@ void queue_flush_locked(){batch_flushed=1;}
 void gpu_time_collect(Recording&){} void gprof_collect(int){} void gpu_time_begin(Recording&){}
 void gprof_begin_recording(int,VkCommandBuffer,VkCommandBuffer){}
 uint64_t completed(){return 0;}
-void memory_recording_value(uint64_t,uint64_t){} void texture_begin_recording(VkCommandBuffer,uint64_t){}
+void memory_recording_value(uint64_t,uint64_t){} void memory_recording_part(uint64_t){} void texture_begin_recording(VkCommandBuffer,uint64_t){}
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice,uint32_t,const VkFence*,VkBool32,uint64_t){read_pending();pending.clear();return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkResetFences(VkDevice,uint32_t,const VkFence*){return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitSemaphores(VkDevice,const VkSemaphoreWaitInfo* info,uint64_t){require(info->semaphoreCount==1 && *info->pValues<=batch_flushed,"held batch must be submitted before its GPU wait");read_pending();pending.clear();return VK_SUCCESS;}

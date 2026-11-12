@@ -1300,12 +1300,15 @@ uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint6
     v = wb_pages.max_in(first, last, ever);
     if (v && (part || whole)) {
         uint64_t newest = 0, in_place = 0;
-        for (uint64_t p = first; p <= last && p < kPages; p++) {
-            const uint64_t pv = wb_pages.get(p);
-            if (!pv) continue;
-            const uint64_t pp = wb_parts.get(p);
+        for (uint64_t p = first; p <= last && p < kPages;) {
+            if (!wb_pages.chunks[p / kChunkPages]) {   // (a chunk never made: none of its pages, as max_in)
+                p = (p / kChunkPages + 1) * kChunkPages;
+                continue;
+            }
+            const uint64_t pv = wb_pages.get(p), pp = pv ? wb_parts.get(p) : 0;
             if (pp) newest = std::max(newest, pp);
-            else in_place = std::max(in_place, pv);
+            else if (pv) in_place = std::max(in_place, pv);
+            p++;
         }
         if (part) *part = newest;
         if (whole) *whole = in_place;
@@ -1641,6 +1644,19 @@ const std::vector<std::pair<uint64_t, uint64_t>>& capture_ranges_merged() {
     }
     return merged;
 }
+// (hookshot) see vk_internal.h. Raised where a recording gets a read of guest memory itself, at the GPU's time: a pool
+// bound with no mirror (gpu_buffer_bind), a mirror's dirty pages no capture holds (mirror_sync) and a mirror's first copy.
+// With all pools mirrored and captured (the usual case on a card with room) it stays 0
+namespace {
+std::atomic<uint64_t> mem_rec_part{0}, mem_in_place_part{0};
+void note_in_place_read() {
+    const uint64_t part = mem_rec_part.load(std::memory_order_relaxed);
+    uint64_t seen = mem_in_place_part.load(std::memory_order_relaxed);
+    while (seen < part && !mem_in_place_part.compare_exchange_weak(seen, part, std::memory_order_release)) {}
+}
+} // namespace
+void memory_recording_part(uint64_t part) { mem_rec_part.store(part, std::memory_order_relaxed); }
+uint64_t memory_in_place_part() { return mem_in_place_part.load(std::memory_order_acquire); }
 void memory_recording_value(uint64_t value, uint64_t completed) {
     mem_rec_value = value;
     if (completed > mem_completed) mem_completed = completed;
@@ -2424,6 +2440,7 @@ void mirror_sync(Pool& p) {
     checkpoint_mark(upload_command_buffer(), p.lo, 'm');
     GprofSpan gp(upload_command_buffer(), "msync copies (CPU pages live from guest memory -> mirror)");
     gp.items = (int)runs.size();
+    note_in_place_read();   // (these pages as guest memory has them when the GPU gets here)
     vkCmdCopyBuffer(upload_command_buffer(), p.buffer, p.mirror, (uint32_t)runs.size(), runs.data());
     for (const VkBufferCopy& r : runs) st_sync_bytes += (int64_t)r.size, gp.bytes += r.size;
     st_sync_copies += (int64_t)runs.size();
@@ -2729,8 +2746,10 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         Pool* p = tl.p;
         const uint64_t off = guest - p->lo;
         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
-        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED)
+        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED) {
+            note_in_place_read();
             return remember({p->buffer, off, size, 0});
+        }
         if (p->mstate == Pool::MIRROR_ON && p->synced_epoch == mirror_epoch && p->sync_seg <= texture_segment())
             return remember({p->mirror, off, size, 0});
     }
@@ -2760,6 +2779,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         // (hookshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
         // write-back diff's shadow no longer knows those pages, and reads them again at its next write-back, after this write
         if (written) shadow_forget(*p, off, std::min(size, p->hi - p->lo - off));
+        note_in_place_read();
         return remember({p->buffer, off, size, 0});
     }
     // (a pool's mirror is made at its first binding, in this part's uploads: bound in guest memory until the next
@@ -2787,6 +2807,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         e.first++, e.second = (int)p->mstate;
         direct_bytes_by_pool[p->lo] += size;
         if (written) note_direct_write(*p, off, size);
+        note_in_place_read();
         return remember({p->buffer, off, size, 0});
     }
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);
@@ -3094,6 +3115,7 @@ bool mirror_make(Pool& pool) {
         {
             GprofSpan gp(upload_command_buffer(), "mmake copy (a whole pool -> its new mirror)");
             gp.bytes = n;
+            note_in_place_read();
             vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all);   // (all of it, at this generation)
         }
         {   // (EvilOOT) then the mirrors of the pools it took in, over their part: what the GPU wrote there and only there
