@@ -1474,6 +1474,22 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no");
+    // (Part 3 A/B: say whether RX_VK_GPL can turn stage libraries on, and what is still missing when it cannot)
+    {
+        const bool eds3 = dev.eds3_blend && dev.eds3_polygon && dev.eds3_clamp && dev.eds3_a2c;
+        const bool cache_ctl = dev.vk13.pipelineCreationCacheControl != VK_FALSE;
+        const bool want = env_on("RX_VK_GPL");
+        if (!dev.graphics_pipeline_library)
+            logf("vk: GPL: off (no fast-link pipeline libraries on this driver)");
+        else if (!eds3)
+            logf("vk: GPL: off (need extendedDynamicState3 blend/polygon/clamp/alpha-to-coverage; RX_VK_GPL=%s)",
+                 want ? "1" : "unset");
+        else if (want)
+            logf("vk: GPL: on (stage libraries + link; ask-only %s)", cache_ctl && !env_on("RX_VK_GPL_SYNC") ? "yes" : "no");
+        else
+            logf("vk: GPL: available (set RX_VK_GPL=1 to A/B stage-library links; ask-only %s)",
+                 cache_ctl ? "yes" : "no, needs pipelineCreationCacheControl");
+    }
     logf("vk: driver: %s", driver_text().c_str());   // (the builders' Save my pipeline list reads it: nx2/pipeline_share.py)
     if (!dev.mesh_shader && !dev.mesh_fallback && !env_on("RX_VK_NO_MESH_WARNING")) {
         // (the game draws its foliage, grass and many effects with mesh shaders: without them those draws are left out and the
