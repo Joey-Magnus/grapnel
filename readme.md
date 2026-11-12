@@ -253,6 +253,10 @@ value and cannot be changed, so remove the line to choose in the menu.)
 This is a workaround for some artifacts, not a general lighting fix. It can substantially increase graphics-memory
 use and cause stalls when the card runs out of headroom. To undo it, turn the row off (and remove any `RX_VK_ASTC_RGBA8` line from `hookshot_env.txt`) and restart the game.
 
+`RX_VK_ASTC_BC7=1` keeps those big ASTC textures as BC7 instead of BC3. Both are 8 bits a texel, so the graphics memory
+is the same; BC7's mode 6 keeps the colours' gradients and alpha much better, and the textures look cleaner where BC3
+shows bands or blocks. Off unless set; `RX_VK_ASTC_RGBA8=1` above still wins when both are set.
+
 ## In-game menu
 
 By default, press <kbd>Insert</kbd>, <kbd>F1</kbd> or <kbd>Esc</kbd> in game. On a controller, press Home or Select and
@@ -491,6 +495,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   creeps. `HOS_MOTION_DEBUG=1` (in `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
   a button yourself sets it to Custom.
+- **Button prompts** (on the Controls page): the button icons in the game's texts, hints and menus. Auto shows the first
+  controller's; with no controller connected, the keyboard's. Keyboard shows the key or mouse button your controls put each
+  action on (the first of its two), and WASD and the mouse for the sticks; the ocarina's notes and the pause menu's
+  controller keep the Switch's buttons.
 - **Save my pipeline list** (Debug tab, under Developer): see [Send your pipeline list](#send-your-pipeline-list).
 
 ### Controls
@@ -523,6 +531,10 @@ face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</k
 puts them all back. A gamepad button taken from another Switch button swaps with it. The page saves them in
 `hookshot_options.ini`.
 
+**Ocarina notes:** the page gains five rows, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)`, `(X)`, unset by default: the game's own
+buttons play until you bind a note to a key or gamepad input of your own, and a bound note then answers only that input while
+the game waits for it. A dialogue or cutscene that takes the buttons ends the wait, and a song lesson keeps the game's own too.
+
 <details>
 <summary>Writing the controls in hookshot_options.ini yourself</summary>
 
@@ -537,8 +549,9 @@ key_a=69,13
 [Windows key codes](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) in decimal (69 is
 <kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none; the mouse's buttons are 1 (left), 2 (right), 4 (middle), 5 and 6 (side
 buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
-`rs` `left` `up` `right` `down`, and for keys only the left stick's and the camera's directions: `move_up`
-`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`. A button the file leaves out keeps
+`rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions: `move_up`
+`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`, and the ocarina's five notes,
+which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`. A button the file leaves out keeps
 its default.
 
 </details>

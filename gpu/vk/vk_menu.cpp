@@ -480,7 +480,8 @@ const char* tx_text_size(int v) {
 const char* tx_fov(int v) { return v == 100 ? "100% (original)" : tx_percent(v); }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }   // (the Aspect ratio row: a shape, not on or off)
 const char* tx_prompts(int v) {
-    static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
+    static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck",
+                                              "Keyboard"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
 }
 const char* tx_gpu(int v) {
@@ -745,7 +746,8 @@ const char* hn_astc_rgba8(int, int variant) {
                                        : nullptr;
 }
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
-MENU_HINTS(hn_mesh_mode, 0, "The GPU's own mesh shaders where it has them, the compute path where it has not.",
+MENU_HINTS(hn_mesh_mode, 0, "The GPU's own mesh shaders where it has them, the compute path where it has not (on Linux "
+           "AMD always the compute path: RADV's mesh shaders stop the GPU, issue 2245).",
            "The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.",
            "The compute path on every GPU: try it if your card crashes or leaves objects out. Usually a little slower.")
 MENU_HINTS(hn_fps, 0, nullptr, "The frame rate. With frame generation on, the game's own rate too.",
@@ -774,7 +776,10 @@ MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the botto
            "A at the bottom, B on the right; X and Y as on the Switch.",
            "Bindings of your own, from the Controls page.")
 MENU_HINTS(hn_prompts, 0,
-           "Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.")
+           "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput "
+           "alone).",
+           "The Switch's buttons.", "An Xbox controller's.", "A PlayStation 4 controller's.", "A PlayStation 5 controller's.",
+           "A Steam Deck's.", "The keys and mouse buttons your controls put each action on.")
 
 Row rows[] = {
     // Graphics, in sections: a heading row is a section's title (draw_options draws it, the selection steps over it). The
@@ -1351,7 +1356,8 @@ const char* ini_key(const Row& r) {
 // (hookshot) the controls, kept by the host (host/nn_hid.c reads them back from here): pad_<button>, key_<button>
 const char* const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus", "minus",
                                            "left", "up", "right", "down", "move_up", "move_down", "move_left",
-                                           "move_right", "cam_up", "cam_down", "cam_left", "cam_right"};
+                                           "move_right", "cam_up", "cam_down", "cam_left", "cam_right",
+                                           "note_l", "note_r", "note_a", "note_y", "note_x"};
 bool can_bind() { return host && host->binding && host->bind && host->pad_raw; }
 const char* tx_pad_layout(int v) {
     static const char* t[] = {"Nintendo (Def)", "Xbox / PC", "Swap Face", "Custom"};
@@ -1479,8 +1485,8 @@ void save() {
         fprintf(f, "options_version=6\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
-        for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
-            if (i < HOS_SW_N) {
+        for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the stick's and camera's rows, HOS_KEY_MOVE_*/CAM_*, have no pad_ line; the ocarina note rows do)
+            if (i < HOS_SW_N || (i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X)) {
                 const int alternate = host->binding(HOS_BIND_PAD, i, 1);
                 fprintf(f, "pad_%s=%d", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
                 if (alternate >= 0) fprintf(f, ",%d", alternate);
@@ -1934,6 +1940,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (hookshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
         samplers_changed();
+    if (r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.dlss_model)
+        temporal_reset_failure();
     prompts_at_once(r);   // (hookshot)
     {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
         int now[mr::kMax];
@@ -1956,16 +1964,19 @@ const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {
                             {HOS_KEY_MOVE_DOWN, "Move back"}, {HOS_KEY_MOVE_LEFT, "Move left"},
                             {HOS_KEY_MOVE_RIGHT, "Move right"}, {HOS_KEY_CAM_UP, "Camera up"},
                             {HOS_KEY_CAM_DOWN, "Camera down"}, {HOS_KEY_CAM_LEFT, "Camera left"},
-                            {HOS_KEY_CAM_RIGHT, "Camera right"}};
+                            {HOS_KEY_CAM_RIGHT, "Camera right"}, {HOS_KEY_OC_NOTE_L, "Ocarina note (L)"},
+                            {HOS_KEY_OC_NOTE_R, "Ocarina note (R)"}, {HOS_KEY_OC_NOTE_A, "Ocarina note (A)"},
+                            {HOS_KEY_OC_NOTE_Y, "Ocarina note (Y)"}, {HOS_KEY_OC_NOTE_X, "Ocarina note (X)"}};
 constexpr int kControls = sizeof controls / sizeof controls[0];   // (then "Reset to defaults")
-bool keys_only(int i) { return i < kControls && controls[i].button >= HOS_SW_N; }   // (no gamepad input for those)
+// (the stick's and camera's directions: keys only; the ocarina's note rows take a gamepad input too, host/nn_hid.c)
+bool keys_only(int i) { return i < kControls && controls[i].button >= HOS_KEY_MOVE_UP && controls[i].button <= HOS_KEY_CAM_RIGHT; }
 // a pad input's name on the controller of the button prompts (the Button prompts row's choice; Auto: the face in use),
 // else by its place
 const char* pad_name(int p) {
     if (p < 0 || p >= HOS_PAD_N) return "None";
     static const char* paddles[] = {"R4", "L4", "R5", "L5"};
     if (p >= HOS_PAD_RPADDLE1) return paddles[p - HOS_PAD_RPADDLE1];
-    static const char* t[HOS_PROMPT_N + 1][HOS_PAD_RPADDLE1] = {   // (by place, then HOS_PROMPT_*)
+    static const char* t[HOS_PROMPT_KEYBOARD + 1][HOS_PAD_RPADDLE1] = {   // (by place, then HOS_PROMPT_*; the keyboard's: by place)
         {"Bottom button", "Right button", "Left button", "Top button", "Select / Back", "Home", "Start", "L stick press",
          "R stick press", "L1 / LB", "R1 / RB", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"},
         {"B", "A", "Y", "X", "Minus", "Home", "Plus", "L stick press", "R stick press", "L", "R", "D-pad up",
@@ -1979,7 +1990,7 @@ const char* pad_name(int p) {
         {"A", "B", "X", "Y", "View", "Steam", "Menu", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down", "D-pad left",
          "D-pad right", "L2", "R2"}};
     const int face = opts.prompts ? opts.prompts - 1 : host && host->prompt_face ? host->prompt_face() : -1;
-    return t[face >= 0 && face < HOS_PROMPT_N ? face + 1 : 0][p];
+    return t[face >= 0 && face < HOS_PROMPT_KEYBOARD ? face + 1 : 0][p];
 }
 const char* key_name(int vk) {
     static char b[16];
@@ -2789,7 +2800,8 @@ void draw_controls(ui::Ctx& c) {
                                     "selected input and Delete clears it. A button's only gamepad input stays with it: it does not move into "
                                     "another's empty Input 2. The game's button icons follow after a restart.";
     const char* hint = page_row ? (page_row->hint ? page_row->hint(*page_row->value, -1) : nullptr)
-                                : "Gamepad: the D-pad moves, A binds, B goes back.";
+                                : "Gamepad: the D-pad moves, A binds, B goes back. Ocarina note keys are only notes while "
+                                  "the ocarina waits for one; away from it they do their other jobs.";
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {
         bottom = std::min(bar_top, c.h - c.safe) - 200 * s;
@@ -3647,8 +3659,10 @@ void menu_init() {
         // (the Aspect ratio from options_version 6: a file from before wrote ultrawide=0, the 16:9 default then, whether
         // chosen or not. On a screen narrower than 16:9 host/hos_main.c starts the game at the monitor's shape for it
         // (host/hos_wide_size.h hos_aspect_on), and the row follows what the host started with: a picture narrower than
-        // 16:9 there. On Linux too, where the menu has no screen size of its own)
-        if (version < 6 && opts.ultrawide == 0 && host && host->aspect_ratio) {
+        // 16:9 there. On Linux too, where the menu has no screen size of its own. Not with HOS_ASPECT, a debugging switch
+        // the host takes instead of the file: the shape it started with is then the switch's, not a move, and the next save
+        // would keep a choice the player never made)
+        if (version < 6 && opts.ultrawide == 0 && !getenv("HOS_ASPECT") && host && host->aspect_ratio) {
             const float started = host->aspect_ratio();
             if (started > 1.0f && started < 16.0f / 9.0f * 0.99f) opts.ultrawide = 1;
         }
@@ -4199,7 +4213,11 @@ void menu_tick() {
         }
     } else if (open_now.load() && page == 1) {   // (hookshot) the Controls page
         using enum menu_hit::CtlColumn;
-        if (!can_bind()) page = 0;
+        if (!can_bind()) {
+            static int warned;
+            if (!warned) warned = 1, logf("menu: the Controls page asked for the host's bindings and got none");
+            page = 0;
+        }
         else if (listening) {
             if (press[5] || prof_now() > listen_end) listening = 0, changed = true;   // (Esc, or nothing for a while)
             else if (listening == 1) {
