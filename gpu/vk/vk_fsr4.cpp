@@ -340,7 +340,9 @@ VKAPI_ATTR VkResult VKAPI_CALL create_shader_module(VkDevice d, const VkShaderMo
     if (r == VK_SUCCESS && kind) {
         std::lock_guard lk(mu);
         module_kind[*m] = kind;
-        if ((kind & 1) && unroll_on()) {   // (the library's own code: unrolled, its weights become constants in it, faster still)
+        // (a layer with weight tables, from the library's own code: unrolled, its weights become constants in the code, which
+        // is where the gain is. One without tables gains nothing: pass 3, 0.07 ms either way)
+        if ((kind & 1) && (kind & 2) && unroll_on()) {
             layer_code[*m] = std::make_shared<std::vector<uint32_t>>(code, code + words);
             layer_name[*m] = entry;
         }

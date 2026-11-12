@@ -1,14 +1,15 @@
-// (longshot) AMD FSR 4's passes, tuned as the library hands them to the driver (vk_fsr4.cpp): plain functions over SPIR-V, no
-// Vulkan calls, so tests/ and the standalone timing harness use them as they are.
+// AMD FSR 4's passes, tuned as the library hands them to the driver (vk_fsr4.cpp): plain functions over SPIR-V, no Vulkan
+// calls, so tests/test_fsr4_tune.py builds and runs them as they are.
 //
-// Measured 2026-11-12 on an RX 6700 XT (FSR 4.1.2, its INT8 model, 720p -> 1440p), each change checked bit for bit against
-// AMD's own output:
+// Measured 2026-11-12 on an RX 6700 XT (FSR 4.1.2, 720p -> 1440p, all of its passes 8.97 ms), each change checked bit for
+// bit against AMD's own output:
 //  - wave64 for the network's layers (entry points "..._passN"): they ask for 32 lanes, and their loops' scalar work is then
-//    paid once per 32 pixels instead of 64. Their three widest layers 1.18 -> 0.66 ms each; all of it 8.97 -> 6.85 ms. The
-//    prepass and postpass stay at 32 (slower at 64).
-//  - the postpass's weights out of per-invocation arrays: it copies 2.8 KB of constants into Function arrays and indexes them
-//    by loop counters, which the driver keeps in scratch memory (3.6 KB a lane). Read from a tail appended to the pass's own
-//    storage buffer instead: 1.67 -> 0.95 ms. Both together: 6.22 ms.
+//    paid once per 32 pixels instead of 64: 8.97 -> 6.85 ms. The prepass and postpass stay at 32 (slower at 64).
+//  - weights out of per-thread arrays: the postpass and the layers copy constant weight tables (2.8 KB; 576 and 128 words,
+//    again at every iteration) into Function arrays and read them at loop-dependent places, which the driver keeps in
+//    scratch memory. Read from a tail appended to the library's storage buffer instead (arrays_to_buffer): 6.85 -> 4.48 ms.
+//  - the layers with weight tables that stay small unrolled whole (spirv_unroll.h, vk_fsr4.cpp): the weights become
+//    constants in the code. Passes 1, 2 and 12, 0.45 -> 0.27 ms each: 4.04 ms in all.
 #pragma once
 
 #include <cstdint>
@@ -17,6 +18,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "spirv_unroll.h"   // (its operand walker: which words of an instruction are ids)
 
 namespace fsr4_tune {
 
@@ -147,8 +150,17 @@ inline bool arrays_to_buffer(const uint32_t* code, size_t words, uint32_t base_w
             if (x.n != 5 || p == ptr.end() || p->second.first != 7 || p->second.second != t_uint) bad.insert(w(x, 3));
             else chain_var[w(x, 2)] = w(x, 3);
         }
+    // (only the words that are ids: a constant's value, a binding or a name's letters equal to a variable's id once kept that
+    // variable where it was. An instruction the operand table does not describe has every word looked at)
+    std::vector<uint32_t> at;
     for (const Ins& x : ins) {
-        for (uint32_t k = 1; k < x.n; k++) {
+        spirv_unroll::Ins one(&code[x.at], &code[x.at + x.n]);
+        at.clear();
+        if (!spirv_unroll::for_each_id(one, [&](uint32_t& id, bool) { at.push_back((uint32_t)(&id - one.data())); })) {
+            at.clear();
+            for (uint32_t k = 1; k < x.n; k++) at.push_back(k);
+        }
+        for (uint32_t k : at) {
             const uint32_t id = w(x, k);
             const bool is_var = cand.count(id), is_chain = chain_var.count(id);
             if (!is_var && !is_chain) continue;
@@ -184,7 +196,7 @@ inline bool arrays_to_buffer(const uint32_t* code, size_t words, uint32_t base_w
     for (const Ins& x : ins) {
         if (x.op == 59 && moved.count(w(x, 2))) continue;   // the variable
         if ((x.op == 5 || x.op == 71) && moved.count(w(x, 1))) continue;   // its name and decorations
-        if (x.op == 62 && moved.count(w(x, 1))) continue;   // its one store
+        if (x.op == 62 && moved.count(w(x, 1))) continue;   // its stores (all of the same constant)
         if (x.op == 65 && chain_var.count(w(x, 2)) && moved.count(chain_var[w(x, 2)])) {
             const uint32_t c = moved[chain_var[w(x, 2)]], sum = bound++;
             o.insert(o.end(), {(5u << 16) | 128u, t_uint, sum, w(x, 4), base_id[c]});                 // OpIAdd

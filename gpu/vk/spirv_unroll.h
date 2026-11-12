@@ -1,8 +1,9 @@
-// (longshot) Full unrolling of counted loops in a SPIR-V module, innermost first: for AMD FSR 4's network layers
-// (fsr4_tune.h), whose nested loops over a kernel's taps and channels the driver leaves rolled. Rolled, every index into the
-// accumulators is a loop counter (register-indexed moves) and every tap pays a counter, a compare and a branch; unrolled, the
-// indices are constants. Plain functions over the words, no Vulkan; operands are walked by spirv_operands.h, so only ids are
-// renamed, never a literal that happens to equal one.
+// Full unrolling of counted loops in a SPIR-V module, innermost first: for AMD FSR 4's network layers (fsr4_tune.h), whose
+// nested loops over a kernel's taps and channels the driver leaves rolled. Rolled, every index into the weights and the
+// accumulators is a loop counter and every tap pays a counter, a compare and a branch; unrolled, the indices are constants
+// and the weights the code's own. Plain functions over the words, no Vulkan; operands are walked by spirv_operands.h, so only
+// ids are renamed, never a literal that happens to equal one. Code size grows with the trips: unroll_all's max_words is
+// what keeps a driver's compile of the result affordable (vk_fsr4.cpp kUnrollWords).
 //
 // A loop is taken only in this shape (DXC's for its counted loops):
 //   %H = OpLabel ; %i = OpPhi %int-type %c0 %pre %inext %cont (the header's only phi, c0 a constant) ;
