@@ -2832,7 +2832,10 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
             return on;        }();
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
-        static const bool snap_reuse = !getenv("RX_VK_UB_SNAPSHOT_REUSE") || env_on("RX_VK_UB_SNAPSHOT_REUSE");
+        static const bool snap_reuse = [] {   // (unset: on; set, as env_on reads it)
+            const char* e = getenv("RX_VK_UB_SNAPSHOT_REUSE");
+            return !e || !env_value_off(e);
+        }();
         const uint64_t snap_key = u.addr * 0x9E3779B97F4A7C15ull ^ n;
         const uint64_t view = snapshot && snap_reuse ? memory_capture_view() : 0;
         static std::atomic<int64_t> snap_hits{0};
