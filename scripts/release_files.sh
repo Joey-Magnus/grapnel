@@ -177,6 +177,13 @@ finish() {
         (( i == 1 )) || sleep 5
         upload "$tag" "$dir/SHA256SUMS" >/dev/null
     done
+    sleep 5
+    sums "$id" >"$dir/SHA256SUMS"
+    if [[ -s $dir/SHA256SUMS ]] && cmp -s "$dir/SHA256SUMS" <(uploaded "$id"); then
+        cat "$dir/SHA256SUMS"
+        if [[ -n $out ]]; then cp "$dir/SHA256SUMS" "$out"; fi
+        return 0
+    fi
     echo "release_files.sh: $tag: SHA256SUMS still differs from the files after 5 uploads" >&2
     return 1
 }

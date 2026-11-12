@@ -153,6 +153,11 @@ elif p[:2] == ["releases", "assets"]:
     for r in s["releases"]:
         for a in r["assets"]:
             if a["id"] == int(p[2]):
+                if a["name"] == "SHA256SUMS" and s.get("sums_wait_for_sleep"):
+                    sleeps = int(open(os.environ["FAKE_GH_SLEEP_LOG"]).read() or "0")
+                    if sleeps < a["visible_after_sleep"]:
+                        save()
+                        sys.exit(0)
                 sys.stdout.write(a["content"])
                 save()
                 sys.exit(0)
@@ -163,8 +168,11 @@ elif len(p) == 3 and p[0] == "releases" and p[2] == "assets" and method == "POST
     if any(a["name"] == name for a in r["assets"]):
         fail(422, "already_exists")
     s["next_id"] += 1
-    r["assets"].append({"id": s["next_id"], "name": name, "content": data.decode(),
-                        "digest": "sha256:" + hashlib.sha256(data).hexdigest()})
+    made = {"id": s["next_id"], "name": name, "content": data.decode(),
+            "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
+    if name == "SHA256SUMS" and s.get("sums_wait_for_sleep"):
+        made["visible_after_sleep"] = int(open(os.environ["FAKE_GH_SLEEP_LOG"]).read() or "0") + 1
+    r["assets"].append(made)
 elif len(p) == 3 and p[0] == "releases" and p[2] == "assets":
     out([asset(a) for a in release(p[1])["assets"]], jq)
 elif p == ["releases"] and method == "POST":
@@ -239,7 +247,8 @@ class ReleaseScripts(unittest.TestCase):
         (tools / "gh").write_text(STUB, encoding="utf-8")
         (tools / "gh").chmod(0o755)
         # (no waiting between retries)
-        (tools / "sleep").write_text("#!/bin/sh\n", encoding="utf-8")
+        self.sleep = tools / "sleep"
+        self.sleep.write_text("#!/bin/sh\n", encoding="utf-8")
         (tools / "sleep").chmod(0o755)
         self.state_file = self.dir / "state.json"
         self.files = self.dir / "dist"
@@ -325,6 +334,21 @@ class ReleaseScripts(unittest.TestCase):
         sums = next(a["content"] for a in made["assets"] if a["name"] == "SHA256SUMS")
         self.assertEqual(sums, (self.dir / "SUMS").read_text(encoding="utf-8"))
         self.assertIn("Which file do I download?", made["body"])
+        check = self.run_script("release_files.sh", "check", "v2.1.0", "hookshot-linux.txt")
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+
+    def test_finish_waits_after_fifth_checksum_upload_before_the_final_read(self):
+        self.sleep_log = self.dir / "sleeps"
+        self.sleep_log.write_text("0", encoding="utf-8")
+        self.sleep.write_text("#!/bin/sh\nn=$(cat \"$FAKE_GH_SLEEP_LOG\")\nprintf '%s' \"$((n + 1))\" > \"$FAKE_GH_SLEEP_LOG\"\n", encoding="utf-8")
+        self.env["FAKE_GH_SLEEP_LOG"] = str(self.sleep_log)
+        self.given([], tags={"v2.1.0": COMMIT}, sums_wait_for_sleep=True)
+        r = self.upload(RELEASE_SUMS_OUT=str(self.dir / "SUMS"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sum_uploads = [call for call in self.state()["calls"]
+                       if any("uploads.github.com" in arg and "name=SHA256SUMS" in arg for arg in call)]
+        self.assertEqual(len(sum_uploads), 5)
+        self.assertEqual(self.sleep_log.read_text(encoding="utf-8"), "5")
         check = self.run_script("release_files.sh", "check", "v2.1.0", "hookshot-linux.txt")
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
 
