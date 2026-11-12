@@ -442,7 +442,9 @@ public partial class MainWindow : Window
         PrepareTick.IsChecked = !s.PrepareLater;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
-        FsrTick.IsChecked = s.Fsr;
+        // (on only with AMD's license accepted, as a build takes it: a switch saved on before the license was asked showed on,
+        // and no build used it. Switched on here, the license is asked)
+        FsrTick.IsChecked = s.Fsr && s.FsrLicense;
         fsrLicense = s.FsrLicense;
         MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), s.MemoryGb);
         if (sourcePicked) return;   // (game files given here already, dropped on the window: not last time's over them)
