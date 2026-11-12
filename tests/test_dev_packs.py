@@ -148,6 +148,21 @@ def test_guards(d):
     refused("adopting a game folder inside the packs' output folder",
             ["adopt", str(d / "b2"), "--work", str(d / "w"), "--game", os.path.join(packs.pack_folders(str(d / "b2"))["game_out"], "g"),
              "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)], "where its packs are built")
+    check("folders on two drives do not overlap (no error)", not packs.overlaps("C:\\a", "D:\\a") if os.name == "nt" else True)
+    link = d / "alias"
+    target = packs.pack_folders(str(d / "b3"))["game_out"]
+    os.makedirs(target)
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:   # (Windows without the right to make links: a junction, which needs none)
+        import _winapi
+        _winapi.CreateJunction(target, str(link))
+    refused("adopting the packs' output folder through a link", ["adopt", str(d / "b3"), "--work", str(d / "w"), "--game", str(link),
+                                                                 "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)],
+            "where its packs are built")
+    write(d / "launcher" / "bin" / packs.GAME, b"g")
+    refused("a launcher's game folder (modules in bin/)", ["adopt", str(d / "b4"), "--work", str(d / "w"), "--game", str(d / "launcher"),
+                                                         "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)], "plain game folder")
     refused("a runtime inside the base's game folder", ["rt", str(base), str(base / "game" / "runtime")], "folder of its own")
     check("...and nothing written there", not (base / "game" / "runtime").exists())
     write(base / "game" / "language.txt", b"# the game's language\nde-DE\n")

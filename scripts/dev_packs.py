@@ -266,6 +266,9 @@ def read_base(d):
 
 
 def write_base(d, b):
+    if not all(os.path.isfile(os.path.join(b["game"], m[0])) for m in MODULES):   # (make_game.py's launcher layout: game/bin/)
+        sys.exit("%s has no %s and %s beside each other: a base is a plain game folder (not a launcher's, with bin/)" %
+                 (b["game"], GAME, RENDERER))
     b["modules"] = {m[0]: sha(os.path.join(b["game"], m[0])) for m in MODULES}
     with open(os.path.join(d, "base.json"), "w", encoding="utf-8") as f:
         json.dump(b, f, indent=1)
@@ -281,9 +284,12 @@ def pack_folders(d):
 
 
 def overlaps(a, b):
-    """One folder is the other or holds it"""
-    a, b = (os.path.normcase(os.path.abspath(x)) for x in (a, b))
-    return os.path.commonpath([a, b]) in (a, b)
+    """One folder is the other or holds it, through links and junctions too (folders on two drives never do)"""
+    a, b = (os.path.normcase(os.path.realpath(x)) for x in (a, b))
+    try:
+        return os.path.commonpath([a, b]) in (a, b)
+    except ValueError:
+        return False
 
 
 def check_folders(d, b):
