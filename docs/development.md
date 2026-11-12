@@ -286,11 +286,12 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
     `objs.rsp` / `vk_objs.rsp`). Bytes can't tell: both modules hold the version, a fingerprint of every source
     (`nx2/version.py`), which changes the code around it, so the object holding it (`hos_main.c`, `vk_menu.cpp`)
     counts only when its own source or a header changed. Both modules are kept when something reaches them besides
-    their objects: the build's own scripts (`build.py` and what it imports, such as `toolchain.py`: flags, link
-    options, the Windows manifest), a data file under `nx2/` that is not the translator's, or a non-C file under
+    their objects: the build's own scripts (`make_game.py`, `build.py` and what it imports, such as `toolchain.py`:
+    flags, link options, the hot order, the Windows manifest), a data file under `nx2/` that is not the translator's, or a non-C file under
     `host/`, `gpu/` or `third_party/`. It also keeps every other file of the built game folder that differs from
-    the base's (the shader seed, the shipped pipeline list, the button prompts), and a file of the base's that the
-    change's build no longer makes is removed from the runtime (the files the game writes as it runs aside).
+    the base's (the shader seed, the shipped pipeline list, the button prompts). A file the base's own build made
+    (`base` records them) that the change's build no longer makes is removed from the runtime; saves, settings and
+    caches are never touched, and an adopted base records none.
   - **Prepare:** the runtime prepares again when the shader translator (`gpu/vk/{eden,sirit,compat}/`,
     `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, `vk_api.h`: what `build.py` stamps the shader caches with) or the
     shader seed changed; `--prepare` / `--no-prepare` decide instead.

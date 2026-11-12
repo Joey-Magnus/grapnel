@@ -159,7 +159,8 @@ def stamped_may_differ(paths, source):
 
 
 def build_scripts(root):
-    """nx2/build.py and every Python module it imports (as make_game.lift_sources finds the lift's: a64-kit's folders, then nx2/)"""
+    """nx2/build.py and every Python module it imports (as make_game.lift_sources finds the lift's: a64-kit's folders, then nx2/),
+    and nx2/make_game.py, which sets build.py's environment (the hot order, the profile)"""
     kit = os.path.join(root, "third_party", "a64-kit")
     path = [os.path.join(kit, d) for d in ("rt", "hos", "tools", "lift")] + [os.path.join(root, "nx2")]
     todo, seen = [os.path.join(root, "nx2", "build.py")], set()
@@ -183,7 +184,7 @@ def build_scripts(root):
                     if os.path.isfile(m):
                         todo.append(m)
                         break
-    return {os.path.relpath(f, root).replace(os.sep, "/") for f in seen}
+    return {os.path.relpath(f, root).replace(os.sep, "/") for f in seen} | {"nx2/make_game.py"}
 
 
 def link_inputs_changed(paths, lift_files, build_files):
@@ -201,11 +202,25 @@ def link_inputs_changed(paths, lift_files, build_files):
     return any(reaches(p) for p in paths)
 
 
-def generated_changes(base_game, game):
+def build_outputs(game):
+    """The files a build made in a new game folder, outside romfs: the base's, recorded when it is built, are the only files a
+    pack may find gone (a played folder also holds saves, settings and other files no build makes)"""
+    skip = {m for mod in MODULES for m in mod[:2] if m} | set(CACHES) | set(WRITTEN_IN_PLAY)
+    out = []
+    for top, dirs, fs in os.walk(game):
+        dirs[:] = sorted(x for x in dirs if not (top == game and x == "romfs"))
+        for f in sorted(fs):
+            rel = os.path.relpath(os.path.join(top, f), game).replace(os.sep, "/")
+            if rel not in skip and not rel.endswith(".log"):
+                out.append(rel)
+    return out
+
+
+def generated_changes(base_game, game, base_outputs=None):
     """The files of a built game folder that differ from the base's, besides the modules, their maps and the caches: what the
     build generates (the shader seed, the shipped pipeline list, button prompts, files it would write into romfs; romfs files the
     same as the base's are its hard links, so only new ones are read), and the base's files outside romfs that this build did not
-    make (the game folder holds only this build's output: clear_output)"""
+    make, of those its own build made (base_outputs; none when the base did not record them, as an adopted one)"""
     skip = {m for mod in MODULES for m in mod[:2] if m} | set(CACHES)
     changed = []
     for top, dirs, fs in os.walk(game):
@@ -218,14 +233,7 @@ def generated_changes(base_game, game):
             q = os.path.join(base_game, rel)
             if not (os.path.isfile(q) and same_file(p, q)):
                 changed.append(rel)
-    gone = []
-    for top, dirs, fs in os.walk(base_game):
-        dirs[:] = sorted(x for x in dirs if not (top == base_game and x == "romfs"))
-        for f in sorted(fs):
-            rel = os.path.relpath(os.path.join(top, f), base_game).replace(os.sep, "/")
-            if rel in skip or rel in WRITTEN_IN_PLAY or rel.endswith(".log") or os.path.isfile(os.path.join(game, rel)):
-                continue
-            gone.append(rel)
+    gone = [rel for rel in base_outputs or () if not os.path.isfile(os.path.join(game, rel))]
     return changed, gone
 
 
@@ -305,6 +313,7 @@ def cmd_base(a):
     t = time.time()
     make_game(tree, b, work, game, {})
     b["build_s"] = round(time.time() - t)
+    b["outputs"] = build_outputs(game)
     for m in MODULES:   # (the maps beside the modules, for profilers)
         if m[1]:
             shutil.copy2(os.path.join(work, "sa", "build", m[1]), os.path.join(game, m[1]))
@@ -355,7 +364,7 @@ def cmd_pack(a):
                     shutil.copy2(os.path.join(built, f), os.path.join(pack, f))
             files[mod] = sha(os.path.join(pack, mod))
     if how == "game":
-        extra, gone = generated_changes(b["game"], w["game_out"])
+        extra, gone = generated_changes(b["game"], w["game_out"], b.get("outputs"))
         for rel in extra:
             dst = os.path.join(pack, "files", rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
