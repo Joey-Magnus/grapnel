@@ -199,6 +199,8 @@ def tree_headers(*roots, skip=()):
 # elsewhere (the Vulkan and SPIR-V headers, the compiler's) counts as before: by the flags and the system headers' stamp.
 HEADER_EXTS = (".h", ".hpp", ".inc")
 _HEADER_DIGESTS = {}   # (a header's path -> its name and content's sha1, once a run: many files read the same headers)
+DEPFILE_DEPS = b"depfile:"   # (what renderer_deps' dependency text starts with when it comes from a depfile)
+DEPFILE_PENDING = "depfile-pending"   # (the stamp of an object compiled now from a depfile key, until rekey_depfiles keys it)
 
 
 def depfile_paths(text):
@@ -257,7 +259,7 @@ def renderer_deps(blob, roots, obj):
             except OSError:   # (a header gone since: the key changes, and the file is compiled again)
                 _HEADER_DIGESTS[path] = os.path.basename(path).encode() + b"\0gone"
         h.update(_HEADER_DIGESTS[path])
-    return b"depfile:" + h.hexdigest().encode()
+    return DEPFILE_DEPS + h.hexdigest().encode()
 
 
 def ngx_library(sdk, linux):
@@ -865,9 +867,11 @@ DEPFILE_JOBS = {}   # (a back-end object -> the folders' blob, the folders, its 
 
 
 def rekey_depfiles(jobs):
-    """After the compile. An object compiled now has a new depfile, so the key the next build names it by (renderer_deps) may not
-    be the one it was compiled and cached under: it is cached and stamped under that one too, or the next build compiles it again.
-    Only an object stamped with this build's key for it, so made from this build's source and headers"""
+    """After the compile: each back-end object stamped and cached by the key its own depfile gives (renderer_deps), the only key
+    that vouches for it. An object compiled now is stamped DEPFILE_PENDING by compile_one when its planned key came from the last
+    compile's depfile, which may lack a header the new source reads (hckrman101 on #2706: add an include, take it out, edit the
+    header, put it back, and that key named an object built with the old header); one compiled from the folders' blob was cached
+    by that key too, which covers every header. One stamped otherwise is another build's and is left alone"""
     for cc, src, obj, fl, deps in jobs:
         if obj not in DEPFILE_JOBS or not os.path.exists(obj):
             continue
@@ -877,12 +881,12 @@ def rekey_depfiles(jobs):
                 old = f.read()
         except OSError:
             continue
-        if old != (PLANNED.get((src, obj)) or object_key(src, fl, deps)):
+        if old != DEPFILE_PENDING and old != (PLANNED.get((src, obj)) or object_key(src, fl, deps)):
             continue
         blob, roots, extras = DEPFILE_JOBS[obj]
         key = object_key(src, fl, renderer_deps(blob, roots, obj) + extras)
+        cache_put(obj, key)   # (also when it is the planned key: compile_one caches no object by a depfile key)
         if key != old:
-            cache_put(obj, key)
             with open(stamp, "w") as f:
                 f.write(key)
 
@@ -941,6 +945,12 @@ def compile_one(job):
     if r.returncode:
         failure = r.stderr or r.stdout or "Compiler exited with status %d without diagnostics." % r.returncode
         return src, time.time() - t, failure[-4000:]
+    if deps.startswith(DEPFILE_DEPS):
+        # (keyed by the last compile's depfile: this source may read headers that one did not, so the key does not vouch for the
+        # object. rekey_depfiles stamps and caches it by the key its own new depfile gives; a build that stops before that leaves
+        # it pending, and the next one compiles it again)
+        open(stamp, "w").write(DEPFILE_PENDING)
+        return src, time.time() - t, None
     open(stamp, "w").write(key)
     cache_put(obj, key)
     return src, time.time() - t, None

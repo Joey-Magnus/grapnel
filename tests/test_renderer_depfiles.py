@@ -24,6 +24,19 @@ spec.loader.exec_module(build)
 
 BLOB = b"the folders' blob"
 
+# (a compiler for the scenario below: the "object" is the source and every header it includes, one level, and the depfile
+# names those headers, as clang -MD would)
+FAKE_CC = r'''
+import os, re, sys
+args = sys.argv[1:]
+src, obj = args[args.index("-c") + 1], args[args.index("-o") + 1]
+text = open(src, "rb").read()
+heads = [os.path.join(os.path.dirname(src), m.decode()) for m in re.findall(rb'#include "([^"]+)"', text)]
+open(obj, "wb").write(text + b"".join(open(h, "rb").read() for h in heads))
+esc = lambda p: p.replace("\\", "/").replace(" ", "\\ ")
+open(obj[:-2] + ".d", "w").write("%s: %s\n" % (esc(obj), " ".join(esc(p) for p in [src] + heads)))
+'''
+
 
 class DepfileTests(unittest.TestCase):
     def test_clangs_depfile_is_read_as_clang_writes_it(self):
@@ -122,6 +135,49 @@ class RendererDepsTests(unittest.TestCase):
             build.rekey_depfiles([("c++", str(self.src), self.obj, fl, BLOB)])
         self.assertEqual(Path(self.obj + ".sha1").read_text(), "0" * 40)
         self.assertFalse(cache.exists())
+
+    def test_an_include_added_taken_out_and_back_never_reuses_an_old_headers_object(self):
+        """hckrman101's steps on #2706: an object keyed by the last compile's depfile, which lacks a header the new source reads,
+        must not be cached by that key, or putting the include back after editing that header reuses the old header's object"""
+        d = Path(self.temporary.name)
+        cc_script = d / "fake_cc.py"
+        cc_script.write_text(FAKE_CC)
+        a_h, b_h = self.vk / "a.h", self.vk / "b.h"
+        a_h.write_bytes(b"/* a v1 */\n")
+        b_h.write_bytes(b"/* b v1 */\n")
+        cache = d / "objcache"
+        fl = [str(cc_script), "-MD"]
+
+        def build_once():
+            build._HEADER_DIGESTS.clear()
+            build.PLANNED.clear()
+            blob = build.tree_headers(*self.roots)
+            deps = build.renderer_deps(blob, self.roots, self.obj)
+            job = (sys.executable, str(self.src), self.obj, fl, deps)
+            build.DEPFILE_JOBS[self.obj] = (blob, self.roots, b"")
+            build.PLANNED[(str(self.src), self.obj)] = build.object_key(str(self.src), fl, deps)
+            _, _, err = build.compile_one(job)
+            self.assertIsNone(err)
+            build.rekey_depfiles([job])
+            return Path(self.obj).read_bytes()
+
+        with mock.patch.object(build, "OBJ_CACHE", str(cache)), mock.patch.object(build, "GATE", None), \
+                mock.patch.dict(build.DEPFILE_JOBS, {}):
+            with_b = b'#include "a.h"\n#include "b.h"\n'
+            self.src.write_bytes(b'#include "a.h"\n')
+            build_once()                                   # 1. a.h only: its depfile says a.h
+            self.src.write_bytes(with_b)
+            self.assertIn(b"b v1", build_once())          # 2. b.h added (keyed by step 1's depfile: a.h alone)
+            self.src.write_bytes(b'#include "a.h"\n')
+            build_once()                                   # 3. taken out again: the depfile says a.h
+            b_h.write_bytes(b"/* b v2 */\n")
+            self.src.write_bytes(with_b)
+            obj = build_once()                             # 4. b.h edited and the include back
+            self.assertIn(b"b v2", obj, "an object built with the old b.h came back from the cache")
+            self.assertNotIn(b"b v1", obj)
+            stamp = Path(self.obj + ".sha1").read_text()
+            self.assertNotEqual(stamp, build.DEPFILE_PENDING)
+            self.assertTrue((cache / (stamp + ".o")).exists())
 
     def test_the_build_uses_them(self):
         """The back end's own files (not eden's, not sirit's) get -MD and renderer_deps; the re-keying follows the compile"""
