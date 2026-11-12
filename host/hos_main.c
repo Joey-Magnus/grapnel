@@ -1207,6 +1207,7 @@ static _Thread_local uint64_t flight_transform_controller;
 static _Thread_local uint64_t flight_pose_actor;
 static _Thread_local float flight_transform_yaw;
 static int64_t flight_player_seen;
+static int64_t player_free_seen;   /* (Link updated with no event playing: the Auto run row, hos_oot_player_free) */
 
 /* Link's controller (vtable 0x84c54f10, the one OneShotPhysicsCctChangePosition moves) from his components, 0 when the chain
    is not there */
@@ -1379,6 +1380,17 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
 }
 #endif
 
+/* (the Insert menu's Auto run, host/auto_run.h) Link is the player's to move: updated within the last 250 ms with no
+   event playing (a cutscene, a talk). A paused game stops his updates */
+int hos_oot_player_free(void) {
+#if defined(_WIN32) || defined(__linux__)
+    const int64_t seen = __atomic_load_n(&player_free_seen, __ATOMIC_RELAXED);
+    return seen && hos_now_ns() - seen < 250000000;
+#else
+    return 0;
+#endif
+}
+
 int hos_oot_flight_shortcut_ready(void) {
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     const int64_t seen = __atomic_load_n(&flight_player_seen, __ATOMIC_RELAXED);
@@ -1433,6 +1445,7 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
     const uint64_t movement = components ? recomp_load64(c, components + 800) : 0;
     if (movement < HOS_HEAP_BASE + 0x1d50 || recomp_load64(c, movement + 24) != actor ||
         !hos_oot_is_player(c, movement - 0x1d50)) return;
+    __atomic_store_n(&player_free_seen, oot_event_playing(c) ? 0 : hos_now_ns(), __ATOMIC_RELAXED);
 
     // Link can be updated by different guest workers on successive frames.
     static SRWLOCK cheats_lock = SRWLOCK_INIT;
