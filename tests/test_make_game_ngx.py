@@ -293,7 +293,7 @@ class LinuxBuilderDlssTests(unittest.TestCase):
         btn = SimpleNamespace(winfo_exists=lambda: True, text="", configure=lambda **kw: setattr(btn, "text", kw.get("text", "")))
         win = SimpleNamespace(launch_folder=None, build_button=btn, out=FakeVar(str(game)), tools="v2.0.12", latest="v2.0.12",
                               source_picked=False, dlss_toggled=True, dlss=FakeVar(True), status=FakeVar(""), mode="build",
-                              switching=lambda: False)
+                              switching=lambda: False, launcher_for=None)
         with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(self.root)}):
             self.builder.Builder.apply_mode(win)
         self.assertEqual(win.mode, "update-game")

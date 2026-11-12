@@ -14,6 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "builder/linux"))
 import linux_update
+import linux_upgrade
 
 
 class Value:
@@ -56,14 +57,15 @@ def handlers(answer, run_worker=False):
         return types.SimpleNamespace(start=start)
     worker = types.SimpleNamespace(Thread=thread)
     namespace = dict(os=os, linux_update=linux_update, messagebox=popup, threading=worker,
-                     tk=types.SimpleNamespace(TclError=RuntimeError), folder_has_dlss=lambda _: False)
+                     tk=types.SimpleNamespace(TclError=RuntimeError), folder_has_dlss=lambda _: False,
+                     linux_upgrade=linux_upgrade, launcher_offer=lambda tag, quiet=True: None)   # (a Builder release)
     exec(compile(ast.Module(body=methods, type_ignores=[]), "production-builder-handlers", "exec"), namespace)
     app = types.SimpleNamespace(tools="v2.1.0", latest=None, source_picked=False, update_tag=None,
                                 fetched=True, update_folder="prior", out=Value("authored-game"),
                                 switching=lambda: False, launch_folder="", build_button=Widget(),
                                 status=Value(), launch_status=Value(), launch_update=Widget(), px=lambda n: n,
                                 dlss=Value(True), dlss_toggled=False, stop_update=threading.Event(),
-                                show_progress=lambda _: events.append("progress"))
+                                show_progress=lambda _: events.append("progress"), launcher=None, launcher_for=None)
     app.lines = types.SimpleNamespace(put=lambda row: events.append(row))
     for name in names:
         setattr(app, name, types.MethodType(namespace[name], app))
@@ -215,6 +217,7 @@ class Admission(unittest.TestCase):
         def argument(name):
             return args[args.index(name) + 1] if name in args else None
         namespace = dict(sys=types.SimpleNamespace(argv=args), _arg=argument,
+                         linux_upgrade=types.SimpleNamespace(installed_launcher=lambda: "", forward_command=linux_upgrade.forward_command),
                          Builder=lambda **kw: received.append(kw) or types.SimpleNamespace(mainloop=lambda: None))
         exec(compile(ast.Module(body=[main], type_ignores=[]), "production-main", "exec"), namespace)
         namespace["main"]()

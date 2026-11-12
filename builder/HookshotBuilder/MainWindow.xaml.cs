@@ -81,6 +81,14 @@ public partial class MainWindow : Window
 
     async void Start()
     {
+        // (the Hookshot Launcher installed: the game folder's launcher and the game's update offer still start this Builder, which
+        // passes --launch and --update on, docs/launcher-upgrade.md section 4. Not a portable Builder: its folders stay its own)
+        if (!BuilderHome.Portable && Upgrader.Installed() is { } launcher && Upgrader.Forward(Environment.GetCommandLineArgs()[1..]) is { } forward)
+        {
+            Upgrader.Start(launcher, forward);
+            Application.Current.Shutdown();
+            return;
+        }
         // (development) HOOKSHOT_TEST_SHORTCUTS=<game folder>: both shortcuts made for it, the result in the log beside the app, and out
         if (Environment.GetEnvironmentVariable("HOOKSHOT_TEST_SHORTCUTS") is { Length: > 0 } testFolder)
         {
@@ -92,10 +100,20 @@ public partial class MainWindow : Window
         }
         Animate();
         var started = Stopwatch.StartNew();
+        if (Tools.Find() == null && await Bridge()) return;
         if (Environment.GetCommandLineArgs().Contains("--update"))
         {
             SplashText.Text = "Getting the update…";
             await Task.Delay(900);
+            // (the game's offer names a launcher release: the hand-over screen instead, nothing downloaded yet)
+            var (updateFolder, updateTag, fetched) = Upgrader.UpdateArgs(Environment.GetCommandLineArgs());
+            if (!fetched && updateTag != null && updateTag != Tools.Find()?.Version && await Offer(updateTag) is { } offered)
+            {
+                offerFor = updateTag;
+                ShowMain();
+                ShowHandover(updateFolder, offered);
+                return;
+            }
             ShowMain();
             Updater.FromCommandLine(this);
             return;
@@ -121,6 +139,7 @@ public partial class MainWindow : Window
         if (Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") is { Length: > 0 } preview) { Preview(preview); return; }
         CheckAll();
         latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag(Track);
+        await ProbeLauncher(Updater.Target(latestTag, Tools.Find()?.Version, Track));
         RefreshMode();
     }
 
@@ -147,6 +166,7 @@ public partial class MainWindow : Window
             FillDumps();
             CheckAll();
             latestTag ??= Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag(Track);
+            await ProbeLauncher(Updater.Target(latestTag, Tools.Find()?.Version, Track));
         }
         Refresh();
     }
@@ -154,7 +174,7 @@ public partial class MainWindow : Window
     // ================= what the button does: build, update the game, play it, or get the newer builder =================
     // (as NX2navi's launcher: whatever version the player opens, it checks the latest release and says what is there)
 
-    enum Mode { Build, UpdateGame, UpToDate, UpdateBuilder }
+    enum Mode { Build, UpdateGame, UpToDate, UpdateBuilder, Upgrade }
     Mode mode = Mode.Build;
     string? latestTag, updateTarget;
     bool sourcePicked;   // (the player chose game files here: a build from them, even over a game that is up to date)
@@ -184,8 +204,15 @@ public partial class MainWindow : Window
         else if (game != null && !sourcePicked) mode = Mode.UpToDate;
         else if (latestTag != null && builder != null && builder != updateTarget) mode = Mode.UpdateBuilder;
         else mode = Mode.Build;
+        // (the update's target a launcher release: the update is the upgrade, Upgrader.cs)
+        if (mode is Mode.UpdateGame or Mode.UpdateBuilder && offer != null && offerFor == updateTarget) mode = Mode.Upgrade;
         switch (mode)
         {
+            case Mode.Upgrade:
+                FilesTitle.Text = T(S.HandoverTitle);
+                FilesSub.Text = string.Format(T(S.UpgradeAvailable), updateTarget);
+                BuildButton.Content = T(S.Upgrade);
+                break;
             case Mode.UpdateGame:
                 FilesTitle.Text = "Update available";
                 FilesSub.Text = $"Hookshot {updateTarget} is available. Your game is {game}: Update builds it again from the game files kept in " +
@@ -235,7 +262,16 @@ public partial class MainWindow : Window
         ShowPage(LaunchPage);
         latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag(Track);
         updateTarget = Updater.Target(latestTag, Tools.Find()?.Version, Track);   // (GitHub's newest, else this builder's own)
+        await ProbeLauncher(updateTarget);
         if (updateTarget == null) LaunchStatus.Text = "Could not check for updates (GitHub did not answer)";
+        else if (offer != null && offerFor == updateTarget && game != updateTarget)
+        {
+            LaunchStatus.Text = string.Format(T(S.UpgradeOut), updateTarget);
+            LaunchStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xB9, 0xC8, 0xFF));
+            LaunchStatus.FontWeight = FontWeights.SemiBold;
+            LaunchUpdate.Content = T(S.Upgrade);
+            LaunchUpdate.Visibility = Visibility.Visible;
+        }
         else if (game != null && game != updateTarget && GameVersion(folder) != null)
         {
             LaunchStatus.Text = $"Update available: {updateTarget}";
@@ -277,6 +313,11 @@ public partial class MainWindow : Window
 
     void LaunchUpdateClick(object sender, RoutedEventArgs e)
     {
+        if (offer != null && offerFor == updateTarget)
+        {
+            ShowHandover(launchFolder, offer);
+            return;
+        }
         if (OlderOk(GameVersion(launchFolder))) Updater.UpdateFolder(this, launchFolder, updateTarget, fetched: false, named: Switching);
     }
 
@@ -304,6 +345,7 @@ public partial class MainWindow : Window
         latestTag = null;
         RefreshMode();
         latestTag = await Updater.LatestTag(Track);
+        await ProbeLauncher(Updater.Target(latestTag, Tools.Find()?.Version, Track));
         RefreshMode();
     }
 
@@ -579,7 +621,7 @@ public partial class MainWindow : Window
 
     void ShowPage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { FilesPage, BuildPage, ReadyPage, ProblemPage, LaunchPage })
+        foreach (var p in new FrameworkElement[] { FilesPage, BuildPage, ReadyPage, ProblemPage, LaunchPage, HandoverPage })
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
         page.Opacity = 0;
         page.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(250)));
@@ -847,6 +889,10 @@ public partial class MainWindow : Window
     {
         switch (mode)
         {
+            case Mode.Upgrade:
+                SaveSettings();
+                ShowHandover(OutPath.Text, offer);
+                return;
             case Mode.UpdateGame:   // (the kept game files; the newer builder first when this one is older)
                 if (!OlderOk(GameVersion(OutPath.Text))) return;
                 SaveSettings();
@@ -1372,6 +1418,131 @@ public partial class MainWindow : Window
         }
         Process.Start(new ProcessStartInfo("https://github.com/NotRexed/Hookshot/releases/latest") { UseShellExecute = true });
     }
+
+    // ================= the hand-over to the Hookshot Launcher (Upgrader.cs, docs/launcher-upgrade.md) =================
+
+    object? offer;   // (the launcher release the update target is: an Upgrader.Manifest, or the error to say)
+    string? offerFor, handoverFolder;
+    bool bridge, upgrading;
+
+    internal string Text(S s) => T(s);
+
+    /// Quiet: GitHub not answering is null, and the update goes on as before. A list too new for this Builder is its error
+    static async Task<object?> Offer(string? tag, bool quiet = true)
+    {
+        try { return await Upgrader.Probe(tag); }
+        catch (Upgrader.TooNewException e) { return e; }
+        catch (Exception e) { return quiet ? null : e; }
+    }
+
+    /// Whether the update target is a launcher release (one download of its hookshot-launcher.txt, not the API)
+    async Task ProbeLauncher(string? target)
+    {
+        offer = offerFor = null;
+        if (target == null || target == Tools.Find()?.Version) return;
+        if (await Offer(target) is { } found) (offer, offerFor) = (found, target);
+    }
+
+    /// (the bridge, section 5: a launcher release's Builder without the build tools, which an older Builder updated to) The
+    /// hand-over screen alone, when the release these files name is a launcher release; else the window as it was
+    async Task<bool> Bridge()
+    {
+        string? own = null;
+        try { own = File.ReadAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "tools", "version.txt")).Trim(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        SplashText.Text = T(S.HandoverLooking);
+        if (await Offer(string.IsNullOrEmpty(own) ? null : own) is not { } found) return false;
+        bridge = true;
+        offerFor = own;
+        ShowMain();
+        ShowHandover(Upgrader.UpdateArgs(Environment.GetCommandLineArgs()).Folder ?? LaunchArg(), found);
+        return true;
+    }
+
+    void ShowHandover(string? folder, object? found)
+    {
+        handoverFolder = string.IsNullOrEmpty(folder) ? null : folder;
+        offer = found;
+        StepPill.Visibility = Visibility.Collapsed;
+        HandoverTitle.Text = T(S.HandoverTitle);
+        HandoverSub.Text = T(S.HandoverSub);
+        HandoverPageLink.Content = T(S.ReleasePage);
+        HandoverLater.Content = T(S.NotNow);
+        HandoverGo.Content = T(S.Upgrade);
+        HandoverBar.Visibility = HandoverStatus.Visibility = Visibility.Collapsed;
+        Upgrader.Line? line = null;
+        var why = (found as Exception)?.Message;
+        if (found is Upgrader.Manifest m)
+        {
+            try { line = m.This; }
+            catch (InvalidDataException e) { why = e.Message; }
+        }
+        if (line != null && found is Upgrader.Manifest release)
+        {
+            HandoverHead.Text = string.Format(T(S.HandoverHead), release.Tag);
+            HandoverHead.Foreground = (Brush)FindResource("Ink");
+            HandoverSteps.Text = string.Format(T(S.HandoverSteps), Math.Max(1, line.Size >> 20), Upgrader.Home,
+                                               handoverFolder ?? T(S.HandoverYourFolder));
+            HandoverSteps.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            HandoverHead.Text = why ?? string.Format(T(S.NoLauncher), offerFor);
+            HandoverHead.Foreground = (Brush)FindResource("Bad");
+            HandoverSteps.Visibility = Visibility.Collapsed;
+        }
+        HandoverGo.IsEnabled = line != null;
+        ShowPage(HandoverPage);
+    }
+
+    async void HandoverGoClick(object sender, RoutedEventArgs e)
+    {
+        if (offer is not Upgrader.Manifest m) return;
+        upgrading = true;
+        HandoverGo.IsEnabled = false;
+        HandoverLater.Content = T(S.Cancel);
+        HandoverBar.Value = 0;
+        HandoverBar.Visibility = HandoverStatus.Visibility = Visibility.Visible;
+        HandoverStatus.Foreground = (Brush)FindResource("InkSoft");
+        try { await Upgrader.Run(this, m, handoverFolder); }
+        catch (OperationCanceledException) { HandoverFailed(T(S.UpgradeCancelled)); }
+        catch (Exception ex) { HandoverFailed(ex.Message); }
+        finally
+        {
+            upgrading = false;
+            download = null;
+        }
+    }
+
+    void HandoverFailed(string why)
+    {
+        HandoverBar.Visibility = Visibility.Collapsed;
+        HandoverStatus.Text = string.Format(T(S.UpgradeFailed), why);
+        HandoverStatus.Foreground = (Brush)FindResource("Bad");
+        HandoverGo.Content = T(S.TryAgain);
+        HandoverGo.IsEnabled = true;
+        HandoverLater.Content = T(S.NotNow);
+    }
+
+    /// Not now: back where the player came from; the bridge, or a start from the game's update offer, closes
+    void HandoverLaterClick(object sender, RoutedEventArgs e)
+    {
+        if (upgrading) download?.Cancel();
+        else if (launchFolder.Length > 0) ShowPage(LaunchPage);
+        else if (bridge || !filesReady) Application.Current.Shutdown();
+        else ToFiles();
+    }
+
+    void HandoverPageClick(object sender, RoutedEventArgs e) =>
+        Process.Start(new ProcessStartInfo(Upgrader.ReleasePage((offer as Upgrader.Manifest)?.Tag ?? offerFor)) { UseShellExecute = true });
+
+    public void HandoverNote(string line)
+    {
+        AddLog(line);
+        HandoverStatus.Text = line;
+    }
+
+    public void HandoverProgress(double f) => HandoverBar.Value = Math.Clamp(f, 0, 1);
 
     // ================= the update (Updater.cs): the game started this app with --update <folder> =================
 

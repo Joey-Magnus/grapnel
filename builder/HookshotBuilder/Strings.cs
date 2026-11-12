@@ -15,6 +15,9 @@ enum S
     Stopped, Cancelled, CancelledNote, CloseQuestion, LanguageLabel,
     // (the update, English only for now: Strings.Text falls back to it)
     Download, Updating, UpdateFailed,
+    // (the hand-over to the Hookshot Launcher, Upgrader.cs: English only too)
+    HandoverTitle, HandoverSub, HandoverHead, HandoverSteps, HandoverYourFolder, HandoverLooking, Upgrade, NotNow, ReleasePage, TryAgain,
+    UpgradeDownloading, UpgradeHanding, UpgradeFailed, UpgradeAvailable, UpgradeOut, NoLauncher, UpgradeCancelled,
 }
 
 static class Strings
@@ -29,6 +32,16 @@ static class Strings
         "Putting the game folder together", "Show details", "Hide details", "Cancel", "Back", "Open folder", "Play", "Your game is ready", "built in",
         "The build stopped", "Build cancelled", "You can start again from the same folder.", "Stop the build and close?", "Language",
         "Downloading the new version", "Updating your game", "The update could not be downloaded",
+        "Hookshot 3 uses the new launcher",
+        "Your game folder stays as it is. The Hookshot Launcher keeps your builds side by side and builds new versions itself.",
+        "Upgrade to the Hookshot Launcher {0}",
+        "•  Downloads the Hookshot Launcher ({0} MB) and checks it\n•  Installs it in {1}\n•  Hands {2} over to it, with your build settings\n" +
+        "•  Starts the launcher there and closes this Builder",
+        "your game folder", "Looking for the Hookshot Launcher…", "Upgrade", "Not now", "Open the release page", "Try again",
+        "Downloading the Hookshot Launcher {0}", "Handing your game folder over", "{0} Your game folder is unchanged.",
+        "Hookshot {0} uses the new Hookshot Launcher. Upgrade moves your game folder over to it, as it is.",
+        "Hookshot {0} is out, with the new Hookshot Launcher",
+        "Hookshot {0} has no Hookshot Launcher to download. Get it from the release page.", "The download was cancelled.",
     };
     static readonly string[] Fr =
     {

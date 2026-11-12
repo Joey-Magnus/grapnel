@@ -375,7 +375,7 @@ static class Updater
         catch (FormatException e) { throw new InvalidDataException("GitHub did not provide a valid SHA-256 digest for this download.", e); }
     }
 
-    static async Task DownloadWithRetries(MainWindow w, HttpClient http, string url, string? apiUrl, string path, long size,
+    internal static async Task DownloadWithRetries(MainWindow w, HttpClient http, string url, string? apiUrl, string path, long size,
         string? digest, CancellationToken token, Action<double>? progress = null)
     {
         var expectedHash = ParseDigest(digest);   // Only the selected asset needs a digest; before any payload request.

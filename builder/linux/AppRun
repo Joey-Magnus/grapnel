@@ -23,6 +23,11 @@ else
     export HOOKSHOT_BUILDER_EXE="$HERE/AppRun"
 fi
 PY="$HERE/usr/python/bin/python3"
+# The bridge (docs/launcher-upgrade.md, section 5): a launcher release's Builder for Builders older than 2.2, with no build
+# tools (no nx2/). Whatever it was started for, Play aside, it opens on the hand-over screen to the Hookshot Launcher.
+if [ ! -f "$HOOKSHOT_TOOLS/nx2/make_game.py" ] && [ "${1:-}" != "--play" ] && ! { [ -n "${1:-}" ] && [ -d "$1" ]; }; then
+    exec "$PY" -I "$HOOKSHOT_TOOLS/builder/linux/hookshot_builder.py" --handover "$@"
+fi
 if [ "${1:-}" = "--cli" ]; then
     shift
     exec "$PY" -I "$HOOKSHOT_TOOLS/nx2/make_game.py" "$@"

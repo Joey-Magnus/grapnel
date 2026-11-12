@@ -232,6 +232,16 @@ own update check (`host/hos_update.c`) follows the track of the folder's version
 candidate's and the nightly's `HookshotBuilder.exe` are built with `HOOKSHOT_SETUP_RELEASE`, so started with no `--tag`
 they install their own release (`builder/setup/setup.c`).
 
+### Upgrading to the launcher
+
+From 2.2 on, before a builder updates, it asks whether the release it would update to ships the Hookshot Launcher (3.0):
+such a release has one more file, `hookshot-launcher.txt`. When it does, the builder's Update becomes Upgrade, which
+shows what will happen and, once the player agrees, installs the launcher, hands the game folder and the builder's
+settings over to it and starts it (`builder/HookshotBuilder/Upgrader.cs`, `builder/linux/linux_upgrade.py`). Once the
+launcher is installed, the builder passes `--launch` and `--update` on to it, and the game's own update offer on Linux
+starts it instead of the builder. Builders older than 2.2 land on the same hand-over screen in one update. The contract
+between the two sides is [launcher-upgrade.md](launcher-upgrade.md).
+
 ## The files of a release
 
 The names never change: the builder's update check, the setup and the Linux updater look for them by name.

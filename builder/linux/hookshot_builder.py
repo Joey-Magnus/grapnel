@@ -6,6 +6,9 @@ with the compiler, sysroot and libraries it brings in the environment.
     hookshot_builder.py --play              the game built last time, if there is one (else the window)
     hookshot_builder.py --launch <folder>   that folder's launcher: Play, and Update when a newer release is out
     hookshot_builder.py --update <folder>   download the new release (only parts that changed) and build the folder again
+    hookshot_builder.py --handover [...]    the hand-over screen alone (AppRun, when the build tools are not there)
+
+Once the Hookshot Launcher is installed, --launch and --update go to it (docs/launcher-upgrade.md, section 4).
 """
 import math
 import os
@@ -27,9 +30,13 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
 import linux_update  # noqa: E402  (the release check and the part download)
-import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
-import pipeline_share  # noqa: E402  (Save my pipeline list: the zip for the "Submit your pipelines" issue)
-import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
+import linux_upgrade  # noqa: E402  (the hand-over to the Hookshot Launcher: docs/launcher-upgrade.md)
+try:
+    import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
+    import pipeline_share  # noqa: E402  (Save my pipeline list: the zip for the "Submit your pipelines" issue)
+    import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
+except ImportError:   # (the bridge, a launcher release's Builder without the build tools: only the hand-over screen opens)
+    make_game = pipeline_share = toolchain = None
 
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
 STAGES = {"read": "Reading your game files", "lift": "Translating the game to PC code", "compile": "Compiling",
@@ -150,6 +157,18 @@ def save_config(cfg):
 
 def game_ready(folder):
     return linux_update.game_exe(folder) is not None
+
+
+def launcher_offer(tag, quiet=True):
+    """The launcher release a tag is (linux_upgrade.probe), or None for a Builder release. A list too new for this Builder
+    comes back as its error, for the hand-over screen to say; GitHub not answering is None (quiet: the update goes on as
+    before), or its error"""
+    try:
+        return linux_upgrade.probe(tag)
+    except linux_upgrade.TooNew as error:
+        return error
+    except Exception as error:
+        return None if quiet else error
 
 
 def own_scope(env, cgroup="/proc/self/cgroup", which=shutil.which, run=subprocess.run):
@@ -435,7 +454,7 @@ def _arg(name):
 
 
 class Builder(tk.Tk):
-    def __init__(self, launch=None, update=None, fetched=False, tag=None, allow_downgrade_from=None):
+    def __init__(self, launch=None, update=None, fetched=False, tag=None, allow_downgrade_from=None, handover=False):
         super().__init__()
         self.title("Hookshot Builder")
         self.apply_scale()
@@ -454,6 +473,7 @@ class Builder(tk.Tk):
         self.allow_downgrade_from = allow_downgrade_from
         self.mode = "build"
         self.latest = None
+        self.launcher, self.launcher_for = None, None   # (the launcher release the update target is: linux_upgrade.probe)
         self.source_picked = False
         self.dlss_toggled = False
         self.tools = linux_update.tools_tag(linux_update.running_root() or ROOT)
@@ -466,9 +486,10 @@ class Builder(tk.Tk):
         self.romfs = tk.StringVar(value=self.cfg.get("romfs", ""))
         self.exefs = tk.StringVar(value=self.cfg.get("exefs", ""))
         self.out = tk.StringVar(value=self.cfg.get("out", os.path.expanduser("~/Games/Hookshot")))
-        names = [n for _, n in make_game.LANGUAGES]
+        languages = make_game.LANGUAGES if make_game else [("en-US", "English")]
+        names = [n for _, n in languages]
         code = self.cfg.get("language", "en-US")
-        self.language = tk.StringVar(value=dict(make_game.LANGUAGES).get(code, names[0]))
+        self.language = tk.StringVar(value=dict(languages).get(code, names[0]))
         self.prepare = tk.BooleanVar(value=self.cfg.get("prepare", "1") != "0")   # (make_game.py's last step: off, at the first start)
         self.dlss = tk.BooleanVar(value=self.cfg.get("dlss", "0") == "1")
         self.check_text = tk.StringVar()
@@ -477,7 +498,9 @@ class Builder(tk.Tk):
         self.time_text = tk.StringVar()
         self.page = None
         self.build_button = None
-        if update is not None:
+        if handover or make_game is None:
+            self.begin_bridge(update or launch or self.cfg.get("out"))
+        elif update is not None:
             self.after(200, self.begin_update)
         elif launch:
             self.show_launch(launch)
@@ -959,8 +982,12 @@ class Builder(tk.Tk):
         def run():
             forced = os.environ.get("HOOKSHOT_LATEST_TAG")
             tag = None if forced == "none" else (forced or linux_update.latest_tag(track=track))
+            target = linux_update.update_target(tag, tools, switch)
+            if tag and target and target != tools:   # (a launcher release there: the update is the upgrade)
+                self.lines.put(("launcher", (target, launcher_offer(target))))
             self.lines.put(("latest", tag or ""))
         track = self.track_id()
+        tools, switch = self.tools, self.switching()
         threading.Thread(target=run, daemon=True).start()
 
     def apply_mode(self):
@@ -975,6 +1002,8 @@ class Builder(tk.Tk):
                             hasattr(self, "dlss") and bool(self.dlss.get()) != folder_has_dlss(expanded))
         if self.mode == "up-to-date" and dlss_changed:
             self.mode = "update-game"
+        self.mode = linux_upgrade.upgrade_mode(self.mode, self.launcher_for,
+                                               linux_update.update_target(self.latest, self.tools, self.switching()))
         button = self.build_button
         if button is None:
             return
@@ -984,7 +1013,7 @@ class Builder(tk.Tk):
         except tk.TclError:
             return
         button.configure(text={"update-game": "Update", "up-to-date": "Play", "update-builder": "Update builder",
-                                "build": "Build the game"}[self.mode])
+                                "build": "Build the game", "upgrade": "Upgrade"}[self.mode])
         about = getattr(self, "about_label", None)   # (Windows: the time only for a build)
         try:
             if about is not None and about.winfo_exists():
@@ -992,7 +1021,10 @@ class Builder(tk.Tk):
         except tk.TclError:
             pass
         target = linux_update.update_target(self.latest, self.tools, self.switching())
-        if self.mode == "update-game" and dlss_changed and game == target:
+        if self.mode == "upgrade":
+            self.status.set("Hookshot %s uses the new Hookshot Launcher. Upgrade moves your game folder over to it, as it is."
+                            % target)
+        elif self.mode == "update-game" and dlss_changed and game == target:
             self.status.set("Update builds your game again %s NVIDIA DLSS."
                             % ("with" if self.dlss.get() else "without"))
         elif self.mode == "update-game":
@@ -1016,7 +1048,13 @@ class Builder(tk.Tk):
         game, kept = linux_update.game_version(self.launch_folder)
         target = linux_update.update_target(self.latest, self.tools, self.switching())
         show = False
-        if not self.switching() and linux_update.older_version(target, game):
+        upgrade = bool(target and self.launcher_for == target and game != target)
+        if hasattr(self, "launch_update"):
+            self.launch_update.configure(text="Upgrade" if upgrade else "Update")
+        if upgrade:
+            self.launch_status.set("Hookshot %s is out, with the new Hookshot Launcher" % target)
+            show = True
+        elif not self.switching() and linux_update.older_version(target, game):
             self.launch_status.set("Your game is %s, newer than this builder's update target %s. Play keeps this version." % (game, target))
         elif target and game and game != target and kept:
             self.launch_status.set("Update available: %s" % target)
@@ -1084,6 +1122,8 @@ class Builder(tk.Tk):
     def begin_update(self, folder=None):
         folder = self.update_folder if folder is None else folder
         target = self.update_tag or linux_update.update_target(self.latest, self.tools, self.switching())
+        if target and self.launcher_for == target and self.launcher is not None and not self.fetched:
+            return self.show_handover(self.update_folder if folder is None else folder, self.launcher)
         have = linux_update.game_version(folder)[0] if folder else None
         approved = bool(have and self.fetched and self.tools == self.update_tag == target and
                         getattr(self, "allow_downgrade_from", None) == have)
@@ -1106,6 +1146,11 @@ class Builder(tk.Tk):
                 if fetched and target and self.tools != target:
                     raise RuntimeError("This Builder is %s, not the requested %s. Start that version's Builder to update." %
                                        (self.tools or "unversioned", target))
+                if not fetched and target:
+                    offer = launcher_offer(target)   # (a launcher release: the hand-over screen, nothing downloaded yet)
+                    if offer is not None:
+                        self.lines.put(("handover", (folder, offer)))
+                        return
                 if not fetched:
                     root = linux_update.running_root()
                     if root is None:
@@ -1139,6 +1184,111 @@ class Builder(tk.Tk):
 
         threading.Thread(target=run, daemon=True).start()
 
+    # ---- the hand-over to the Hookshot Launcher (docs/launcher-upgrade.md): what happens, then Upgrade or Not now ----
+    def begin_bridge(self, folder):
+        """(the bridge, docs/launcher-upgrade.md section 5: a launcher release's Builder without the build tools, which an
+        older Builder updated to) The hand-over screen alone, for the release these tools are"""
+        self.bridge = True
+        self.show_handover(folder, None)
+        tag = self.tools or None
+
+        def run():
+            offer = launcher_offer(tag, quiet=False)
+            self.lines.put(("bridge", offer if offer is not None else
+                            "Hookshot %s has no Hookshot Launcher to download. Get it from the release page." % (tag or "")))
+        threading.Thread(target=run, daemon=True).start()
+
+    def show_handover(self, folder, offer):
+        """offer: the launcher release (linux_upgrade.Manifest), None while it is looked for, or the error to say"""
+        self.handover_folder, self.launcher = folder, offer
+        if self.page:
+            self.page.destroy()
+        self.title("Hookshot")
+        px = self.px
+        page = self.page = ttk.Frame(self)
+        page.pack(fill="both", expand=True)
+        self.header(page)
+        f = ttk.Frame(page, padding=(px(48), px(6), px(48), px(28)))
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(0, weight=1, minsize=px(800))
+        f.rowconfigure(4, weight=1)
+        ttk.Label(f, text="Hookshot 3 uses the new launcher", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(f, text="Your game folder stays as it is. The Hookshot Launcher keeps your builds side by side and builds "
+                  "new versions itself.", style="Sub.TLabel", wraplength=px(800)).grid(row=1, column=0, sticky="w", pady=(px(6), 0))
+        card = ttk.Frame(f, style="Card.TFrame", padding=(px(20), px(16)))
+        card.grid(row=2, column=0, sticky="we", pady=(px(22), px(14)))
+        card.columnconfigure(0, weight=1)
+        self.stage_label = ttk.Label(card, textvariable=self.stage_text, style="Stage.TLabel", wraplength=px(760))
+        self.stage_label.grid(row=0, column=0, sticky="w")
+        self.bar = ttk.Progressbar(card, maximum=1.0, mode="indeterminate", style="Card.Horizontal.TProgressbar")
+        tag = getattr(offer, "tag", None)
+        line = None
+        if isinstance(offer, linux_upgrade.Manifest):
+            try:
+                line = offer.line()
+            except ValueError as error:
+                offer = error
+        if line is not None:
+            self.stage_text.set("Upgrade to the Hookshot Launcher %s" % tag)
+            steps = ["Downloads the Hookshot Launcher (%d MB) and checks it" % max(1, line.size >> 20),
+                     "Installs it in %s" % linux_upgrade.launcher_home(),
+                     "Hands %s over to it, with your build settings" % (folder or "your game folder"),
+                     "Starts the launcher there and closes this Builder"]
+            ttk.Label(card, text="\n".join("•  " + s for s in steps), style="Card.Note.TLabel", wraplength=px(760),
+                      justify="left").grid(row=1, column=0, sticky="w", pady=(px(10), 0))
+        elif offer is None:
+            self.stage_text.set("Looking for the Hookshot Launcher...")
+        else:
+            self.stage_text.set(str(offer))
+            self.stage_label.configure(style="Bad.Stage.TLabel")
+        ttk.Button(f, text="Open the release page", style="Link.TButton", cursor="hand2",
+                   command=lambda: subprocess.Popen(["xdg-open", linux_upgrade.release_page(tag or self.tools or None)])).grid(
+            row=3, column=0, sticky="w")
+        self.buttons = ttk.Frame(f)
+        self.buttons.grid(row=5, column=0, sticky="e", pady=(px(14), 0))
+        go = ttk.Button(self.buttons, text="Upgrade", style="Primary.TButton", cursor="hand2", command=self.run_upgrade)
+        go.pack(side="right", padx=px(4))
+        if line is None:
+            go.state(["disabled"])
+        ttk.Button(self.buttons, text="Not now", command=self.handover_later, cursor="hand2").pack(side="right", padx=px(4))
+
+    def handover_later(self):
+        if getattr(self, "bridge", False):
+            self.destroy()
+        elif self.launch_folder:
+            self.show_launch(self.launch_folder)
+        else:
+            self.show_form()
+
+    def run_upgrade(self):
+        folder, offer = self.handover_folder, self.launcher
+        for widget in self.buttons.winfo_children():
+            widget.destroy()
+        stop = self.stop_update
+        stop.clear()
+
+        def cancel():   # (not self.cancel: a build this window ran before leaves self.proc set, and that one would do nothing)
+            stop.set()
+            self.stage_text.set("Stopping the upgrade")
+        ttk.Button(self.buttons, text="Cancel", command=cancel, cursor="hand2").pack(side="right")
+        self.stage_label.configure(style="Stage.TLabel")
+        self.stage_text.set("Starting")
+        self.bar.grid(row=2, column=0, sticky="we", pady=(self.px(12), 0))
+        self.bar.start(15)
+        cfg = load_config()
+        if license_accepted(cfg):   # (also the one a Builder before the record accepted, in its old SDK folder)
+            cfg["nvidia_license"] = "1"
+
+        def run():
+            try:
+                self.lines.put(("upgraded", linux_upgrade.upgrade(offer, folder, cfg, note=lambda m: self.lines.put(("note", m)),
+                                                                  stop=stop)))
+            except linux_update.Cancelled:
+                self.lines.put(("upgrade-error", "The upgrade was cancelled. Your game folder is unchanged."))
+            except Exception as error:
+                self.lines.put(("upgrade-error", str(error) + " Your game folder is unchanged."))
+        threading.Thread(target=run, daemon=True).start()
+
     def start_make_update(self, folder):
         if not folder:
             self.show_form()
@@ -1159,6 +1309,8 @@ class Builder(tk.Tk):
     # ---- the build ----
     def build(self):
         mode = getattr(self, "mode", "build")
+        if mode == "upgrade":
+            return self.show_handover(os.path.expanduser(self.out.get().strip()) or None, self.launcher)
         if mode == "up-to-date":
             folder = os.path.expanduser(self.out.get().strip())
             if game_ready(folder):
@@ -1288,6 +1440,29 @@ class Builder(tk.Tk):
                 elif kind == "latest":
                     self.latest = v or None
                     self.apply_mode()
+                elif kind == "launcher":
+                    self.launcher_for, self.launcher = v if v[1] is not None else (None, None)
+                elif kind == "handover":
+                    self.show_handover(*v)
+                elif kind == "bridge":
+                    self.show_handover(self.handover_folder, v)
+                elif kind == "upgraded":
+                    try:
+                        linux_upgrade.start(*v)
+                    except OSError as error:
+                        self.lines.put(("upgrade-error", "The Hookshot Launcher is installed but did not start: %s." % error))
+                    else:
+                        self.destroy()
+                        return
+                elif kind == "upgrade-error":
+                    self.bar.stop()
+                    self.bar.grid_remove()
+                    self.stage_text.set(v)
+                    self.stage_label.configure(style="Bad.Stage.TLabel")
+                    for widget in self.buttons.winfo_children():
+                        widget.destroy()
+                    ttk.Button(self.buttons, text="Back", cursor="hand2",
+                               command=lambda: self.show_handover(self.handover_folder, self.launcher)).pack(side="right", padx=self.px(4))
                 elif kind == "note":
                     if hasattr(self, "stage_text") and not self.stop_update.is_set():
                         self.stage_text.set(v)
@@ -1425,6 +1600,17 @@ class Builder(tk.Tk):
 
 
 def main():
+    # (the Hookshot Launcher installed: the game folder's launcher and the game's update offer still start this Builder,
+    # which passes them on, docs/launcher-upgrade.md section 4)
+    forward = linux_upgrade.forward_command(sys.argv[1:], linux_upgrade.installed_launcher())
+    if forward:
+        try:
+            os.execve(forward[0], forward, linux_upgrade.clean_env())
+        except OSError:   # (a launcher that cannot start: this Builder opens as it did before it)
+            pass
+    if "--handover" in sys.argv[1:]:
+        Builder(launch=_arg("--launch"), update=_arg("--update"), handover=True).mainloop()
+        return
     if "--play" in sys.argv[1:]:
         folder = _arg("--play") or load_config().get("out")
         if game_ready(folder):

@@ -364,6 +364,19 @@ static int installed_builder(char *out, size_t cap) {
     return access(out, X_OK) == 0;
 }
 
+/* the Hookshot Launcher, once a 2.x Builder handed over to it (docs/launcher-upgrade.md): <home>/Hookshot.AppImage, the
+   home $HOOKSHOT_LAUNCHER_HOME, else $XDG_DATA_HOME/hookshot/launcher. It takes the Builder's --update <dir> --tag <tag> */
+static int installed_launcher(char *out, size_t cap) {
+    const char *home = getenv("HOOKSHOT_LAUNCHER_HOME"), *data = getenv("XDG_DATA_HOME"), *user = getenv("HOME");
+    int n;
+    if (home && *home) n = snprintf(out, cap, "%s/Hookshot.AppImage", home);
+    else if (data && *data) n = snprintf(out, cap, "%s/hookshot/launcher/Hookshot.AppImage", data);
+    else if (user && *user) n = snprintf(out, cap, "%s/.local/share/hookshot/launcher/Hookshot.AppImage", user);
+    else return 0;
+    struct stat st;
+    return n > 0 && (size_t)n < cap && stat(out, &st) == 0 && S_ISREG(st.st_mode) && access(out, X_OK) == 0;
+}
+
 void hos_update_check(void) {
     const char *off = getenv("HOOKSHOT_NO_UPDATE_CHECK");
     if (off && strcmp(off, "0")) return;
@@ -391,7 +404,7 @@ void hos_update_check(void) {
     if (!nightly_version(have) && newer_version(have, tag)) return;   /* (a release or release candidate newer than the latest:
         a test build of the next release, before it is out. "Update" would build the older one over it, 2026-11-11) */
     snprintf(path, sizeof path, "%shookshot_version.txt", dir);
-    const int has_builder = installed_builder(builder, sizeof builder) ||
+    const int has_builder = installed_launcher(builder, sizeof builder) || installed_builder(builder, sizeof builder) ||
                             (read_value(path, "builder", builder, sizeof builder) && access(builder, X_OK) == 0);
     char text[1600], cmd[4096];
     snprintf(text, sizeof text,
