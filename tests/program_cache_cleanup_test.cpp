@@ -20,6 +20,7 @@
 #ifdef _WIN32
 #include <io.h>
 #else
+#include <fcntl.h>   // (posix_fadvise: program_cache_load)
 #define _fseeki64 fseeko
 #define _ftelli64 ftello
 #endif
@@ -82,6 +83,7 @@ void vkDestroyShaderModule(uintptr_t device, VkShaderModule module, const void* 
 }
 void disk_init() {}
 void logf(const char*, ...) {}
+bool env_on(const char*) { return false; }   // (RX_VK_LOAD_ALL_VARIANTS: program_cache_load)
 bool disk_on = true, disk_listing = true;
 FILE* disk_in = nullptr;
 FILE* disk_out = nullptr;

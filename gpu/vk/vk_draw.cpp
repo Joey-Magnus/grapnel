@@ -8770,7 +8770,10 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     static const bool compute_wait = env_on("RX_VK_COMPUTE_WAIT");
     if (!compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
         int none = 0;
-        const bool fresh = p.compute_state.compare_exchange_strong(none, 1);
+        // (a program read from the cache without its code, vk_progcache.cpp: its module made now, by the dispatch that starts its
+        // pipeline. One whose code does not read is failed, and left out below)
+        const bool fresh = p.compute_state.compare_exchange_strong(none, 1) &&
+                           (program_cache_complete(p) || (p.compute_state.store(2, std::memory_order_release), false));
         if (fresh) {
             { ParLock lk; pcache_init(); }
             const Program* job = &p;
@@ -8845,6 +8848,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     }
     ParLock plk(!p.compute_pipeline);
     if (!p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
+        if (!program_cache_complete(p)) SKIP_HERE();   // (read without its code: see above)
         pcache_init();
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
