@@ -130,6 +130,36 @@ std::chrono::steady_clock::time_point pend_since;
 // one recording a command buffer: 0.5-1.1 threads blocked at any instant
 std::atomic<bool> pend_held{false};
 
+// ---- (hookshot) submits held for a capture's late page (vk_memory.cpp take_capture; RX_VK_CAPTURE_HOLD=0: off) ----
+// A capture's late page is one the CPU wrote that a part still on the GPU writes back: the capture needs the page as it is
+// after that write-back (OoT's exposure meter page, written back by the last part of the frame before). take_capture used
+// to wait for that part on the thread that replays, the game's main thread: the next frame's replay did not start until the
+// GPU had finished the frame before, so the two never overlapped (1.4 ms a frame at best, the GPU's whole tail in the
+// path). The GPU cannot run the next frame's commands before that part anyway: one queue, in order. So instead of
+// waiting, the capture is taken as it is, the replay records at once, and the submits it makes are held here (the list
+// batched submits use, pend) until the part is done and the page has been copied again into the capture's buffer. Then
+// they go out, in order.
+// The rules, all under dev.present_mu:
+// - One hold at a time, and only armed with nothing held and the part's recording already sent to the queue (it is in
+//   part_rec, and nothing is in pend): the part completes by the GPU alone, whatever is held.
+// - While armed, every submit_recording puts its command buffers in pend instead of the queue. Nothing that uses the
+//   capture reaches the GPU before the copy: the capture is used only by recordings made after take_capture.
+// - Every flush looks first: the part done, the page is copied and the hold ends, then what is held is sent. A flush that
+//   must send (a wait for held work, a present, another submit on the queue, a slot, the cap) waits for the part itself,
+//   250 ms at most, as take_capture did. A progress poll does not wait: it sends once the part is done.
+// - Each submit_recording looks too, so the held work goes out at the next part's end after the GPU reaches it.
+// - With batched submits (RADV) nothing changes: no hold is armed, take_capture waits as before.
+struct LateHold {
+    bool armed = false;
+    uint64_t part = 0, seq = 0;       // (the part waited for, and its recording's number on rec_timeline)
+    std::function<void()> copy;       // (copies the late pages into the capture's buffer again; ends vk_memory.cpp's side)
+    std::chrono::steady_clock::time_point since;
+};
+LateHold late_hold;   // (dev.present_mu)
+constexpr size_t kLateHoldMax = 96;   // (command buffers held at most for it: then a flush that waits)
+int64_t st_hold_n, st_hold_waited;    // (holds ended; those a flush had to wait for)
+double st_hold_ms, st_hold_wait_ms;   // (from armed to ended; of the waits)
+
 struct Recording {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandPool upload_pool = VK_NULL_HANDLE;   // (its own: a parallel replay's threads record uploads into it while the
@@ -214,7 +244,50 @@ bool batch_on() {
     return on && batch_tl != VK_NULL_HANDLE;
 }
 } // namespace
+/// (hookshot) The late-page hold (above), with dev.present_mu held: ended when its part is done on the GPU, after the
+/// page's copy. must: wait for the part, 250 ms at most, then copy all the same (as take_capture's wait went on). False
+/// while the hold stays
+bool late_hold_end_locked(bool must) {
+    if (!late_hold.armed) return true;
+    uint64_t reached = 0;
+    const bool done = vkGetSemaphoreCounterValue(dev.device, rec_timeline, &reached) == VK_SUCCESS && reached >= late_hold.seq;
+    if (!done) {
+        if (!must) return false;
+        const auto t0 = std::chrono::steady_clock::now();
+        VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+        wi.semaphoreCount = 1;
+        wi.pSemaphores = &rec_timeline;
+        wi.pValues = &late_hold.seq;
+        VkResult res;
+        {
+            FpsWait fw(fps_stats::kGpuWait);   // (the FPS counter's Breakdown)
+            res = vkWaitSemaphores(dev.device, &wi, 250000000ull);
+        }
+        if (res == VK_ERROR_DEVICE_LOST) device_lost();
+        if (res == VK_TIMEOUT) {
+            static int logged;
+            if (logged++ < 8) logf("vk: held submits: the wait for part %llu timed out; sent without it", (unsigned long long)late_hold.part);
+        }
+        st_hold_waited++;
+        st_hold_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+    late_hold.copy();
+    st_hold_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - late_hold.since).count();
+    late_hold = LateHold{};
+    if (++st_hold_n % 600 == 0) {
+        logf("vk: held submits for a capture's late page: 600 holds, %.2f ms each from the capture to the page's copy; %lld ended in a "
+             "flush that waited for the GPU, %.2f ms each (RX_VK_CAPTURE_HOLD=0: the capture waits instead)",
+             st_hold_ms / 600, (long long)st_hold_waited, st_hold_waited ? st_hold_wait_ms / st_hold_waited : 0.0);
+        st_hold_ms = st_hold_wait_ms = 0, st_hold_waited = 0;
+    }
+    return true;
+}
 void queue_flush_locked() {   // (dev.present_mu held)
+    // (the late-page hold first: a poll sends only once its part is done, any other flush with something to send waits for it)
+    if (late_hold.armed && !late_hold_end_locked(flush_reason != FR_POLL && !pend.cbs.empty())) {
+        flush_reason = FR_OTHER;
+        return;
+    }
     if (pend.cbs.empty()) return;
     VkSemaphoreSubmitInfo sig[3]{{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO},
                                  {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
@@ -275,7 +348,8 @@ void queue_flush_poll() {
     if (!pend_held.load(std::memory_order_acquire)) return;   // (nothing held: nothing to send, the mutex not taken)
     std::lock_guard lk(dev.present_mu);
     if (pend.cbs.empty()) return;
-    if (us > 0 && std::chrono::steady_clock::now() - pend_since < std::chrono::microseconds(us)) return;
+    // (held for a capture's late page, not batched: sent as soon as its part is done, however short they were held)
+    if (!late_hold.armed && us > 0 && std::chrono::steady_clock::now() - pend_since < std::chrono::microseconds(us)) return;
     flush_reason = FR_POLL;
     queue_flush_locked();
 }
@@ -427,12 +501,14 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         signals[nsig].value = seq;
         signals[nsig].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         nsig++;
-        if (!batch_on()) map_recording();
     }
     si.signalSemaphoreInfoCount = nsig;
     si.pSignalSemaphoreInfos = nsig ? signals : nullptr;
     std::lock_guard lk(dev.present_mu);   // (one queue: submits and presents take turns)
-    if (batch_on()) {
+    // (held: batched submits, or a capture's late page not copied yet (late_hold, looked at here: ended if its part is done))
+    const bool batched = batch_on();
+    const bool held = batched || !late_hold_end_locked(false);
+    if (held) {
         // (NVIDIA Reflex: the batch is tagged with the game frame its first command buffer belongs to, read here. A batch that
         // spans two game frames counts as the first's; one begun before the frame's sleep returned (reflex_frame() 0) goes
         // untagged. Batching is on by default only with RADV, so on NVIDIA this matters only with RX_VK_BATCH=1)
@@ -446,10 +522,13 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         r.submitted = true;
         // (RX_VK_BATCH_MAX=<command buffers>: held at most this many, default 32)
         static const size_t cap = getenv("RX_VK_BATCH_MAX") ? (size_t)std::max(1, atoi(getenv("RX_VK_BATCH_MAX"))) : 32;
-        if (pend.cbs.size() >= cap) flush_reason = FR_CAP, queue_flush_locked();
-        if (!pend.cbs.empty() && batch_gpu_idle()) flush_reason = FR_OTHER, queue_flush_locked();   // (#1993)
+        if (pend.cbs.size() >= (batched ? cap : kLateHoldMax)) flush_reason = FR_CAP, queue_flush_locked();
+        if (batched && !pend.cbs.empty() && batch_gpu_idle()) flush_reason = FR_OTHER, queue_flush_locked();   // (#1993)
         return;
     }
+    // (not held: what a late-page hold held until now goes out first, in order; then this one is found and sent)
+    if (!pend.cbs.empty()) flush_reason = FR_OTHER, queue_flush_locked();
+    if (seq) map_recording();
     PROF(PROF_QSUBMIT);
     si.pNext = reflex_submit_id(nullptr);   // (NVIDIA Reflex: the frame being made)
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
@@ -2324,6 +2403,30 @@ bool vk_part_wait(uint64_t part) {
         static std::atomic<int> logged{0};
         if (logged++ < 8) logf("vk: a capture's wait for the part %llu of a write-back timed out", (unsigned long long)part);
     }
+    return true;
+}
+/// (hookshot) Arms the late-page hold (late_hold, by the list of held submits): from now on the replay's submits are held
+/// until that part is done on the GPU, then `copy` runs (under dev.present_mu, on the thread whose flush or submit sees
+/// it) and they are sent. False, and nothing changed, when the caller is to wait for the part itself as before: the switch
+/// off, batched submits, a parallel replay, a hold already armed, submits already held (the part's own recording may be
+/// among them), the part not known, or done already
+bool vk_late_hold(uint64_t part, std::function<void()> copy) {
+    static const bool on = !getenv("RX_VK_CAPTURE_HOLD") || atoi(getenv("RX_VK_CAPTURE_HOLD")) != 0;
+    // (not with a parallel replay: its segments are sent by their own submits, past the list of held ones)
+    if (!on || !part || !rec_timeline || per_queue_fences_off() || batch_on() || par_threads() > 1) return false;
+    uint64_t seq = 0;
+    {
+        std::lock_guard mk(rec_map_mu);
+        auto it = part_rec.find(part);
+        if (it == part_rec.end()) return false;
+        seq = it->second;
+    }
+    std::lock_guard lk(dev.present_mu);
+    if (late_hold.armed || !pend.cbs.empty()) return false;
+    uint64_t reached = 0;
+    if (vkGetSemaphoreCounterValue(dev.device, rec_timeline, &reached) != VK_SUCCESS || reached >= seq) return false;
+    late_hold.armed = true, late_hold.part = part, late_hold.seq = seq, late_hold.copy = std::move(copy);
+    late_hold.since = std::chrono::steady_clock::now();
     return true;
 }
 namespace {

@@ -94,6 +94,7 @@ const void* reflex_submit_id(const void* next, uint64_t = ~0ull) { return next; 
 uint64_t batch_next=0;std::chrono::steady_clock::time_point pend_since;
 bool batch=false;bool batch_on() { return batch; }
 int flush_reason=0;constexpr int FR_CAP=1,FR_OTHER=0;bool batch_gpu_idle() { return false; }
+bool late_hold_end_locked(bool) { return true; } constexpr size_t kLateHoldMax=96;   // (no late-page hold here: tests/test_late_hold.py)
 void device_lost() { require(false,"unexpected device loss"); }
 void note_timeline_sent(uint64_t) {}
 #define PROF(x) ((void)0)

@@ -1,6 +1,7 @@
 // The Vulkan back end's shared state (gpu/vk).
 #pragma once
 
+#include <functional>
 #include <cstdint>
 #include <array>
 #include <atomic>
@@ -267,6 +268,7 @@ uint64_t vk_retirement_value();
 void vk_timeline_wait(uint64_t v);
 int vk_part_state(uint64_t part);   // (1: that part of a submission is done on the GPU, 0: submitted, -1: not known)
 bool vk_part_wait(uint64_t part);   // (waits for it, 250 ms at most; false: not known, wait for the value)
+bool vk_late_hold(uint64_t part, std::function<void()> copy);   // (the replay's submits held until that part is done, then copy runs; false: not armed)
 uint32_t memory_generation();
 /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
 bool memory_written_since(uint64_t guest, uint64_t size, uint32_t gen);

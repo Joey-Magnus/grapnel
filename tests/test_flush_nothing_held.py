@@ -1,7 +1,7 @@
 """A flush with no submit held does not take dev.present_mu (gpu/vk/vk_replay.cpp's queue_flush_for, queue_flush_poll).
 
 A present holds dev.present_mu for as long as it takes (4 ms a frame in Hyrule Field). Held submits exist only with batched
-submits (RX_VK_BATCH, on with RADV), but every flush took the mutex to find that out: a readback whose recording was long
+submits (RX_VK_BATCH, on with RADV) and while a capture's late page is waited for, but every flush took the mutex to find that out: a readback whose recording was long
 done, and the host's copy bookkeeping asking how far the replay is under its own lock (rx_nvn_replayed), waited there for
 the present, and the game's other job threads behind them. pend_held says whether anything is held. Reads the source:
 
@@ -9,7 +9,8 @@ the present, and the game's other job threads behind them. pend_held says whethe
   - submit_recording raises it when the submit is in the list of held ones, under the mutex, and only then puts the
     recording where waiters find it (value_rec / part_rec): a thread that finds a recording and waits for it flushes
     first, and one found before its submit was in the list had nothing to flush and waited for a signal still held;
-    without batched submits the recording is put there before the submit, as it was;
+    a submit that is not held sends the held ones before it first (a capture's late page may have held them,
+    tests/test_late_hold.py), then is put there, then goes out;
   - only queue_flush_locked lowers it, after it has sent what was held.
 
 python -I -B tests/test_flush_nothing_held.py
@@ -41,8 +42,16 @@ def main():
     if not lock < push < raised < mapped:
         raise SystemExit("a held submit must be in the list, and said to be, under dev.present_mu, before its recording "
                          "can be found and waited for")
-    if "if (!batch_on()) map_recording();" not in submit[:lock] or submit.count("map_recording();") != 2:
+    # (whether a submit is held is known only under the mutex since a capture's late page can hold them too, late_hold:
+    # nothing is put where waiters find it before that, and a submit that is not held is put there after the held ones
+    # before it have been sent)
+    if "map_recording();" in submit[submit.index("};", submit.index("const auto map_recording = [&] {")):lock] or \
+            submit.count("map_recording();") != 2:
         raise SystemExit("a recording is put in value_rec / part_rec at another place: a held one before it is in the list?")
+    direct = submit.index("if (seq) map_recording();", mapped + 1)
+    sent_first = submit.index("if (!pend.cbs.empty()) flush_reason = FR_OTHER, queue_flush_locked();")
+    if not mapped < sent_first < direct < submit.index("vkQueueSubmit2(dev.queue, 1, &si, r.fence)"):
+        raise SystemExit("a submit that is not held must send the held ones before it, then be found, then go out")
     maps = submit[submit.index("const auto map_recording = [&] {"):lock]
     if "value_rec" not in maps or "part_rec.emplace_hint" not in maps or "rec_map_cv.notify_all();" not in maps:
         raise SystemExit("map_recording no longer holds all of the recording's bookkeeping")

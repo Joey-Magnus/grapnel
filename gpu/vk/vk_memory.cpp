@@ -1545,6 +1545,7 @@ void memory_capture_submit() {
     captures.push_back(std::move(c));
 }
 /// (the pages the CPU wrote since the last capture, copied now: a submit's capture, or memory_capture_now's)
+void late_hold_written(const uint32_t* pages, int64_t n);   // (below, by take_capture: a held page written again)
 std::unique_ptr<Capture> capture_make() {
     if (!capture_on()) return nullptr;
     const auto t0 = std::chrono::steady_clock::now();
@@ -1627,6 +1628,7 @@ std::unique_ptr<Capture> capture_make() {
         if (lw.value && cap_wait == 2) c->late_value = lw.value, c->late_part = lw.wait_part();
         else if (lw.value) late_wait(lw.value, lw.wait_part());
     }
+    if (n > 0) late_hold_written(pages, n);
     if (n > 0) shadow_written(pages, n);
     if (n > 0) {
         c->pages.assign(pages, pages + n);
@@ -1720,9 +1722,83 @@ void memory_recording_value(uint64_t value, uint64_t completed) {
     mem_rec_value = value;
     if (completed > mem_completed) mem_completed = completed;
 }
+// (hookshot) A capture's late pages copied later, with the replay's submits held meanwhile (vk_replay.cpp's late_hold has
+// the whole of it): take_capture does not wait for the part that writes them back. What this side keeps:
+// - the copy itself (late_hold_copy: the pages from guest memory into the capture's buffer, as take_capture's own copy
+//   after its wait), run by the replay's flush once the part is done. The buffer is the capture's, kept with the captures
+//   (cap_bufs) until the work that reads it is done, and that work is what is held: it cannot be retired before the copy;
+// - the pages of the hold under way (late_hold_pages), for capture_make to look at: a page the CPU writes again before its
+//   copy would be copied with words newer than the capture (take_capture's wait held the game's thread, so its own copy
+//   came before anything that thread wrote next). The game writes the exposure page once a frame, a frame's time after
+//   the capture, and the copy comes within the GPU's tail, so this is not expected; if it is ever seen, it is said once
+//   and no hold is armed again in this run (the captures wait, as before).
+// RX_VK_CAPTURE_HOLD=0: off
+std::mutex late_hold_mu;                    // (a leaf lock)
+std::vector<uint32_t> late_hold_pages;      // (late_hold_mu: the guest pages of the hold under way)
+std::atomic<bool> late_hold_live{false};    // (a hold is under way: capture_make looks at late_hold_pages)
+std::atomic<bool> late_hold_broken{false};  // (a held page was written again before its copy: no more holds)
+int64_t st_tk_held;                         // (the takes that held the replay's submits instead of waiting)
+struct LateCopy {
+    void* map = nullptr;
+    VmaAllocation alloc = nullptr;
+    size_t nbytes = 0;
+    std::vector<std::pair<uint32_t, uint32_t>> pages;   // (the slot in the buffer, the guest page)
+};
+void late_hold_copy(const LateCopy& lc) {
+    uint8_t* const base = (uint8_t*)host->guest_base();
+    for (const auto& [slot, page] : lc.pages)
+        guarded_copy((uint8_t*)lc.map + (uint64_t)slot * 4096, base + ((uint64_t)page << kPageShift), 4096);
+    flush_mapped(lc.alloc, lc.nbytes);
+    std::lock_guard lk(late_hold_mu);
+    late_hold_pages.clear();
+    late_hold_live.store(false, std::memory_order_release);
+}
+/// Arms the hold for c's late pages: true when the replay's submits are held and the copy will come (nothing to wait for
+/// here). Only for a capture whose buffer is kept (it has copied pages), whose late pages all have a part, and none of
+/// them a texture's storage
+bool late_hold_arm(const Capture& c) {
+    if (late_hold_broken.load(std::memory_order_relaxed) || !c.late_part || c.copied.empty() || !c.map) return false;
+    if (tex_capture_on()) {   // (a texture's storage is read from the capture by take_capture itself, for the shadow: waited for)
+        std::lock_guard sk(shadow_mu);
+        for (uint32_t i : c.late)
+            if (in_tex_merged((uint64_t)c.pages[i] << 12)) return false;
+    }
+    auto lc = std::make_shared<LateCopy>();
+    lc->map = c.map, lc->alloc = c.alloc, lc->nbytes = c.nbytes;
+    for (uint32_t i : c.late) lc->pages.emplace_back(i, c.pages[i]);
+    {   // (the pages first: a capture_make on another thread sees them from the moment the hold is armed)
+        std::lock_guard lk(late_hold_mu);
+        if (late_hold_live.load(std::memory_order_relaxed)) return false;   // (one hold at a time, as the replay's side)
+        late_hold_pages.clear();
+        for (const auto& sp : lc->pages) late_hold_pages.push_back(sp.second);
+        late_hold_live.store(true, std::memory_order_release);
+    }
+    if (vk_late_hold(c.late_part, [lc] { late_hold_copy(*lc); })) return true;
+    std::lock_guard lk(late_hold_mu);
+    late_hold_pages.clear();
+    late_hold_live.store(false, std::memory_order_release);
+    return false;
+}
+/// capture_make's look: one of the pages the CPU wrote since the last capture is held for its copy
+void late_hold_written(const uint32_t* pages, int64_t n) {
+    if (!late_hold_live.load(std::memory_order_acquire)) return;
+    std::lock_guard lk(late_hold_mu);
+    for (uint32_t held : late_hold_pages)
+        for (int64_t i = 0; i < n; i++)
+            if (pages[i] == held) {
+                if (!late_hold_broken.exchange(true))
+                    logf("vk: held submits: page %#x was written again by the CPU before its copy for the capture before; "
+                         "captures wait for their late pages again from here on", held);
+                return;
+            }
+}
 bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed) {
     const auto tk0 = std::chrono::steady_clock::now();
-    if (c->late_value && c->map) {   // (the pages a submission still on the GPU writes back: see capture_make)
+    // (the pages a submission still on the GPU writes back, see capture_make: the replay's submits held until they can be
+    // copied again, late_hold_arm; else waited for here, then copied)
+    if (c->late_value && c->map && late_hold_arm(*c)) {
+        st_tk_held++;
+    } else if (c->late_value && c->map) {
         // (timed apart: the replay thread waits here for the GPU, the more often the fewer pools have a mirror. With
         // RX_VK_MIRROR_MB=1024 on an 8 GB card it was most of a capture's 2.4-3 ms, six submits a frame: Hyrule Field at
         // 35-45 fps instead of 55, issue 995)
@@ -1850,14 +1926,14 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         st_tk_stamp += std::chrono::duration<double, std::milli>(tk1 - tk_locked).count();
         st_tk_all += std::chrono::duration<double, std::milli>(tk2 - tk0).count();
         if (++n % 600 == 0) {
-            logf("vk: a capture taken (ms): all %.3f; GPU wait for late pages %.3f (%lld of 600 takes, %lld for a whole submission), pools lock %.3f, retires "
+            logf("vk: a capture taken (ms): all %.3f; GPU wait for late pages %.3f (%lld of 600 takes, %lld for a whole submission; %lld more held the submits instead), pools lock %.3f, retires "
                  "and stamps %.3f, bytes copied %.3f; %zu kept (%llu MB), %zu spare buffers, %zu texture pages copied (%llu MB), "
                  "%lld pages not late (their part had written them back)",
-                 st_tk_all / 600, st_tk_late / 600, (long long)st_tk_late_n, (long long)st_tk_late_value, st_tk_lock / 600, st_tk_stamp / 600, st_tk_copy / 600,
+                 st_tk_all / 600, st_tk_late / 600, (long long)st_tk_late_n, (long long)st_tk_late_value, (long long)st_tk_held, st_tk_lock / 600, st_tk_stamp / 600, st_tk_copy / 600,
                  cap_bufs.size(), (unsigned long long)(cap_bytes >> 20), cap_free.size(), shadow_n.load(std::memory_order_relaxed),
                  (unsigned long long)(shadow_n.load(std::memory_order_relaxed) >> 8), (long long)st_cap_part_done.exchange(0));
             st_tk_all = st_tk_stamp = st_tk_copy = st_tk_late = st_tk_lock = 0, st_tk_late_n = 0;
-            st_tk_late_value = 0;
+            st_tk_late_value = st_tk_held = 0;
         }
     }
     return true;
