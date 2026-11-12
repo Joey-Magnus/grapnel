@@ -312,10 +312,12 @@ def test_resolves_inside(d):
     check("a folder link in the runtime that leads out is outside", not packs.resolves_inside(str(rt), str(rt / "romfs" / "door")))
     check("...and a path through it", not packs.resolves_inside(str(rt), str(rt / "romfs" / "door" / "x")))
     check("the folder beside the runtime is outside", not packs.resolves_inside(str(rt), str(out)))
-    check("a path written in another case is the same folder (compared by identity, not by name)",
-          packs.resolves_inside(str(rt), str(rt).upper() + os.sep + "ROMFS") if os.name == "nt" else True)
+    upper = str(rt).upper() + os.sep + "ROMFS"
+    if os.path.exists(upper) and os.path.samefile(upper, rt / "romfs"):   # (a case-insensitive folder: the usual one on Windows)
+        check("a path written in another case is the same folder (compared by identity, not by name)",
+              packs.resolves_inside(str(rt), upper))
     for rel, ok in (("romfs/a.bin", True), ("hookshot.exe", True), ("..", False), ("a/../b", False), ("a\\..\\b", False),
-                    (".", False), ("", False), ("/x", False)):
+                    (".", False), ("", False), ("/x", False), ("romfs/foo:evil", False), ("romfs/foo::$DATA", False)):
         check("in_runtime(%r) is %s" % (rel, ok), packs.in_runtime(str(rt), rel) == ok)
 
 

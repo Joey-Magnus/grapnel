@@ -437,7 +437,9 @@ def in_runtime(rt, rel):
     if not rel or os.path.isabs(rel) or os.path.splitdrive(rel)[0] or rel[0] in "/\\":
         return False
     parts = rel.replace("\\", "/").split("/")
-    return ".." not in parts and os.path.normpath(rel) not in (".", "")
+    # (no ':' either: on NTFS romfs/foo:s names a stream of foo, and foo is a hard link shared with the base; the files a pack
+    # names never hold one)
+    return ".." not in parts and ":" not in rel and os.path.normpath(rel) not in (".", "")
 
 
 def resolves_inside(rt, path):
