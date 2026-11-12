@@ -4,6 +4,7 @@
 // Info is a minimal stand-in with the cache's separately serialized containers, as program_cache_cleanup_test.cpp's.
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -85,6 +86,10 @@ std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_records;
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_taken;
 std::atomic<int64_t> st_cache_hits{0};
 #define PROF_EXACT()
+// (the census's counters, gpu/vk/vk_programs.h: counted, not checked here)
+struct { int64_t loads = 0, load_ns = 0; } use_counters;
+struct { int64_t play_loads = 0, play_load_ns = 0; } census;
+std::atomic<bool> programs_in_play{false};
 // (every byte the loader reads from the cache file)
 size_t bytes_read = 0;
 static size_t counted_fread(void* to, size_t size, size_t n, FILE* f) {

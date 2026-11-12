@@ -37,6 +37,7 @@
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_progcache.h"
+#include "vk_programs.h"
 
 namespace mkwvk {
 
@@ -392,6 +393,15 @@ void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t
 void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vector<DiskRecord>& recs,
                         std::vector<std::unique_ptr<Program>>& variants) {
     for (const DiskRecord& d : recs) {
+        // (the census: the records each thread reads, and those read in play, vk_programs.h)
+        struct Counted {
+            const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+            ~Counted() {
+                const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+                use_counters.loads++, use_counters.load_ns += ns;
+                if (programs_in_play.load(std::memory_order_relaxed)) census.play_loads++, census.play_load_ns += ns;
+            }
+        } counted;
         std::vector<uint8_t> data(16 + d.size);   // (with its head, the key and size: the index's word is checked against the file's)
         {
             std::unique_lock<std::mutex> lk;

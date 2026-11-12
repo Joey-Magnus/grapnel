@@ -4,6 +4,7 @@
 // this test covers module ownership, not Shader::Info layout or SPIR-V validity.
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -93,6 +94,10 @@ std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_records;
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_taken;   // (vk_shader.cpp: the records read in, for the prediction)
 std::atomic<int64_t> st_cache_hits{0};
 #define PROF_EXACT()   // (vk_prof.h's exact-timing scope, since #989: nothing to time here)
+// (the census's counters, gpu/vk/vk_programs.h: counted, not checked here)
+struct { int64_t loads = 0, load_ns = 0; } use_counters;
+struct { int64_t play_loads = 0, play_load_ns = 0; } census;
+std::atomic<bool> programs_in_play{false};
 #include "cache_functions.inc"
 
 void save(uint64_t key, bool empty_second = false, int bad_answer = 0) {

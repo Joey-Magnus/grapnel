@@ -27,6 +27,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "vk_reflex.h"
 #include "vk_antilag.h"
 #include "vk_progress.h"
+#include "vk_programs.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -1424,6 +1425,7 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    programs_census_log("close");
     pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
     if (prep_running.load() && !prepare_stopped()) {
         logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");

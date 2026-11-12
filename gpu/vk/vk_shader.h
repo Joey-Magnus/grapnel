@@ -156,5 +156,19 @@ Shader::TextureType handle_texture_type(uint32_t handle);
 void shader_stats(int64_t* translated, int64_t* failed);
 double shader_translate_ms();
 void program_released(const nvn_prog* p);
+/// (hookshot) A guest program as the game makes it (nvnProgramSetShaders), before any draw (vk_programs.cpp): its stages' code keys
+/// as Program::codes has them (vertex or mesh, fragment, task, the header-only stage; a compute program's stage in codes[0]),
+/// read from the game's memory now and hashed, nothing lowered. ok: it has a stage a draw or dispatch can use
+struct CreatedProgram {
+    uint64_t codes[4]{};
+    bool ok = false, compute = false, mesh = false;
+    int stages = 0;
+};
+CreatedProgram program_created_read(const nvn_prog& prog);   // (the game's thread; kept by the program's serial)
+/// The key program_pick will make for that program drawn with these vertex input formats and colour output types (a compute
+/// program's: its stage's key); 0: no such serial was read
+uint64_t program_created_key(uint64_t serial, const uint32_t vattr[16], const uint8_t color_types[8]);
+void program_created_forget(uint64_t serial);
+int64_t shader_translated();   // (programs translated so far, by any thread)
 
 } // namespace mkwvk

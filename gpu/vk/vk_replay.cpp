@@ -54,6 +54,7 @@
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
+#include "vk_programs.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -3052,6 +3053,7 @@ void log_frame_stats() {
     log_slow_frame();
     made_ring[presents % 32] = texture_made();
     made_ring_present = presents;
+    if (programs_life_flag && presents % 600 == 0) programs_census_log("play");
     if (++fps_n == 120) {
         const auto now = std::chrono::steady_clock::now();
         const double secs = std::chrono::duration<double>(now - fps_t).count();
@@ -4773,6 +4775,7 @@ void submit(const uint64_t* handles, int n) {
 }
 void present(const nvn_tex* t, const int crop[4]) {
     fps_presented();   // (the FPS counter: the game's frame ends here, on its presenting thread)
+    programs_presented();   // (the programs' life: whether the game is in a load)
     FpsRender fr;
     if (!async_on()) {
         std::lock_guard order(sync_order_mu);
@@ -4815,6 +4818,7 @@ void texture_released_of(const nvn_tex* t) {
 }
 void program_released_locked(const nvn_prog* p) {
     if (!p) return;
+    programs_freed(p);   // (the program's life: the game's call, now; the replay's part follows in order below)
     if (!async_on()) {
         if (hold_releases() && sync_waits_on() && blocked_n.load()) {   // (PR 430: as texture releases, on held_mu)
             {
@@ -5016,6 +5020,8 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_set_texture_pool_size = set_texture_pool_size;
     t.nvn_texture_released = texture_released_of;
     t.nvn_program_released = program_released_locked;
+    t.nvn_program_created = programs_created;
+    programs_life_on();
     t.nvn_read_texels = read_texels;
     t.nvn_write_texels = write_texels;
     t.nvn_invalidate = invalidate;

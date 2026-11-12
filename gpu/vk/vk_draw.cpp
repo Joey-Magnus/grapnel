@@ -64,6 +64,7 @@
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
+#include "vk_programs.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -901,27 +902,27 @@ VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline
     if (ask_only && (ci->flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) && start_first) {
         VkResult r = create(pcache, &ask, pl);
         if (r == VK_SUCCESS) {
-            g->from_start.fetch_add(1);
+            g->from_start.fetch_add(1), census.play_from_start++, use_counters.made_how = 2;
         } else if (r == VK_PIPELINE_COMPILE_REQUIRED) {
             *pl = VK_NULL_HANDLE;
             r = create(g->cache, &ask, pl);   // (one play compiled into this generation)
-            if (r == VK_SUCCESS) g->built.fetch_add(1), g->from_driver.fetch_add(1);
+            if (r == VK_SUCCESS) g->built.fetch_add(1), g->from_driver.fetch_add(1), census.play_from_driver++, use_counters.made_how = 1;
         }
         g->users.fetch_sub(1);
         return r;
     }
     VkResult r = create(g->cache, &ask, pl);
     if (r == VK_SUCCESS) {
-        g->built.fetch_add(1), g->from_driver.fetch_add(1);
+        g->built.fetch_add(1), g->from_driver.fetch_add(1), census.play_from_driver++, use_counters.made_how = 1;
     } else if (r == VK_PIPELINE_COMPILE_REQUIRED) {
         *pl = VK_NULL_HANDLE;
         r = create(pcache, &ask, pl);
         if (r == VK_SUCCESS) {
-            g->from_start.fetch_add(1);
+            g->from_start.fetch_add(1), census.play_from_start++, use_counters.made_how = 2;
         } else if (r == VK_PIPELINE_COMPILE_REQUIRED && !ask_only) {
             *pl = VK_NULL_HANDLE;
             r = create(g->cache, ci, pl);
-            if (r == VK_SUCCESS) g->built.fetch_add(1), g->compiled.fetch_add(1);
+            if (r == VK_SUCCESS) g->built.fetch_add(1), g->compiled.fetch_add(1), census.play_compiled++, use_counters.made_how = 3;
         }
     }
     g->users.fetch_sub(1);
@@ -1006,6 +1007,7 @@ VkPrimitiveTopology pipeline_topology(const Program& p, VkPrimitiveTopology draw
 struct PipeEntry {
     std::atomic<bool> ready{false};
     std::atomic<VkPipeline> pipeline{VK_NULL_HANDLE};   // (a fast-linked one first, the worker's full build over it)
+    std::atomic<uint8_t> how{0};   // (the census: how play made it, UseCounters::made_how; 0: before play, or not made)
 };
 std::unordered_map<uint64_t, std::unique_ptr<PipeEntry>> pipelines;   // (the replay thread's)
 int64_t st_draws, st_skipped, st_dispatches, st_passes, st_mesh, st_pending_skips, st_waits;
@@ -2080,6 +2082,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     if (it != pipelines.end()) return remember(mine[key] = it->second.get());
     pcache_init();
     PipeEntry* e = pipelines.emplace(key, std::make_unique<PipeEntry>()).first->second.get();
+    use_counters.pipes_new++, census.play_pipes_new++;
     pipeline_note(key, p, s, at, topo, color_types);
     static const bool sync = env_on("RX_VK_SYNC_PIPELINES");
     if (sync) {
@@ -2112,7 +2115,9 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo, job->cold[0] = cold[0], job->cold[1] = cold[1];
     jobs_push([job] {
         // (over a linked one, which is left alone: draws recorded with it may still be on their way)
+        use_counters.made_how = 0;
         if (const VkPipeline full = build_graphics(*job->p, job->s, job->at, job->topo)) job->e->pipeline = full;
+        job->e->how.store(use_counters.made_how, std::memory_order_relaxed);
         job->e->ready.store(true, std::memory_order_release);
         // (the cold libraries after it and behind what is queued, with no flag: the draw waits for the pipeline above, and
         // jobs_wait runs one job)
@@ -6523,11 +6528,13 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     uint8_t types[8];
     color_types_of(at, types);
     const Program* cp;
+    ProgramUse use(s.prog, s.has_prog, false);   // (the program's first draw, for the census: vk_programs.h)
     {
         PROF_HOT(PROF_PROGRAM);
         ParLock lk(d.mesh);   // (graphics programs: each thread's picks, program_pick's own lock)
         cp = program_for(s, d.mesh ? ProgramKind::Mesh : ProgramKind::Graphics, types);
     }
+    if (use.on) use.program(cp, cp && cp->ready.load(std::memory_order_acquire));
     {   // (hookshot, a test) RX_VK_NO_MESH=1: task / mesh draws left out, to see what they draw; =2: the others left out
         static const int no_mesh = getenv("RX_VK_NO_MESH") ? atoi(getenv("RX_VK_NO_MESH")) : 0;
         if ((no_mesh == 1 && d.mesh) || (no_mesh == 2 && !d.mesh)) return;
@@ -6627,7 +6634,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         st_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     };
     if (!cp->ready.load(std::memory_order_acquire)) {
-        if (legacy_translation_skip && targets_persistent(at)) return void(st_pending_skips++);
+        if (legacy_translation_skip && targets_persistent(at)) return use.skipped(), void(st_pending_skips++);
         wait_for(cp->ready);
     }
     if (exposure_log_on() && cp) exposure_note(s, *cp);
@@ -6655,13 +6662,16 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             ParLock lk;
             ensure_layout(p);
         }
+        const int64_t pipes_new = use_counters.pipes_new;
         pe = graphics_pipeline(p, s, at, topo, types);
+        if (use.on) use.pipeline(pe->ready.load(std::memory_order_acquire), use_counters.pipes_new != pipes_new);
     }
     if (!pe->ready.load(std::memory_order_acquire)) {
         const bool may_skip = !always_wait && targets_persistent(at) && !writes_memory(p);
-        if (may_skip) return void(st_pending_skips++);
+        if (may_skip) return use.skipped(), void(st_pending_skips++);
         wait_for(pe->ready);
     }
+    if (use.on) use.pipeline_made(pe->how.load(std::memory_order_relaxed));
     const VkPipeline pl = pe->pipeline;
     if (!pl) SKIP_HERE();
     cur_program = &p;
@@ -8666,7 +8676,9 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         if (memory_read_as_submitted(indirect, g, 12)) s.grid[0] = g[0], s.grid[1] = g[1], s.grid[2] = g[2];
     }
     const uint8_t types[8]{};
+    ProgramUse use(s.prog, s.has_prog, true);   // (the program's first dispatch, for the census: vk_programs.h)
     const Program* cp = program_for(s, ProgramKind::Compute, types);
+    if (use.on) use.program(cp, cp && cp->ready.load(std::memory_order_acquire));
     dclock.t_prog = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     // (a program still being translated is waited for, as a draw's is: a dispatch left out is work never done again.
     // MKW updates its terrain height clipmaps a region at a time as the camera moves, and makes its sky's tables
@@ -8768,6 +8780,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     // 2026-11-08). The dispatch waits up to 50 ms for it, which covers NVIDIA's compiles; one still compiling after that is left
     // out until it is ready, as graphics draws are. RX_VK_COMPUTE_WAIT=1: waited for, as before)
     static const bool compute_wait = env_on("RX_VK_COMPUTE_WAIT");
+    if (use.on) use.pipeline(p.compute_pipeline != VK_NULL_HANDLE, false);
     if (!compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
         int none = 0;
         // (a program read from the cache without its code, vk_progcache.cpp: its module made now, by the dispatch that starts its
@@ -8817,6 +8830,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 pcache_built_since_save++;
                 q.compute_state.store(2, std::memory_order_release);
             };
+            if (use.on) use.pipeline(false, true), use.pipeline_made(cached ? 2 : 3);   // (from a cache, or compiled on a worker)
             if (cached) {
                 p.compute_pipeline = cached;
                 st_pipelines++;
@@ -8842,6 +8856,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             static std::atomic<int> told{0};
             if (told++ < 40) logf("vk: dispatch of %016llx left out: its compute pipeline is still compiling", (unsigned long long)p.key);
             st_pending_skips++;
+            use.skipped();
             return;
         }
         if (p.failed || !p.compute_pipeline) SKIP_HERE();
@@ -9192,6 +9207,7 @@ int64_t draw_slotgen_saves() {   // (Descriptor reuse: of those, what the global
 
 void pipeline_cache_play() {
     play_cache_begin();
+    programs_play_begin();   // (the census: what is made from here on is made in play)
 }
 void pipeline_cache_close() {
     try {
