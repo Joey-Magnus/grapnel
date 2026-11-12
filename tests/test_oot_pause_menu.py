@@ -70,8 +70,10 @@ def main():
     with tempfile.TemporaryDirectory() as d:
         for name, text in files.items():
             (Path(d) / name).write_text(text, encoding="utf-8", newline="")
+        asked = []   # (as nx2/chunks.py edit_c gives it: the counts over its processes)
         with contextlib.redirect_stdout(io.StringIO()):
-            oot_patches.apply_pause_menu(d)
+            oot_patches.apply_pause_menu(d, lambda fn, items: asked.extend(items) or [fn(x) for x in items])
+        check(len(asked) == len(files), "the counts were not made over every file by the caller's processes")
         out = read(d)
         check(out["code_003.c"] == files["code_003.c"], "a file without places was changed")
         joined = "".join(out.values())
@@ -106,6 +108,10 @@ def main():
     check("GP(" not in buttons, "the pad's buttons read the game's memory raw (recomp_load* as the rest of the file)")
     gone = host[host.index("void hos_pausebtn_gone("):host.index("uint64_t hos_pausebtn_buttons(")]
     check("our_control = 0" in gone, "the page destroyed does not forget its button's control (read after it is freed)")
+    chunks = (ROOT / "nx2" / "chunks.py").read_text(encoding="utf-8")
+    edit_c = chunks[chunks.index("def edit_c("):]
+    edit_c = edit_c[:edit_c.find("\ndef ") % (len(edit_c) + 1)]   # (to the next function, or the file's end)
+    check("oot_patches.apply_pause_menu(" in edit_c, "the lift's edits (nx2/chunks.py edit_c) leave the button out")
     compile_check(edited)
     print("PASS: the pause menu's Recomp options button: its edits all together or none, unknown layouts left alone")
 

@@ -40,6 +40,9 @@
 #include "vk_temporal.h"
 #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
 #include "vk_fsr3_inputs.h"
+#include "reactive_policy.h"
+#include "upscaler_rows.h"
+#include "vk_reactive.h"   // (the upscalers' reactive mask: the scene copied before its transparent draws)
 #include "vk_dump.h"
 #include "vk_gprof.h"
 #include "vk_jobs.h"
@@ -48,6 +51,7 @@
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
 #include "driver_faults.h"
+#include "fallback_size_policy.h"
 
 #include "shaders/clear_f_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
@@ -719,28 +723,29 @@ std::atomic<size_t> pcache_saved_size{0};
 /// A pipeline cache file's data, or nothing when it cannot be read or was made by another device or driver
 std::vector<uint8_t> pcache_file_read(const std::string& path) {
     std::vector<uint8_t> data;
-    if (FILE* f = fopen(path.c_str(), "rb")) {
-        _fseeki64(f, 0, SEEK_END);
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return data;
+    // (data of another device or driver is dropped before Vulkan sees it: by its 32-byte header, before the rest, hundreds of MB,
+    // is read. After a driver update every start would otherwise read the whole file only to drop it)
+    uint8_t head[32];
+    uint32_t head_size = 0, version = 0, vendor = 0, device = 0;
+    if (fread(head, 1, sizeof head, f) == sizeof head) {
+        std::memcpy(&head_size, head, 4);
+        std::memcpy(&version, head + 4, 4);
+        std::memcpy(&vendor, head + 8, 4);
+        std::memcpy(&device, head + 12, 4);
+    }
+    if (head_size >= 32 && version == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&   // (hookshot)
+        vendor == dev.props.vendorID && device == dev.props.deviceID &&
+        !std::memcmp(head + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE) && _fseeki64(f, 0, SEEK_END) == 0) {
         const int64_t sz = _ftelli64(f);
-        _fseeki64(f, 0, SEEK_SET);
-        if (sz > 32) {
+        if (sz > 32 && (uint64_t)head_size <= (uint64_t)sz && _fseeki64(f, sizeof head, SEEK_SET) == 0) {
             data.resize((size_t)sz);
-            if (fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
+            std::memcpy(data.data(), head, sizeof head);
+            if (fread(data.data() + sizeof head, 1, data.size() - sizeof head, f) != data.size() - sizeof head) data.clear();
         }
-        fclose(f);
     }
-    // (data of another device or driver is dropped before Vulkan sees it)
-    if (data.size() >= 32) {
-        uint32_t head_size, version, vendor, device;
-        std::memcpy(&head_size, data.data(), 4);
-        std::memcpy(&version, data.data() + 4, 4);
-        std::memcpy(&vendor, data.data() + 8, 4);
-        std::memcpy(&device, data.data() + 12, 4);
-        if (head_size < 32 || head_size > data.size() || version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||   // (hookshot)
-            vendor != dev.props.vendorID || device != dev.props.deviceID ||
-            std::memcmp(data.data() + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE))
-            data.clear();
-    }
+    fclose(f);
     return data;
 }
 std::string pcache_dir;
@@ -1616,6 +1621,21 @@ void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrim
     if (!state_file) state_open_locked();
     if (state_file && state_seen.insert(h).second) fwrite(&r, sizeof r, 1, state_file), fflush(state_file);
 }
+/// (hookshot) The player's own state list as it is now, whole records only (state_mu held, so no record is half written): what
+/// the menu's Save my pipeline list zips (vk_menu.cpp). *present: whether there is one
+std::string state_list_bytes(bool* present) {
+    std::lock_guard lk(state_mu);
+    if (state_file) fflush(state_file);
+    std::string bytes;
+    *present = false;
+    if (FILE* f = fopen(state_list_path("hookshot_pipeline_states.bin").c_str(), "rb")) {
+        *present = true;
+        char b[1 << 16];
+        for (size_t n; (n = fread(b, 1, sizeof b, f)) > 0;) bytes.append(b, n);
+        fclose(f);
+    }
+    return bytes;
+}
 /// Every pipeline of the state lists (the player's own and the shipped one): its program translated
 /// when the program cache lacks it, then noted in hookshot_pipelines.bin for precompile_run to build. RX_VK_NO_STATE_LIST=1: off
 void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_seed = false) {
@@ -2181,11 +2201,10 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         // tables) hung the GPU when the driver's optimizer built them: a device lost one to four minutes into Kokiri, each time with
         // another of them first (RX 6600, issues 461 and 484); never in runs where they were built without it. They are built
         // without it on AMD. RX_VK_MESH_OPT=1: with it, as the others)
-        static const bool amd = [] {
-            VkPhysicalDeviceProperties pr{};
-            vkGetPhysicalDeviceProperties(dev.physical, &pr);
-            return pr.vendorID == 0x1002;
-        }();
+        // (hookshot) Not on Mesa's RADV: there the task programs built without it run long enough to reset the GPU while the
+        // save loads at the Great Deku Tree (Steam Deck OLED, RX 6800 XT; issue 1000). Built with it, that reset is gone; other
+        // RADV hangs remain (issue 1000).
+        static const bool amd = dev.props.vendorID == 0x1002 && dev.driver_id != VK_DRIVER_ID_MESA_RADV;
         static const bool mesh_opt = env_on("RX_VK_MESH_OPT");
         if (amd && !mesh_opt) {
             bool mesh = false;
@@ -2294,18 +2313,21 @@ uint32_t aniso_override() {
     return env >= 0 ? (uint32_t)env : anisotropy_row();
 }
 // (hookshot) The upscalers' texture LOD bias. OoT draws its 3D at 3/4 of the output and gives its world's materials a LOD bias of
-// -0.5 for that (sampler_make's log line). DLSS, FSR 3.1 and FSR 4 at a smaller fixed Render resolution scale up from less, so
-// those samplers (the ones the game biases below 0) get log2(share / 0.75) more: the mips the output's size wants, as NVIDIA's
-// DLSS guide asks (log2(render / display)). DLSS Quality (67%) -0.17, Balanced -0.37, Performance -0.58, Ultra Performance
-// -1.17. 0 with the game's own upscale, DLAA and FSR 4's native AA, at Auto, and from 75% up. RX_VK_UPSCALE_LOD_BIAS=0: off.
-// Part of every sampler's key; the menu's Upscaler, Render resolution and Quality preset rows move the samplers' generation
+// -0.5 for that (sampler_make's log line). An upscaler that draws from another share adds to the samplers the game biases below 0
+// (upscaler_rows.h upscale_lod_bias_for): DLSS and DLAA NVIDIA's log2(render / output) - 1 in all (Quality -1.17 more, DLAA -0.58,
+// Auto -1), FSR 3.1 and FSR 4 log2(share / 0.75) below 75 %; 0 with the game's own upscale, Off and FSR 4's native AA.
+// RX_VK_UPSCALE_LOD_BIAS=0: off. RX_VK_DLSS_LOD_OFFSET=<steps>: DLSS's -1 for a run (0: the render size's own detail, as
+// before). Part of every sampler's key; the menu's Upscaler, Render resolution and Quality preset rows move the samplers' generation
 float upscale_lod_bias() {
     static const bool off = getenv("RX_VK_UPSCALE_LOD_BIAS") && atoi(getenv("RX_VK_UPSCALE_LOD_BIAS")) == 0;
     if (off) return 0.0f;
+    static const float offset = [] {
+        const char* e = getenv("RX_VK_DLSS_LOD_OFFSET");
+        const float v = e && *e ? (float)atof(e) : -1.0f;
+        return std::isfinite(v) ? std::clamp(v, -3.0f, 0.0f) : -1.0f;
+    }();
     const int up = fsr3_wanted() ? (int)upscaler_rows::FSR3 : temporal_mode();
-    const int share = resolution_scale();   // (in 1/10000 of the output; 0: Auto)
-    if (!upscaler_rows::scales_by_mode(up) || share <= 0) return 0.0f;
-    return std::min(0.0f, std::log2((float)share / 7500.0f));
+    return upscaler_rows::upscale_lod_bias_for(up, resolution_scale(), offset);   // (share in 1/10000 of the output; 0: Auto)
 }
 /// compare: the shader reads depth with a reference (a sampler without one cannot compare)
 VkSampler sampler_make(int id, bool compare);
@@ -3019,7 +3041,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
         w.descriptorType = type;
         return w;
     };
-    const uint64_t salign = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    const uint64_t salign = storage_binding_align();   // (the translator's: vk_internal.h)
     for (const Stage& st : p.stages) {
         const Shader::Info& info = st.info;
         const int ns = st.nvn_stage;
@@ -3398,6 +3420,7 @@ struct Pushed {
 };
 TLS_OBJECT(pushed, std::array<Pushed, 2>)   // [graphics, compute]
 } // namespace
+std::string state_list_snapshot(bool* present) { return state_list_bytes(present); }   // (vk_draw.h: the menu's)
 /// (hookshot) A compute pipeline of the back end's own, made elsewhere (vk_fsr3.cpp), through the pipeline cache the game's are kept
 /// in across runs (mkw_vk_pipelines.bin), as theirs are: in play through the play caches (create_cached), so that it does not grow
 /// the start's cache; before the cache is loaded, with none. (Outside the unnamed namespace: vk_fsr3.cpp links to it)
@@ -4439,6 +4462,41 @@ void clear_after_draws(VkCommandBuffer cmd) {
     end_pass(cmd);
 }
 
+/// (hookshot) The temporal upscalers' reactive mask (vk_reactive.h, RX_VK_REACTIVE=1): before the scene's transparent draws
+/// (reactive_policy.h: blended over it, tested against its depth without writing it) the scene's colour is copied, in a
+/// break of the pass. The scene is the B10G11R11 target with a depth of the size the upscaler last took, as its jitter is
+/// given (temporal_jitter_size, fsr3_inputs::jitter_size: 0 while neither draws). Not while AMD FSR 4 draws on the frame
+/// chain: it is given no mask, so nothing is copied for it
+void reactive_scene_draw(VkCommandBuffer cmd, const Program& p, const NvnState& s, const Targets& at) {
+    if (!reactive::wanted()) return;
+    if (!at.n || !at.color[0] || !at.depth || at.color_format[0] != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return;
+    const uint64_t now = texture_frame_no();
+    struct Seen { uint64_t frame; uint32_t w, h; };
+    static thread_local Seen seen{~0ull, 0, 0};
+    if (seen.frame != now) {   // (once a frame on each thread, not once a draw)
+        const bool chain = temporal_jitter_size(0) != 0;   // (one upscaler at a time: the chain's engine, else FSR 3.1)
+        if (chain && upscaler_rows::is_fsr4(temporal_mode()))
+            seen = {now, 0, 0};
+        else
+            seen = {now, chain ? temporal_jitter_size(0) : fsr3_inputs::jitter_size(0),
+                    chain ? temporal_jitter_size(1) : fsr3_inputs::jitter_size(1)};
+    }
+    if (!seen.w || at.width != seen.w || at.height != seen.h) return;
+    static thread_local reactive_policy::Run run;
+    const reactive_policy::Draw kind =
+        reactive_policy::classify(target_write_mask(p, s, 0) != 0, (s.color.blend_en & 1) != 0, s.ds.dt != 0, s.ds.dw != 0);
+    const bool capped = run.capped && run.frame == now;
+    if (!reactive_policy::copy_before(run, now, (uint64_t)(uintptr_t)at.color[0], kind)) {
+        static std::atomic<int> told{0};
+        if (run.capped && !capped && told.fetch_add(1, std::memory_order_relaxed) < 4)
+            logf("vk: reactive mask: the scene's transparent draws come in more than %d runs (frame %llu): the mask holds what "
+                 "was drawn after the last copy too",
+                 reactive_policy::kCopies, (unsigned long long)now);
+        return;
+    }
+    end_pass(cmd);   // (a copy cannot be made in a pass)
+    reactive::copy_scene(cmd, at.color[0], at.color_level[0], at.color_layer[0], at.width, at.height);
+}
 bool writes_sampled_target(uint16_t writes, uint16_t sampled_targets) {
     return (writes & sampled_targets) != 0;
 }
@@ -5876,6 +5934,35 @@ bool fallback_compute_pipelines(Program& p) {
         if (!p.fallback_compute.empty()) return true;
         if (failed.count({p.key, p.variant})) return false;
     }
+    // (hookshot) none of its stages given to a compiler that would never finish one: RADV on GCN 1-4 grew past 25 GB on the two
+    // biggest mesh programs and kept the memory on its thread (fallback_size_policy.h). Left out, as a refused one is below.
+    // RX_VK_FALLBACK_PHI_LIMIT=<n>: another limit, 0 none
+    static const uint32_t phi_limit = [] {
+        uint32_t limit = fallback_size::kRadvGcnPhiLimit;
+        const char* e = getenv("RX_VK_FALLBACK_PHI_LIMIT");
+        if (e && !fallback_size::parse_limit(e, limit)) {
+            limit = fallback_size::kRadvGcnPhiLimit;
+            logf("vk: RX_VK_FALLBACK_PHI_LIMIT=%s is not a number from 0 to 4294967295: ignored", e);
+        }
+        if (dev.radv_gcn || e)
+            logf("vk: mesh fallback compute stages with more than %u phis are not built on RADV GCN 1-4 cards%s", limit,
+                 limit ? "" : " (0: none left out)");
+        return limit;
+    }();
+    for (size_t i = 0; i < p.stages.size(); i++) {
+        const Stage& st = p.stages[i];
+        if (st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT || !fallback_size::too_big(dev.radv_gcn, st.phis, phi_limit)) continue;
+        {
+            std::lock_guard lk(mu);
+            failed.insert({p.key, p.variant});
+        }
+        static std::atomic<int> told{0};
+        if (told++ < 8)
+            logf("vk: fallback: the compute pipeline of %016llx (stage %zu of %zu, %u phis, the most %u) is not built: RADV on this GCN "
+                 "card would not finish it (RX_VK_FALLBACK_PHI_LIMIT); its draws are left out",
+                 (unsigned long long)p.key, i, p.stages.size(), st.phis, phi_limit);
+        return false;
+    }
     std::vector<VkPipeline> made(p.stages.size(), VK_NULL_HANDLE);
     bool any = false;
     for (size_t i = 0; i < p.stages.size(); i++) {
@@ -6251,6 +6338,51 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
     if (told++ == 0) logf("vk: tree-shadow mask blend on #%u %ux%u, weight %.2f", tex->id, w, h, weight);
 }
 
+static bool writes_memory(const Program& p) {
+    for (const Stage& st : p.stages) {
+        const auto& info = st.info;
+        const auto written = [](const auto& ds) {
+            return std::any_of(ds.begin(), ds.end(), [](const auto& d) { return d.is_written; });
+        };
+        if (info.stores_global_memory || written(info.storage_buffers_descriptors) ||
+            written(info.image_buffer_descriptors) || written(info.image_descriptors))
+            return true;
+    }
+    return false;
+}
+
+// A mesh fallback's colour draws are left out until their pipelines build (minutes each on an Iris Xe), while the smaller
+// depth-only draws of the same culled list (same indirect arguments) are already built. Depth with no colour lets the sky show
+// through the grass, so a depth-only draw is held while its list's colour draw is. RX_VK_FALLBACK_DEPTH_HOLD=0 turns this off.
+enum class FallbackRole { None, DepthOnly, Colour };
+static FallbackRole fallback_role_of(const Program& p, const NvnState& s, const Targets& at, const DrawArgs& d) {
+    static const bool on = !getenv("RX_VK_FALLBACK_DEPTH_HOLD") || atoi(getenv("RX_VK_FALLBACK_DEPTH_HOLD")) != 0;
+    if (!on || !d.indirect || writes_memory(p)) return FallbackRole::None;
+    uint32_t wm = 0;
+    for (int i = 0; i < at.n; i++)
+        if (at.color[i]) wm |= target_write_mask(p, s, i);
+    if (wm) return FallbackRole::Colour;
+    return at.depth && s.ds.dw ? FallbackRole::DepthOnly : FallbackRole::None;
+}
+static std::mutex fallback_held_mu;
+// Indirect-argument address -> frame its colour draw was last left out; an address is assumed to stay with one list for the hold.
+static std::unordered_map<uint64_t, uint64_t> fallback_held;
+/// Marks the list's colour draw as left out (held) or recorded (!held) this frame.
+static void fallback_list_hold(uint64_t list, bool held) {
+    std::lock_guard lk(fallback_held_mu);
+    if (held) fallback_held[list] = texture_frame_no();
+    else fallback_held.erase(list);
+}
+/// True while the list's colour draw was left out in the last 120 frames (so a list no colour draw uses any more is released).
+static bool fallback_list_held(uint64_t list) {
+    std::lock_guard lk(fallback_held_mu);
+    const auto it = fallback_held.find(list);
+    if (it == fallback_held.end()) return false;
+    if (texture_frame_no() - it->second <= 120) return true;
+    fallback_held.erase(it);
+    return false;
+}
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
@@ -6408,19 +6540,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         pe = graphics_pipeline(p, s, at, topo, types);
     }
     if (!pe->ready.load(std::memory_order_acquire)) {
-        bool may_skip = !always_wait && targets_persistent(at);
-        if (may_skip)
-            for (const Stage& st : p.stages) {
-                const auto& info = st.info;
-                const auto written = [](const auto& ds) {
-                    return std::any_of(ds.begin(), ds.end(), [](const auto& d) { return d.is_written; });
-                };
-                if (info.stores_global_memory || written(info.storage_buffers_descriptors) ||
-                    written(info.image_buffer_descriptors) || written(info.image_descriptors)) {
-                    may_skip = false;
-                    break;
-                }
-            }
+        const bool may_skip = !always_wait && targets_persistent(at) && !writes_memory(p);
         if (may_skip) return void(st_pending_skips++);
         wait_for(pe->ready);
     }
@@ -6526,6 +6646,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (!same_desc) gfx_sampled() = draw_sampled();
     static const bool barrier_every = env_on("RX_VK_BARRIER_EVERY_DRAW");   // (an experiment: a pass each)
     if (barrier_every) end_pass(cmd);
+    reactive_scene_draw(cmd, p, s, at);
     uint16_t writes;
     {
         FINE_SCOPE(FT_HAZARD);
@@ -6595,7 +6716,14 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             mesh_args = {mesh_args_buffer, (VkDeviceSize)mesh_args_at * 16, (VkDeviceSize)n * 16, 0};
         }
     }
-    if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();
+    const FallbackRole fallback_role = p.fallback && d.mesh ? fallback_role_of(p, s, at, d) : FallbackRole::None;
+    if (fallback_role == FallbackRole::DepthOnly && fallback_list_held(d.indirect)) SKIP_HERE();
+    if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) {
+        if (fallback_role == FallbackRole::Colour && p.compute_state.load(std::memory_order_acquire) == 1)
+            fallback_list_hold(d.indirect, true);
+        SKIP_HERE();
+    }
+    if (fallback_role == FallbackRole::Colour) fallback_list_hold(d.indirect, false);
     {
         FINE_SCOPE(FT_HAZARD);
         begin_pass(cmd, at);
@@ -7410,7 +7538,9 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     std::lock_guard lk(mu);
     if (seen.size() < 32 && seen.insert(key).second)
         logf("vk: network %016llx does not translate here: %s draws its upscale (%ux%u -> %ux%u)", (unsigned long long)key,
-             fsr3 ? "FSR 3.1" : "the temporal upscaler", src->width, src->height, dst->width, dst->height);
+             fsr3 ? "FSR 3.1"
+                  : temporal_mode() == upscaler_rows::FSR3 ? "FSR 3.1 (on the temporal chain)" : "the temporal upscaler",
+             src->width, src->height, dst->width, dst->height);
     return true;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
