@@ -1079,59 +1079,125 @@ def prompts_before(out, key):
     return None
 
 
+def prompt_directory_matches(expected, actual):
+    return (stat.S_ISDIR(actual.st_mode) and not getattr(actual, "st_file_attributes", 0) & 0x400
+            and expected.st_ino != 0 and os.path.samestat(expected, actual))
+
+
+def prompt_owner_parent(owner):
+    """Windows: query the opened file's resolved path, not the possibly replaced staging pathname.
+    The subsequent parent stat is still path-based: Windows does not provide Python's dir_fd traversal."""
+    import ctypes
+    import msvcrt
+    get_path = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+    get_path.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
+    get_path.restype = ctypes.c_uint32
+    handle = msvcrt.get_osfhandle(owner.fileno())
+    size = get_path(handle, None, 0, 0)
+    if not size:
+        raise ctypes.WinError(ctypes.get_last_error())
+    path = ctypes.create_unicode_buffer(size + 1)
+    written = get_path(handle, path, len(path), 0)
+    if not written or written >= len(path):
+        raise OSError("cannot establish the opened owner's parent")
+    return os.stat(os.path.dirname(path.value), follow_symlinks=False)
+
+
 @contextlib.contextmanager
-def prompt_owner(folder, create=False):
-    """Hold the staging owner's lock for its lifetime; a sweeper may take it only after that owner finishes or dies."""
-    path = os.path.join(folder, ".owner")
-    if not create:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
-            raise OSError("not a regular owner file")   # no symlinks or Windows reparse points
-    flags = os.O_RDWR | (os.O_CREAT | os.O_EXCL if create else 0) | getattr(os, "O_NOFOLLOW", 0)
-    with os.fdopen(os.open(path, flags, 0o600), "r+b") as owner:
-        if create:
-            owner.write(b"\0")
-            owner.flush()
-        owner.seek(0)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(owner.fileno(), msvcrt.LK_LOCK if create else msvcrt.LK_NBLCK, 1)
+def prompt_owner(folder, create=False, expected=None):
+    """Hold the owner's lock; POSIX sweepers pass the already checked directory descriptor."""
+    with contextlib.ExitStack() as handles:
+        relative = {}
+        if os.name != "nt":
+            directory = folder
+            if not isinstance(directory, int):
+                directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                handles.callback(os.close, directory)
+            path, relative = ".owner", {"dir_fd": directory}
         else:
-            import fcntl
-            fcntl.flock(owner, fcntl.LOCK_EX | (0 if create else fcntl.LOCK_NB))
-        if create:
-            owner.write(b"1")   # publish readiness only AFTER locking; an empty/unready marker is never swept
-            owner.flush()
-        elif owner.read(1) != b"1":
-            raise OSError("ownership not established")
-        yield   # closing the file releases the lock, including on an exception; the OS also releases it on process death
+            path = os.path.join(folder, ".owner")
+        if not create:
+            st = os.stat(path, follow_symlinks=False, **relative)
+            if not stat.S_ISREG(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
+                raise OSError("not a regular owner file")
+        flags = os.O_RDWR | (os.O_CREAT | os.O_EXCL if create else 0) | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(path, flags, 0o600, **relative), "r+b") as owner:
+            if not create and (not st.st_ino or not os.path.samestat(st, os.fstat(owner.fileno()))):
+                raise OSError("owner file changed")
+            if os.name == "nt" and expected is not None:
+                if (not prompt_directory_matches(expected, prompt_owner_parent(owner)) or
+                        not prompt_directory_matches(expected, os.stat(folder, follow_symlinks=False))):
+                    raise OSError("staging directory changed")
+            if create:
+                owner.write(b"\0")
+                owner.flush()
+            owner.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(owner.fileno(), msvcrt.LK_LOCK if create else msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(owner, fcntl.LOCK_EX | (0 if create else fcntl.LOCK_NB))
+            if create:
+                owner.write(b"1")   # readiness is published only while the lock is held
+                owner.flush()
+            elif owner.read(1) != b"1":
+                raise OSError("ownership not established")
+            yield   # closing releases the lock, including on an exception; process death releases it too
 
 
 def sweep_prompts(out):
-    """Reclaim abandoned staging directories, without following links or making cleanup a build failure."""
+    """Reclaim abandoned staging directories; descriptor-bound on POSIX, identity-checked but path-based on Windows."""
     out = os.path.abspath(out)
+    parent = os.path.dirname(out)
+    anchored = os.name != "nt"
+    if anchored and (not getattr(shutil.rmtree, "avoids_symlink_attacks", False) or
+                     not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")):
+        print("prompts: staging cleanup skipped (descriptor-safe removal unavailable)", flush=True)
+        return
     try:
-        with os.scandir(os.path.dirname(out)) as entries:
-            for entry in entries:
-                if not entry.name.startswith(".prompts-") or entry.path == out:
-                    continue
-                try:
-                    st = entry.stat(follow_symlinks=False)
-                    if not stat.S_ISDIR(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
-                        continue   # symlinks and Windows junctions/reparse points are not ours to traverse
+        with contextlib.ExitStack() as handles:
+            parent_fd = None
+            if anchored:
+                parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                handles.callback(os.close, parent_fd)
+            with os.scandir(parent_fd if anchored else parent) as entries:
+                for entry in entries:
+                    path = os.path.join(parent, entry.name)
+                    if not entry.name.startswith(".prompts-") or path == out:
+                        continue
                     try:
-                        os.lstat(os.path.join(entry.path, ".owner"))
-                    except FileNotFoundError:
-                        if time.time() - st.st_mtime < 24 * 60 * 60:
-                            continue   # legacy, unmarked directories: a full day's grace, not a guess at a short build
-                    else:
-                        with prompt_owner(entry.path):
-                            pass
-                        # The ready owner held one continuous lock and will never reuse this unique directory.
-                        # Close before deleting: Windows cannot unlink the open owner file.
-                    shutil.rmtree(entry.path)
-                except Exception as e:
-                    print(f"prompts: kept staging directory {entry.path} ({e})", flush=True)
+                        st = entry.stat(follow_symlinks=False)
+                        if not prompt_directory_matches(st, st):
+                            continue
+                        with contextlib.ExitStack() as candidate:
+                            directory, relative = path, {}
+                            if anchored:
+                                directory = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                                candidate.callback(os.close, directory)
+                                if not prompt_directory_matches(st, os.fstat(directory)):
+                                    raise OSError("staging directory changed")
+                                relative = {"dir_fd": directory}
+                            try:
+                                os.stat(".owner" if anchored else os.path.join(path, ".owner"),
+                                        follow_symlinks=False, **relative)
+                            except FileNotFoundError:
+                                if time.time() - st.st_mtime < 24 * 60 * 60:
+                                    continue   # legacy, unmarked directories get a full day's grace
+                            else:
+                                with prompt_owner(directory, expected=st):
+                                    pass
+                            # Windows needs the owner closed before removal. Recheck the listed name on both platforms;
+                            # POSIX rmtree also performs its own descriptor-relative lstat/open/fstat checks.
+                            if not prompt_directory_matches(st, os.stat(entry.name if anchored else path,
+                                                                       dir_fd=parent_fd, follow_symlinks=False)):
+                                raise OSError("staging directory changed before removal")
+                            if anchored:
+                                shutil.rmtree(entry.name, dir_fd=parent_fd)
+                            else:
+                                shutil.rmtree(path)
+                    except Exception as e:
+                        print(f"prompts: kept staging directory {path} ({e})", flush=True)
     except FileNotFoundError:
         pass   # the first build's output parent may not exist yet
     except OSError as e:

@@ -217,6 +217,10 @@ the stamp. If those files cannot be cleared, the build regenerates rather than t
 Before checking the cache, builds remove abandoned `.prompts-*` staging directories whose owner lock is free (legacy
 unmarked directories only after 24 hours), leave live, unreadable or linked entries alone, and warn rather than fail
 if cleanup cannot finish.
+On POSIX the sweep binds owner access and removal to checked directory descriptors, and skips cleanup if
+descriptor-safe removal is unavailable. Windows checks the opened owner's resolved parent identity before locking,
+but its path-based checks cannot exclude a transient external open or later rename races; unknown or changed
+identity leaves the directory alone.
 
 #### A faster build for development
 

@@ -189,7 +189,9 @@ class PromptSkipTests(unittest.TestCase):
         unreadable = self.staging(".prompts-unreadable", marked=True, old=True)
         open_fd = os.open
         def denied(path, *args, **kwargs):
-            if Path(path) == unreadable / ".owner":
+            relative_owner = (path == ".owner" and kwargs.get("dir_fd") is not None and
+                              os.path.samestat(os.fstat(kwargs["dir_fd"]), unreadable.stat()))
+            if Path(path) == unreadable / ".owner" or relative_owner:
                 raise PermissionError("authored owner denial")
             return open_fd(path, *args, **kwargs)
         with mock.patch.object(P.os, "open", side_effect=denied):
@@ -203,7 +205,7 @@ class PromptSkipTests(unittest.TestCase):
         stale = self.staging(".prompts-cannot-remove", marked=True)
         rmtree = P.shutil.rmtree
         def denied(path, *args, **kwargs):
-            if Path(path) == stale:
+            if Path(path) == stale or (path == stale.name and kwargs.get("dir_fd") is not None):
                 raise PermissionError("authored cleanup denial")
             return rmtree(path, *args, **kwargs)
         with mock.patch.object(P.shutil, "rmtree", side_effect=denied):
@@ -240,6 +242,91 @@ class PromptSkipTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual(sentinel.read_bytes(), b"outside data")
 
+    def test_parent_swap_does_not_open_or_lock_external_owner(self):
+        if os.name != "posix":
+            self.skipTest("POSIX descriptor/lock interleaving")
+        import fcntl
+        victim = self.staging(".prompts-swapped", marked=True)
+        moved = self.root / "moved-staging"
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / ".owner").write_bytes(b"1")
+        (outside / "sentinel").write_bytes(b"outside data")
+        observed = dict(swapped=False, outside_opens=0, outside_locked=False, rmtree_refused=False)
+        scandir, open_fd, flock, rmtree = os.scandir, os.open, fcntl.flock, P.shutil.rmtree
+
+        class SwapEntry:
+            def __init__(entry, real):
+                entry.real, entry.name, entry.path = real, real.name, real.path
+
+            def stat(entry, **kwargs):
+                result = entry.real.stat(**kwargs)
+                if entry.name == victim.name and not observed["swapped"]:
+                    victim.rename(moved)
+                    victim.symlink_to(outside, target_is_directory=True)
+                    observed["swapped"] = True
+                return result
+
+        @contextlib.contextmanager
+        def swapping_scan(path):
+            with scandir(path) as entries:
+                yield (SwapEntry(entry) for entry in entries)
+
+        with (outside / ".owner").open("r+b") as probe:
+            outside_id = os.fstat(probe.fileno())
+            def opening(path, *args, **kwargs):
+                fd = open_fd(path, *args, **kwargs)
+                if os.path.samestat(os.fstat(fd), outside_id):
+                    observed["outside_opens"] += 1
+                return fd
+
+            def locking(fd, operation):
+                flock(fd, operation)
+                if os.path.samestat(os.fstat(fd if isinstance(fd, int) else fd.fileno()), outside_id):
+                    try:
+                        flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        observed["outside_locked"] = True
+                    else:
+                        flock(probe, fcntl.LOCK_UN)
+
+            def removing(path, *args, **kwargs):
+                try:
+                    return rmtree(path, *args, **kwargs)
+                except OSError:
+                    if Path(path).name == victim.name:
+                        observed["rmtree_refused"] = True
+                    raise
+
+            with mock.patch.object(P.os, "scandir", side_effect=swapping_scan), \
+                    mock.patch.object(P.os, "open", side_effect=opening), \
+                    mock.patch.object(fcntl, "flock", side_effect=locking), \
+                    mock.patch.object(P.shutil, "rmtree", side_effect=removing):
+                P.sweep_prompts(str(self.out))
+            flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)   # the external lock is free after the sweep, even on the old code
+            flock(probe, fcntl.LOCK_UN)
+        self.assertTrue(observed["swapped"])
+        self.assertTrue(victim.is_symlink())
+        self.assertTrue((moved / "new" / "authored.bin").exists())
+        self.assertEqual((outside / ".owner").read_bytes(), b"1")
+        self.assertEqual((outside / "sentinel").read_bytes(), b"outside data")
+        self.assertEqual(observed["outside_opens"], 0, observed)
+        self.assertFalse(observed["outside_locked"], observed)
+
+    def test_rmtree_refuses_a_top_level_directory_link(self):
+        outside = self.root / "outside-rmtree"
+        outside.mkdir()
+        (outside / "sentinel").write_bytes(b"outside data")
+        link = self.out.parent / ".prompts-rmtree-link"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest(f"cannot create a directory symlink: {e}")
+        with self.assertRaises(OSError):
+            P.shutil.rmtree(link)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual((outside / "sentinel").read_bytes(), b"outside data")
+
     def test_windows_owner_lock_calls_and_denial(self):
         folder = self.staging(".prompts-windows")
         path = str(folder)
@@ -258,10 +345,50 @@ class PromptSkipTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 os.fstat(fd)   # handles close on exit, releasing their locks
         windows.locking = mock.Mock(side_effect=OSError("authored Windows lock denial"))
-        with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"):
+        with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"), \
+                mock.patch.object(P, "prompt_owner_parent", return_value=folder.stat()):
             P.sweep_prompts(str(self.out))
         self.assertTrue(folder.exists())
         self.assertIn("authored Windows lock denial", self.log.getvalue())
+
+    def test_windows_unknown_or_changed_owner_parent_is_kept_without_locking(self):
+        folder = self.staging(".prompts-windows-parent", marked=True)
+        outside = self.root / "outside-parent"
+        outside.mkdir()
+        windows = types.SimpleNamespace(LK_LOCK=1, LK_NBLCK=2, locking=mock.Mock())
+        for answer in (outside.stat(), OSError("unknown opened owner parent")):
+            effect = dict(side_effect=answer) if isinstance(answer, OSError) else dict(return_value=answer)
+            with mock.patch.dict(sys.modules, {"msvcrt": windows}), mock.patch.object(P.os, "name", "nt"), \
+                    mock.patch.object(P, "prompt_owner_parent", **effect):
+                P.sweep_prompts(str(self.out))
+            self.assertTrue(folder.exists())
+        windows.locking.assert_not_called()
+
+    def test_windows_opened_parent_query(self):
+        import ctypes
+        folder = self.staging(".prompts-parent-query", marked=True)
+        path = str(folder / ".owner")
+        class FinalPath:
+            def __call__(self, handle, buffer, size, flags):
+                if buffer is not None:
+                    buffer.value = path
+                return len(path)
+        query = FinalPath()
+        windows = types.SimpleNamespace(get_osfhandle=lambda fd: fd)
+        with (folder / ".owner").open("r+b") as owner, \
+                mock.patch.dict(sys.modules, {"msvcrt": windows}), \
+                mock.patch.object(ctypes, "WinDLL", return_value=types.SimpleNamespace(GetFinalPathNameByHandleW=query), create=True):
+            self.assertTrue(os.path.samestat(P.prompt_owner_parent(owner), folder.stat()))
+
+    def test_cleanup_without_descriptor_safe_rmtree_is_skipped(self):
+        if os.name != "posix":
+            self.skipTest("POSIX descriptor backend")
+        leftover = self.staging(".prompts-no-safe-removal", marked=True)
+        with mock.patch.object(P.shutil.rmtree, "avoids_symlink_attacks", False):
+            self.build()
+        self.assertTrue(leftover.exists())
+        self.assertTrue(self.stamp().exists())
+        self.assertIn("descriptor-safe removal unavailable", self.log.getvalue())
 
     def test_every_file_input_kind(self):
         paths = list(dict.fromkeys(self.source_files + self.game_files + self.font_files))
