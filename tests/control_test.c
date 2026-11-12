@@ -359,6 +359,18 @@ static void ask(Client *c, const char *req, const char *id_text, char *out, size
         if (!strncmp(out, want, strlen(want))) return;
     }
 }
+/* status until its line has want (and want2, if given), asked again for at most ms: its game state is the one the
+   bridge's thread samples every 100 ms, so a change shows within that, not at the next frame */
+static void status_until(Client *c, const char *id_text, const char *want, const char *want2, char *out, size_t cap,
+                         int ms) {
+    char req[64];
+    snprintf(req, sizeof req, "{\"id\":%s,\"cmd\":\"status\"}\n", id_text);
+    for (int waited = 0;; waited += 20) {
+        ask(c, req, id_text, out, cap, 2000);
+        if ((strstr(out, want) && (!want2 || strstr(out, want2))) || waited >= ms) return;
+        sleep_ms(20);
+    }
+}
 /* the replies with these two ids, whichever comes first (events and other replies skipped) */
 static void hear_two(Client *c, const char *id_a, char *a, const char *id_b, char *b, size_t cap, int ms) {
     char want_a[64], want_b[64], line[8192];
@@ -984,8 +996,7 @@ int main(int argc, char **argv) {
         ask(c, "{\"id\":792,\"cmd\":\"age\"}\n", "792", line, sizeof line, 3000);
         CHECK(strstr(line, "\"ok\":true") &&
               strstr(line, "\"age\":\"adult\",\"sent\":true,\"map\":\"KokiriForest_Adult\",\"accepted\":true"));
-        wait_frames(5);   /* (status's game state is the one read at the frames, as 78's) */
-        ask(c, "{\"id\":793,\"cmd\":\"status\"}\n", "793", line, sizeof line, 2000);
+        status_until(c, "793", "\"age\":\"adult\"", NULL, line, sizeof line, 2000);
         CHECK(strstr(line, "\"age\":\"adult\""));
         /* not taken (not in play): a timeout that names the age switch, and the ask is withdrawn; one not taken yet is
            replaced by a later teleport, as a teleport is */
@@ -1002,8 +1013,7 @@ int main(int argc, char **argv) {
         /* without waiting, the reply is at once; the switch back to the child then happens at the next update */
         ask(c, "{\"id\":797,\"cmd\":\"age\",\"to\":\"child\",\"wait\":false}\n", "797", line, sizeof line, 2000);
         CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"age\":\"child\",\"sent\":null"));
-        wait_frames(5);
-        ask(c, "{\"id\":798,\"cmd\":\"status\"}\n", "798", line, sizeof line, 2000);
+        status_until(c, "798", "\"age\":\"child\"", "\"map\":\"KokiriForest_Child\"", line, sizeof line, 2000);
         CHECK(strstr(line, "\"map\":\"KokiriForest_Child\"") && strstr(line, "\"age\":\"child\""));
         hangup(sub);
         puts("PASS: (OoT) the map in status, events and waits; the teleport by index or map, and its list; the age switch");
