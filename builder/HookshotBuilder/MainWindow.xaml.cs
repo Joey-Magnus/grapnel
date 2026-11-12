@@ -951,7 +951,13 @@ public partial class MainWindow : Window
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
         if (fsr && !args.Contains("--fsr")) args.Add("--fsr");
-        if (fsr && !args.Contains("--fetch-fsr-runtime")) args.AddRange(new[] { "--fetch-fsr-runtime", "--accept-amd-license" });
+        // (AMD's runtime fetched by make_game.py where it knows how; for tools that do not, v2.1.0 and before, the launcher fetches
+        // it while the game builds and puts it in the folder once it is built, FfxRuntime. Given to tools that do not know the
+        // words, they stopped the build at once)
+        var makeGame = MakeGameText(tools);
+        var fetchesFfx = Knows(makeGame, "--fetch-fsr-runtime") && Knows(makeGame, "--accept-amd-license");
+        ffxFetch = fsr && !fetchesFfx ? FfxRuntime.Ensure(Storage.FfxSdk) : null;
+        if (fsr && fetchesFfx && !args.Contains("--fetch-fsr-runtime")) args.AddRange(new[] { "--fetch-fsr-runtime", "--accept-amd-license" });
         runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null, memoryGb, fsr ? Storage.FfxSdk : null);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
@@ -1146,6 +1152,21 @@ public partial class MainWindow : Window
 
     /// The game is built: the window is its launcher from here on (Launcher.cs), and, this once, the line under Build Game says so
     /// and in how long. The desktop and Start menu shortcuts are made as before
+    /// (AMD's FSR runtime, fetched by the launcher during a build whose tools do not fetch it: put in the folder at its end)
+    Task<string?>? ffxFetch;
+
+    async Task PutFfxRuntime(string folder)
+    {
+        if (ffxFetch is not { } fetching) return;
+        ffxFetch = null;
+        var why = await fetching ?? FfxRuntime.CopyTo(Storage.FfxSdk, folder);
+        if (why == null) return;
+        readyNote = "AMD FSR 4's files could not be put in the game folder: build again to try again";
+        readyTip = why;
+        AddLog("AMD FSR 4: " + why);
+        Render();
+    }
+
     void ShowReady()
     {
         var compiledNote = thisCompile > 0 ? $" (compiled in {Span(TimeSpan.FromSeconds(thisCompile))})" : "";
@@ -1162,6 +1183,7 @@ public partial class MainWindow : Window
             Finder.RefreshShortcuts(finished);
         }
         if (Finder.ShortcutError != null) AddLog("shortcut not made: " + Finder.ShortcutError);
+        _ = PutFfxRuntime(finished);
         EnterLauncher(finished);
         _ = FreeAfterBuild();
     }

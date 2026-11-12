@@ -259,7 +259,10 @@ public partial class MainWindow
     // ---- the game built again as it is, with the settings now: DLSS and FSR 4 take effect at a build, not when they are switched ----
 
     /// (how the game in the folder was built: FSR 4 by make_game.py's mark, DLSS by NVIDIA's DLL in its ngx folder)
-    bool BuiltWithFsr => launchFolder.Length > 0 && File.Exists(System.IO.Path.Combine(launchFolder, ".hookshot_fsr"));
+    // (FSR 4 is in the game when it was built with it, the mark, and AMD's runtime is beside it to load: a release's tools that
+    // could not fetch it left the mark and nothing to load)
+    bool BuiltWithFsr => launchFolder.Length > 0 && File.Exists(System.IO.Path.Combine(launchFolder, ".hookshot_fsr")) &&
+                         File.Exists(System.IO.Path.Combine(launchFolder, "amd_fidelityfx_upscaler_vk.dll"));
     bool BuiltWithDlss => launchFolder.Length > 0 && File.Exists(System.IO.Path.Combine(launchFolder, "ngx", "nvngx_dlss.dll"));
     LaunchChoice? HereChoice => launchLists?.All.FirstOrDefault(c => c.Here);
 
@@ -594,12 +597,27 @@ public partial class MainWindow
                    (!rebuild && File.Exists(System.IO.Path.Combine(launchFolder, ".hookshot_fsr")) &&
                     File.Exists(System.IO.Path.Combine(launchFolder, "amd_fidelityfx_upscaler_vk.dll")) &&
                     File.Exists(System.IO.Path.Combine(launchFolder, "LICENSE-AMD-FSR-SDK.md")))) &&
-                  Knows(known, "--fsr") && Knows(known, "--fetch-fsr-runtime") && Knows(known, "--accept-amd-license");
+                  Knows(known, "--fsr");
+        // (a release whose make_game.py takes --fsr but cannot fetch AMD's runtime, v2.1.0 and before: the launcher fetches it
+        // and puts it in the folder, FfxRuntime. It was left out instead, and the rebuild had no FSR 4)
+        var fetchesFfx = Knows(known, "--fetch-fsr-runtime") && Knows(known, "--accept-amd-license");
         var args = new List<string> { "--update", launchFolder };
         if (rebuild && !fsr && BuiltWithFsr && Knows(known, "--no-fsr")) args.Add("--no-fsr");
         if (Storage.WorkChosen && Knows(known, "--work")) args.AddRange(new[] { "--work", Storage.Work });
         if (dlss) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
-        if (fsr) args.AddRange(new[] { "--fsr", "--fetch-fsr-runtime", "--accept-amd-license" });
+        if (fsr) args.Add("--fsr");
+        if (fsr && fetchesFfx) args.AddRange(new[] { "--fetch-fsr-runtime", "--accept-amd-license" });
+        if (fsr && !fetchesFfx)
+        {
+            var why = await FfxRuntime.Ensure(Storage.FfxSdk) ?? FfxRuntime.CopyTo(Storage.FfxSdk, launchFolder);
+            if (workCancelled) why = "cancelled";
+            if (why != null)
+            {
+                WorkEnded(why == "cancelled" ? why : "AMD's FSR 4 files: " + why);
+                return;
+            }
+            workLog.AppendLine("AMD FSR 4: AMD's runtime put in the game folder by the launcher (this release's tools do not fetch it)");
+        }
         // (the shaders' step, left to the game's first start when the player unticked it: said only to tools that know the
         // word. A version from before the step has none to leave)
         if (!BuilderSettings.PrepareNow(SettingsPath) && KnowsShaderStep(tools!)) args.Add(ShaderStep.Later);
