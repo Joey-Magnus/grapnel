@@ -8365,12 +8365,19 @@ void precompile_at_create() {
         if (!state_file) state_open_locked();
     }
     const ComputePlan plan = computes_plan(getenv("RX_VK_PRECOMPILE_COMPUTES"), !env_on("RX_VK_NO_STATE_LIST"));
-    std::vector<Program*> fallbacks;
+    // (every program read in here, kept from now on: its records are taken as they are read, so the load its create call
+    // queues finds none and makes none of its noted pipelines. Those are asked of the caches here, as that load would)
+    std::vector<Program*> fallbacks, kept;
     program_cache_load_some({}, [&](Program& p) {
         ensure_layout(p);
+        kept.push_back(&p);
         if (p.fallback) fallbacks.push_back(&p);
     }, false, true);
-    std::atomic<size_t> next{0};
+    std::unordered_map<uint64_t, std::vector<const NoteRef*>> notes_of;
+    if (!kept.empty())
+        for (const NoteRef& r : refs) notes_of[r.prog].push_back(&r);
+    const std::string notes_path = pipe_notes_path();
+    std::atomic<size_t> next{0}, next_kept{0}, kept_pipes{0}, kept_cold{0};
     const auto worker = [&] {
         ub_thread_off();
         for (size_t i; (i = next++) < fallbacks.size() && !prepare_stopped();) {
@@ -8380,16 +8387,33 @@ void precompile_at_create() {
                 fallbacks[i]->compute_state.store(2, std::memory_order_release);
             }
         }
+        FILE* in = nullptr;
+        const std::unique_ptr<PipeNote> note = std::make_unique<PipeNote>();
+        for (size_t i; (i = next_kept++) < kept.size() && !prepare_stopped();) {
+            const Program& p = *kept[i];
+            const auto list = notes_of.find(p.key);
+            if (p.compute || list == notes_of.end()) continue;
+            if (!in) in = fopen(notes_path.c_str(), "rb");
+            for (const NoteRef* r : list->second) {
+                if (r->variant != p.variant || !pipe_note_at(in, r->at, note.get())) continue;
+                bool cold = false;
+                // (from the caches alone, as a load at a create call: what none has is made when it is first drawn)
+                if (const VkPipeline pl = pipeline_from_caches(p, *note, &cold)) kept_pipes += pipeline_keep_ready(r->key, pl);
+                else kept_cold++;
+            }
+        }
+        if (in) fclose(in);
     };
     std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::min<size_t>(usable_cpus(), fallbacks.size()); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < std::min<size_t>(usable_cpus(), kept.size()); i++) threads.emplace_back(worker);
     for (std::thread& t : threads) t.join();
     const size_t notes_n = refs.size();
     programs_index(std::move(refs), plan.none ? std::unordered_set<uint64_t>{} : plan.keys);
     logf("vk: precompile: load at create (RX_VK_LOAD=create): %zu noted pipelines found, none built; %zu compute programs "
-         "named (%zu in the shipped list, %zu dispatched in play here); %zu mesh fallback programs kept ready; in %.0f ms. No "
-         "program is kept ready by a list: each is loaded when the game makes it",
-         notes_n, plan.keys.size(), plan.shipped, plan.learned, fallbacks.size(),
+         "named (%zu in the shipped list, %zu dispatched in play here); %zu mesh fallback programs kept ready, %zu of their "
+         "noted pipelines with them (%zu in no cache); in %.0f ms. No other program is kept ready by a list: each is loaded "
+         "when the game makes it",
+         notes_n, plan.keys.size(), plan.shipped, plan.learned, kept.size(), kept_pipes.load(), kept_cold.load(),
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     predicted_check();
 }
