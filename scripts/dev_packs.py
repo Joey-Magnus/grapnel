@@ -280,12 +280,29 @@ def pack_folders(d):
             "renderer_work": os.path.join(d, "renderer-work")}
 
 
+def overlaps(a, b):
+    """One folder is the other or holds it"""
+    a, b = (os.path.normcase(os.path.abspath(x)) for x in (a, b))
+    return os.path.commonpath([a, b]) in (a, b)
+
+
 def check_folders(d, b):
-    """A base whose work or game folder is one of its packs' folders would be rebuilt by its own packs, and compared with itself"""
-    mine = {os.path.normcase(os.path.abspath(f)) for f in pack_folders(d).values()}
+    """A base whose work or game folder is, holds or lies in one of its packs' folders would be rebuilt or deleted by its own
+    packs, and compared with itself"""
     for what in ("work", "game"):
-        if os.path.normcase(os.path.abspath(b[what])) in mine:
-            sys.exit("the base's %s folder %s is where its packs are built: give the base other folders" % (what, b[what]))
+        for f in list(pack_folders(d).values()) + [os.path.join(d, "packs")]:
+            if overlaps(b[what], f):
+                sys.exit("the base's %s folder %s overlaps %s, where its packs are built: give the base other folders" %
+                         (what, b[what], f))
+
+
+def game_language(game):
+    """The language a game folder was built in (its language.txt), so a pack is built in the base's"""
+    try:
+        with open(os.path.join(game, "language.txt"), encoding="utf-8") as f:
+            return next((line.strip() for line in f if line.strip() and not line.startswith("#")), None)
+    except OSError:
+        return None
 
 
 def link_objects(base_work, work):
@@ -318,7 +335,7 @@ def cmd_base(a):
             if os.path.isfile(os.path.join(a.seed, c)) and not os.path.exists(os.path.join(game, c)):
                 shutil.copy2(os.path.join(a.seed, c), os.path.join(game, c))
     b = {"commit": git(tree, "rev-parse", "HEAD"), "work": work, "game": game, "romfs": os.path.abspath(a.romfs),
-         "exefs": os.path.abspath(a.exefs), "seeded_from": a.seed}
+         "exefs": os.path.abspath(a.exefs), "seeded_from": a.seed, "language": a.language}
     t = time.time()
     make_game(tree, b, work, game, {})
     b["build_s"] = round(time.time() - t)
@@ -335,7 +352,8 @@ def cmd_adopt(a):
     check_folders(d, {"work": a.work, "game": a.game})
     os.makedirs(d, exist_ok=True)
     write_base(d, {"commit": git(os.path.abspath(a.tree), "rev-parse", "HEAD"), "work": os.path.abspath(a.work),
-                   "game": os.path.abspath(a.game), "romfs": os.path.abspath(a.romfs), "exefs": os.path.abspath(a.exefs)})
+                   "game": os.path.abspath(a.game), "romfs": os.path.abspath(a.romfs), "exefs": os.path.abspath(a.exefs),
+                   "language": game_language(a.game) or "en-US"})
 
 
 def cmd_pack(a):
@@ -400,6 +418,9 @@ def cmd_rt(a):
     b = read_base(d)
     if os.path.exists(rt):
         sys.exit("%s exists: delete it first" % rt)
+    for f in [b["game"], b["work"], os.path.join(d, "packs")] + list(pack_folders(d).values()):
+        if overlaps(rt, f):
+            sys.exit("%s overlaps %s: a runtime goes in a folder of its own" % (rt, f))
     over, prepare = {}, False   # (a file in the runtime -> the pack and the path it comes from, or None: the pack removes it)
     for p in a.packs:
         pdir = os.path.join(d, "packs", p)
@@ -470,6 +491,7 @@ def main(argv=None):
         s.add_argument("--tree", default=ROOT)
         if name == "base":
             s.add_argument("--seed")
+            s.add_argument("--language", default="en-US")
         else:
             s.add_argument("--work", required=True)
             s.add_argument("--game", required=True)

@@ -145,6 +145,13 @@ def test_guards(d):
     write(base / "game" / packs.GAME, b"g")
     write(base / "game" / packs.RENDERER, b"r")
     packs.write_base(str(base), {"commit": "c" * 40, "work": str(d / "w"), "game": str(base / "game"), "romfs": "r", "exefs": "e"})
+    refused("adopting a game folder inside the packs' output folder",
+            ["adopt", str(d / "b2"), "--work", str(d / "w"), "--game", os.path.join(packs.pack_folders(str(d / "b2"))["game_out"], "g"),
+             "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)], "where its packs are built")
+    refused("a runtime inside the base's game folder", ["rt", str(base), str(base / "game" / "runtime")], "folder of its own")
+    check("...and nothing written there", not (base / "game" / "runtime").exists())
+    write(base / "game" / "language.txt", b"# the game's language\nde-DE\n")
+    check("the base's language is read for its packs", packs.game_language(str(base / "game")) == "de-DE")
     for name in ("../game", "..", "a/b", str(d)):
         refused("the pack name %r" % name, ["pack", str(base), name, "--tree", str(ROOT)], "pack's name")
     check("the base is still there", (base / "game" / "user" / "save0.bin").exists())
