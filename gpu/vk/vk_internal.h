@@ -166,7 +166,7 @@ bool probe_on();                                // (hookshot: vk_draw.cpp, RX_VK
 bool probe_serial();
 void probe_dump_all(const char* why);
 void probe_log(uint64_t frame);
-void memory_end_submission(VkCommandBuffer cmd);
+void memory_end_submission(VkCommandBuffer cmd, uint64_t part = 0);   // (part: the recording cmd is, for the pages it writes back)
 /// The game made a memory pool (gpu address, bytes): imported in the background, before it is used
 /// RX_VK_CHECKPOINTS: the draws the GPU reached, logged once the device is lost (vk_draw.cpp)
 void checkpoints_report();
@@ -248,7 +248,7 @@ const uint8_t* memory_as_submitted(uint64_t guest, const uint8_t* live, uint64_t
 void memory_drop_shadow(uint64_t guest, uint64_t size);   // (a write the capture did not take: the copies go)
 /// (EvilBoyce) the newest submission value whose write-back reaches into [guest, guest + size) (0: none ever); *ever set
 /// when any write-back ever did
-uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever);
+uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
 void memory_note_readback(uint64_t guest, uint64_t size);   // (PR 430) a CPU read of GPU results: see memory_rb_refresh
 bool memory_rb_refresh(VkCommandBuffer up);
 void memory_rb_recording_begun();   // (hookshot) at a recording's start, on its thread: the submission it joins (memory_rb_refresh)

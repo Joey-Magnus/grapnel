@@ -1268,20 +1268,48 @@ struct WbPages {
     }
     bool empty() const { return !any; }
 } wb_pages;
-void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value) {
+// (hookshot) and the part of that submission the write-back was recorded in (vk_replay.cpp's Recording::part), for a page
+// written back from its mirror: a submission is recorded in parts of ~120 draws (maybe_split), each part's end copies back
+// what the GPU wrote in it, and the CPU's read needs that part done, not the submission's last one. Hyrule Field: the
+// readbacks waited 5.5 ms a frame for last parts, the GPU's whole frame. 0 for a page written in place (note_direct_write:
+// no mirror; the later parts of its submission may still read or write it in guest memory, so the read waits for all of it).
+// A page's part is replaced with its value, by every note: the two are of the same write
+WbPages wb_parts;
+void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value, uint64_t part) {
     static const bool off = env_on("RX_VK_NO_READBACK_WAIT");
     if (off || !value || guest_hi <= guest_lo) return;
     std::lock_guard lk(wb_pages_mu);
-    for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) wb_pages.set(p, value);
+    for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) {
+        wb_pages.set(p, value);
+        if (part || !wb_parts.empty()) wb_parts.set(p, part);
+    }
 }
 } // namespace
-uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
+/// The newest write-back value of the range's pages (0: none; *ever: whether any page was ever written back). With part
+/// and whole: *part is the newest part that wrote any of them back from a mirror (0: none), *whole the newest value among
+/// the pages with no part (written in place: their whole submission is what a read waits for; 0: none)
+uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part, uint64_t* whole) {
     uint64_t v = 0;
     if (ever) *ever = false;
+    if (part) *part = 0;
+    if (whole) *whole = 0;
     if (!size) return 0;
     std::lock_guard lk(wb_pages_mu);
     if (wb_pages.empty()) return 0;
-    v = wb_pages.max_in(guest >> kPageShift, (guest + size - 1) >> kPageShift, ever);
+    const uint64_t first = guest >> kPageShift, last = (guest + size - 1) >> kPageShift;
+    v = wb_pages.max_in(first, last, ever);
+    if (v && (part || whole)) {
+        uint64_t newest = 0, in_place = 0;
+        for (uint64_t p = first; p <= last && p < kPages; p++) {
+            const uint64_t pv = wb_pages.get(p);
+            if (!pv) continue;
+            const uint64_t pp = wb_parts.get(p);
+            if (pp) newest = std::max(newest, pp);
+            else in_place = std::max(in_place, pv);
+        }
+        if (part) *part = newest;
+        if (whole) *whole = in_place;
+    }
     return v;
 }
 
@@ -2666,7 +2694,7 @@ thread_local BindMemo bind_memo[256];
 void note_direct_write(Pool& p, uint64_t off, uint64_t size) {   // (pools_mu held)
     p.direct_write_epoch = mirror_epoch;
     if (size <= (1u << 20))   // (EvilBoyce: GPU results written in place; small ones: the readbacks are)
-        wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value);
+        wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value, 0);
 }
 
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
@@ -3546,7 +3574,7 @@ VkDeviceAddress wbd_observe_begin(WbdTable& t, uint64_t count) {
     return t.address + offset;
 }
 
-void memory_end_submission(VkCommandBuffer cmd) {
+void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
     std::lock_guard lk(pools_mu);
     {   // (every 600 submissions: how the mirror syncs' dirty pages were read)
         static int64_t n, l_live, l_cap;
@@ -3699,7 +3727,7 @@ void memory_end_submission(VkCommandBuffer cmd) {
             }
             for (const VkBufferCopy& r : runs) st_wb_bytes += (int64_t)r.size, gp.bytes += r.size;
             gp.items += (int)runs.size();
-            for (const VkBufferCopy& r : runs) wb_pages_note(p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value);   // (EvilBoyce)
+            for (const VkBufferCopy& r : runs) wb_pages_note(p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value, part);   // (EvilBoyce)
             {   // (hookshot) RX_VK_LOG_WRITEBACK=1: the pools written back the most, every 600 write-back submissions
                 static const bool log_wb = env_on("RX_VK_LOG_WRITEBACK");
                 if (log_wb) {

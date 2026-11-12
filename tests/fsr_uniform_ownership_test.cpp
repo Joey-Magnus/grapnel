@@ -12,6 +12,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <condition_variable>
 #include <mutex>
 #include <set>
 #include <string>
@@ -75,9 +76,10 @@ struct Use { BufferRef ref;std::vector<uint8_t> expected; };
 std::vector<Use> pending;
 // A slot is recycled through the actual wait/begin functions, not a CPU frame count.
 void read_pending();
-struct Recording { int slot=0; VkCommandBuffer cmd{},upload{};VkCommandPool pool{},upload_pool{};VkFence fence{};uint64_t value=0,batch=0;bool submitted=false; };
+struct Recording { int slot=0; VkCommandBuffer cmd{},upload{};VkCommandPool pool{},upload_pool{};VkFence fence{};uint64_t value=0,batch=0,part=0;bool submitted=false; };
 constexpr int kRecordings=2;
 Recording recordings[kRecordings];int recording_index=0;
+uint64_t rec_part_next=0;   // (the readback's part numbers: gpu/vk/vk_replay.cpp's begin_recording)
 VkSemaphore batch_tl{};uint64_t batch_flushed=0;int flush_reason=0;constexpr int FR_SLOT=1;
 int64_t st_wait_ns=0;
 #define PROF(x) ((void)0)
