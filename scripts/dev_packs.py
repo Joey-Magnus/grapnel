@@ -3,56 +3,63 @@ from a copy of that base. For development and A/B tests only: it calls nx2/make_
 changes nothing in what players build (docs/development.md, *Testing a change against a base*).
 
     python -I scripts/dev_packs.py base <dir> --romfs <romfs> --exefs <exefs> [--seed <game folder>]
-        Build this checkout (clean, at the commit to compare against) into <dir>/game, keeping its work folder <dir>/work.
-        --seed copies the shader caches of an earlier game folder first, as a player's update keeps them: the prepare then
-        only does what changed, instead of starting cold (an hour on some GPUs).
+        Build this checkout (no uncommitted or untracked sources: a base is a commit) into <dir>/game, keeping its work folder
+        <dir>/work. --seed copies the shader caches of an earlier game folder first, as a player's update keeps them: they are
+        stamped by the shader translator, so the prepare redoes only what changed instead of starting cold.
     python -I scripts/dev_packs.py adopt <dir> --work <work> --game <game> --romfs <romfs> --exefs <exefs>
         Use a full build of this checkout's commit that already exists (built with HOOKSHOT_KEEP_BUILD_FILES=1) as the base.
     python -I scripts/dev_packs.py pack <dir> <name> [--tree <checkout>] [--prepare | --no-prepare]
-        Build a change (a checkout whose history contains the base's commit) and keep only the modules that differ from the base,
-        in <dir>/packs/<name>. What is built follows the files changed since the base:
-          - the shader translator (what nx2/build.py stamps the shader caches with): the renderer, and a prepare in the runtime;
-          - the rest of gpu/ and the renderer's third_party: the renderer alone (RX_VK_ONLY: no lift, no game; minutes);
-          - docs/, tests/, scripts/, builder/: nothing;
-          - anything else (host/, nx2/ game patches, a64-kit): the game, with HOOKSHOT_NO_PREPARE, in one work folder shared
-            by the base's packs (pack_folders): the base's compiled objects are reused, and after the first game pack the lift
-            is skipped while the translator, the HLE list and the hot list stay the same.
+        Build a change (a checkout whose history contains the base's commit; committed, uncommitted and untracked files all
+        count) into <dir>/packs/<name>:
+          - only renderer files the game is not built from (gpu/vk/ and the renderer's third_party, but renderer_read_by_game):
+            the renderer alone (RX_VK_ONLY: no lift, no game; seconds to minutes);
+          - anything else: the game with make_game.py (HOOKSHOT_NO_PREPARE=1), which builds both modules, in one work folder
+            shared by the base's packs (pack_folders), so after the first game pack the lift is skipped while the translator,
+            the HLE list and the hot list stay the same.
+        The pack keeps a module when an object it is linked from differs from the base's (module_changed), and any other file
+        of the built game folder that differs from the base's (button prompts and the like). A runtime prepares again when the
+        shader translator (what nx2/build.py stamps the shader caches with) or the shader seed changed.
     python -I scripts/dev_packs.py rt <dir> <runtime> [<pack>...]
         A game folder to run: the base's, its romfs hard-linked (read-only), the rest copied (the caches are written in play),
-        the packs' modules over it. Prepared again when a pack changed the shader translator.
+        the packs' files over it, prepared again if a pack needs it.
     python -I scripts/dev_packs.py ls <dir>
 
 A pack's modules come from the same base as the rest of the runtime, so the game and the renderer always match
-(MKWVK_API_VERSION). Two packs that bring the same module are refused: merge their branches and build one pack.
+(MKWVK_API_VERSION). Two packs that bring the same file are refused: merge their branches and build one pack.
 """
 import argparse
 import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WINDOWS = os.name == "nt"
+# (the modules' names follow the target, not this PC: RX_TARGET=windows on Linux builds the Windows game)
+WINDOWS = os.name == "nt" or os.environ.get("RX_TARGET", "") == "windows"
 # (the game's own caches beside it, kept between runs and stamped by the translator (gpu/vk/vk_progcache.cpp): a stale one is
 # not used, so a base can start from an older base's)
 CACHES = ("hookshot_programs.bin", "hookshot_programs.idx", "hookshot_pipelines.bin", "hookshot_pipelines.bin.predicted",
           "hookshot_computes.bin", "hookshot_pipeline_states.bin", "hookshot_prepared.bin", "mkw_vk_pipelines.bin")
-MODULES = ((("hookshot.exe", "hookshot.map"), ("hookshot_vk.dll", "hookshot_vk.map")) if WINDOWS else
-           (("hookshot", None), ("hookshot_vk.so", None)))
+SEED = "hookshot_shaders.bin"   # (the shader list the prepare goes through: a new one is prepared again)
+# (module, its map, its link list in sa/build, the object that holds the version: nx2/build.py gives hos_main.c and vk_menu.cpp
+# nx2/version.py's describe(), a fingerprint of every source, so those two objects differ in every build of another tree)
+MODULES = ((("hookshot.exe", "hookshot.map", "objs.rsp", "host_hos_main.o"),
+            ("hookshot_vk.dll", "hookshot_vk.map", "vk_objs.rsp", "vk_vk_menu.o")) if WINDOWS else
+           (("hookshot", None, "objs.rsp", "host_hos_main.o"), ("hookshot_vk.so", None, "vk_objs.rsp", "vk_vk_menu.o")))
 GAME, RENDERER = MODULES[0][0], MODULES[1][0]
+STAMPED_SOURCES = ("host/hos_main.c", "gpu/vk/vk_menu.cpp")
 # (nx2/build.py's shader stamp: every file in gpu/vk/{eden,sirit,compat}/ and these four; tests/test_dev_packs.py checks they agree)
 STAMP_DIRS = ("eden", "sirit", "compat")
 STAMP_FILES = ("vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h")
 TRANSLATOR = tuple("gpu/vk/%s/" % d for d in STAMP_DIRS) + tuple("gpu/vk/" + f for f in STAMP_FILES)
-RENDERER_PATHS = ("gpu/", "third_party/imgui/", "third_party/fidelityfx", "third_party/fonts/", "third_party/kenney_input")
-NO_MODULE = ("docs/", "tests/", "scripts/", "builder/", ".github/", ".claude/")
-# (files both modules are built from, each found by tests/test_dev_packs.py: the renderer's ABI and DLSS jitter, which nx2/build.py
-# adds to the game's dependencies; the host header and C file nx2/build.py compiles into the renderer)
-BOTH = ("gpu/vk/vk_api.h", "gpu/vk/dlss_math.h", "host/hos_wide_size.h", "host/mingw_msvc_shims.c")
+RENDERER_ONLY = ("gpu/vk/", "third_party/imgui/", "third_party/fidelityfx")
+INCLUDE = re.compile(r'#\s*include\s+"([^"]+)"')
+NO_MODULE = ("docs/", "tests/", ".github/", ".claude/")
 
 
 def load_make_game():
@@ -62,25 +69,47 @@ def load_make_game():
     return m
 
 
-def classify(paths):
-    """What a change needs, from the paths it changed: a subset of {"game", "renderer", "prepare"}. A path not known to be the
-    renderer's or no module's is the game's. By paths, not by the modules' bytes: every build names its sources' fingerprint in
-    both modules (nx2/version.py), so any change makes both differ"""
-    need = set()
-    for p in paths:
-        if p in BOTH:
-            need |= {"game", "renderer"}
-        if p.startswith(TRANSLATOR):
-            need |= {"renderer", "prepare"}
-        elif p.startswith(RENDERER_PATHS):
-            need.add("renderer")
-        elif not (p.startswith(NO_MODULE) or ("/" not in p and p.endswith(".md"))):
-            need.add("game")
-    return need
+def renderer_read_by_game(root):
+    """The renderer's files the game is built from as well: what host/ includes from gpu/, what nx2/build.py adds to the game's
+    dependencies from gpu/vk, and what those include in turn. A change there needs both modules"""
+    todo = set()
+    for top, _, fs in os.walk(os.path.join(root, "host")):
+        for f in fs:
+            if f.endswith((".c", ".h", ".cpp")):
+                with open(os.path.join(top, f), encoding="utf-8", errors="replace") as src:
+                    todo.update(os.path.normpath(os.path.join(top, inc)) for inc in INCLUDE.findall(src.read()) if "gpu/" in inc)
+    with open(os.path.join(root, "nx2", "build.py"), encoding="utf-8") as src:
+        todo.update(os.path.join(root, "gpu", "vk", f) for f in re.findall(r'host_deps \+= open\(os\.path\.join\(GPU, "vk", "([^"]+)"\)', src.read()))
+    found = set()
+    while todo:
+        p = todo.pop()
+        rel = os.path.relpath(p, root).replace(os.sep, "/")
+        if rel in found or not os.path.isfile(p):
+            continue
+        found.add(rel)
+        with open(p, encoding="utf-8", errors="replace") as src:
+            todo.update(os.path.normpath(os.path.join(os.path.dirname(p), inc)) for inc in INCLUDE.findall(src.read()))
+    return found
+
+
+def route(paths, root=ROOT):
+    """How a change is built: None (nothing a module or the game folder is made from), "renderer" (the renderer alone) or "game"
+    (make_game.py, both modules and the game folder)"""
+    paths = [p for p in paths if not (p.startswith(NO_MODULE) or ("/" not in p and p.endswith(".md")))]
+    if not paths:
+        return None
+    if all(p.startswith(RENDERER_ONLY) for p in paths) and not set(paths) & renderer_read_by_game(root):
+        return "renderer"
+    return "game"
 
 
 def git(tree, *args):
     return subprocess.run(["git", "-C", tree] + list(args), check=True, capture_output=True, text=True).stdout.strip()
+
+
+def changed_files(tree, commit):
+    """The files a checkout changed since a commit: in its commits, not committed, and new ones git does not ignore"""
+    return set(git(tree, "diff", "--name-only", commit).split("\n") + git(tree, "ls-files", "--others", "--exclude-standard").split("\n")) - {""}
 
 
 def sha(path):
@@ -89,6 +118,51 @@ def sha(path):
         for b in iter(lambda: f.read(1 << 22), b""):
             h.update(b)
     return h.hexdigest()
+
+
+def same_file(a, b):
+    try:
+        return os.path.samefile(a, b) or (os.path.getsize(a) == os.path.getsize(b) and sha(a) == sha(b))
+    except OSError:
+        return False
+
+
+def link_list(build, rsp):
+    """The objects a module was linked from, by name (nx2/build.py's response file)"""
+    with open(os.path.join(build, rsp), encoding="utf-8") as f:
+        return {os.path.basename(line.strip().strip('"')): line.strip().strip('"') for line in f if line.strip()}
+
+
+def module_changed(base_build, build, rsp, stamped, stamped_source_changed):
+    """Whether a module differs from the base's beyond the version it names: another set of objects, an object that differs, or
+    the object that holds the version when its own source changed. Its bytes cannot say it: the version (a fingerprint of all
+    the sources) moves the rest of that object's code. True when the base kept no link list to compare with"""
+    try:
+        mine, theirs = link_list(build, rsp), link_list(base_build, rsp)
+    except OSError:
+        return True
+    if set(mine) != set(theirs):
+        return True
+    return any(not same_file(mine[o], theirs[o]) for o in mine if o != stamped or stamped_source_changed)
+
+
+def generated_changes(base_game, game):
+    """The files of a built game folder that differ from the base's, besides the modules, their maps and the caches: what the
+    build generates (button prompts, the shader seed, files it writes into romfs). romfs files the same as the base's are its
+    hard links, so only new ones are read"""
+    skip = {m for mod in MODULES for m in mod[:2] if m} | set(CACHES)
+    out = []
+    for top, dirs, fs in os.walk(game):
+        dirs.sort()
+        for f in sorted(fs):
+            p = os.path.join(top, f)
+            rel = os.path.relpath(p, game).replace(os.sep, "/")
+            if rel in skip:
+                continue
+            q = os.path.join(base_game, rel)
+            if not (os.path.isfile(q) and same_file(p, q)):
+                out.append(rel)
+    return out
 
 
 def run(cmd, cwd, env=None):
@@ -107,7 +181,7 @@ def read_base(d):
 
 
 def write_base(d, b):
-    b["modules"] = {m: sha(os.path.join(b["game"], m)) for m, _ in MODULES}
+    b["modules"] = {m[0]: sha(os.path.join(b["game"], m[0])) for m in MODULES}
     with open(os.path.join(d, "base.json"), "w", encoding="utf-8") as f:
         json.dump(b, f, indent=1)
 
@@ -139,8 +213,9 @@ def link_objects(base_work, work):
 
 def cmd_base(a):
     tree = os.path.abspath(a.tree)
-    if git(tree, "status", "--porcelain", "--untracked-files=no"):
-        sys.exit("%s has uncommitted changes: a base is a commit" % tree)
+    dirty = [p for p in changed_files(tree, "HEAD") if route([p], tree)]
+    if dirty:
+        sys.exit("%s has uncommitted or untracked sources (%s): a base is a commit" % (tree, ", ".join(sorted(dirty)[:5])))
     d = os.path.abspath(a.dir)
     work, game = os.path.join(d, "work"), os.path.join(d, "game")
     os.makedirs(game, exist_ok=True)
@@ -153,9 +228,9 @@ def cmd_base(a):
     t = time.time()
     make_game(tree, b, work, game, {})
     b["build_s"] = round(time.time() - t)
-    for mod, mp in MODULES:   # (the maps beside the modules, for profilers)
-        if mp:
-            shutil.copy2(os.path.join(work, "sa", "build", mp), os.path.join(game, mp))
+    for m in MODULES:   # (the maps beside the modules, for profilers)
+        if m[1]:
+            shutil.copy2(os.path.join(work, "sa", "build", m[1]), os.path.join(game, m[1]))
     write_base(d, b)
     print("base %s in %s: %d min" % (b["commit"][:8], d, b["build_s"] // 60))
 
@@ -172,37 +247,48 @@ def cmd_pack(a):
     b = read_base(d)
     if subprocess.run(["git", "-C", tree, "merge-base", "--is-ancestor", b["commit"], "HEAD"]).returncode:
         sys.exit("%s is not built on the base %s: rebase it on the base, or make a new base" % (tree, b["commit"][:8]))
-    changed = set(git(tree, "diff", "--name-only", b["commit"]).split())   # (the commits since the base and what is not committed)
-    need = classify(changed)
-    if a.prepare is not None:
-        need = (need | {"renderer", "prepare"}) if a.prepare else need - {"prepare"}
+    changed = changed_files(tree, b["commit"])
+    how = route(changed, tree)
     pack = os.path.join(d, "packs", a.name)
-    os.makedirs(pack, exist_ok=True)
-    print("%d files changed since the base: %s" % (len(changed), ", ".join(sorted(need)) or "no module to build"), flush=True)
-    t, built, w = time.time(), None, pack_folders(d)
-    if "game" in need:
+    if os.path.isdir(pack):   # (what an earlier build of this pack brought goes: this one says again what differs)
+        shutil.rmtree(pack)
+    os.makedirs(pack)
+    print("%d files changed since the base: %s" % (len(changed), {None: "nothing to build", "renderer": "the renderer alone",
+                                                                  "game": "the game (both modules)"}[how]), flush=True)
+    t, w, files, extra = time.time(), pack_folders(d), {}, []
+    if how == "game":
         link_objects(b["work"], w["game_work"])
         make_game(tree, b, w["game_work"], w["game_out"], {"HOOKSHOT_NO_PREPARE": "1"})
-        built = os.path.join(w["game_work"], "sa", "build")
-    elif "renderer" in need:
+        built, kinds = os.path.join(w["game_work"], "sa", "build"), MODULES
+    elif how == "renderer":
         link_objects(b["work"], w["renderer_work"])
         run([sys.executable, "-I", "nx2/build.py", "--standalone"], tree,
             {"OOT_WORK": w["renderer_work"], "RX_RELEASE": "1", "RX_VK_ONLY": "1", "HOOKSHOT_KEEP_BUILD_FILES": "1"})
-        built = os.path.join(w["renderer_work"], "sa", "build")
-    files = {}
-    for (mod, mp), kind in zip(MODULES, ("game", "renderer")):
-        for f in (mod, mp):   # (an earlier build of this pack may have brought a module this one does not)
-            if f and os.path.exists(os.path.join(pack, f)):
-                os.remove(os.path.join(pack, f))
-        if kind in need:
+        built, kinds = os.path.join(w["renderer_work"], "sa", "build"), MODULES[1:]
+    else:
+        built, kinds = None, ()
+    for (mod, mp, rsp, stamped), source in zip(kinds, STAMPED_SOURCES[-len(kinds):] if kinds else ()):
+        if module_changed(os.path.join(b["work"], "sa", "build"), built, rsp, stamped, source in changed):
             for f in (mod, mp):
                 if f:
                     shutil.copy2(os.path.join(built, f), os.path.join(pack, f))
             files[mod] = sha(os.path.join(pack, mod))
+    if how == "game":
+        for rel in generated_changes(b["game"], w["game_out"]):
+            dst = os.path.join(pack, "files", rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(os.path.join(w["game_out"], rel), dst)
+            extra.append(rel)
+    prepare = any(p.startswith(TRANSLATOR) for p in changed) or SEED in extra
+    if a.prepare is not None:
+        prepare = a.prepare
     with open(os.path.join(pack, "pack.json"), "w", encoding="utf-8") as f:
         json.dump({"base": b["commit"], "tree": tree, "head": git(tree, "rev-parse", "HEAD"), "changed": sorted(changed),
-                   "need": sorted(need), "files": files, "build_s": round(time.time() - t)}, f, indent=1)
-    print("pack %s: %s, in %d s" % (a.name, ", ".join(files) or "nothing to build", time.time() - t))
+                   "route": how, "files": files, "generated": extra, "prepare": prepare,
+                   "build_s": round(time.time() - t)}, f, indent=1)
+    print("pack %s: %s%s%s, in %d s" % (a.name, ", ".join(files) or "no module differs from the base's",
+                                        "; %d generated files" % len(extra) if extra else "", "; prepares" if prepare else "",
+                                        time.time() - t))
 
 
 def cmd_rt(a):
@@ -210,17 +296,22 @@ def cmd_rt(a):
     b = read_base(d)
     if os.path.exists(rt):
         sys.exit("%s exists: delete it first" % rt)
-    over, prepare = {}, False
+    over, prepare = {}, False   # (a file in the runtime -> the pack and the path it comes from)
     for p in a.packs:
-        with open(os.path.join(d, "packs", p, "pack.json"), encoding="utf-8") as f:
+        pdir = os.path.join(d, "packs", p)
+        with open(os.path.join(pdir, "pack.json"), encoding="utf-8") as f:
             meta = json.load(f)
         if meta["base"] != b["commit"]:
             sys.exit("pack %s was built on %s, not the base %s: build it again" % (p, meta["base"][:8], b["commit"][:8]))
-        for mod in meta["files"]:
-            if mod in over:
-                sys.exit("packs %s and %s both bring %s: merge their branches and build one pack" % (over[mod], p, mod))
-            over[mod] = p
-        prepare |= "prepare" in meta["need"]
+        mine = {m: os.path.join(pdir, m) for m in meta["files"]}
+        mine.update({m[1]: os.path.join(pdir, m[1]) for m in MODULES
+                     if m[0] in meta["files"] and m[1] and os.path.isfile(os.path.join(pdir, m[1]))})
+        mine.update({rel: os.path.join(pdir, "files", rel) for rel in meta["generated"]})
+        for rel, src in mine.items():
+            if rel in over:
+                sys.exit("packs %s and %s both bring %s: merge their branches and build one pack" % (over[rel][0], p, rel))
+            over[rel] = (p, src)
+        prepare |= meta["prepare"]
     os.makedirs(rt)
     for top, _, fs in os.walk(os.path.join(b["game"], "romfs")):
         dst = os.path.join(rt, os.path.relpath(top, b["game"]))
@@ -229,20 +320,22 @@ def cmd_rt(a):
             os.link(os.path.join(top, f), os.path.join(dst, f))
     for name in os.listdir(b["game"]):
         s = os.path.join(b["game"], name)
-        if os.path.isfile(s) and name not in over:
+        if os.path.isfile(s):
             shutil.copy2(s, os.path.join(rt, name))
         elif os.path.isdir(s) and name != "romfs":
             shutil.copytree(s, os.path.join(rt, name))
-    for mod, p in over.items():
-        for f in (mod, dict(MODULES)[mod]):
-            if f and os.path.isfile(os.path.join(d, "packs", p, f)):
-                shutil.copy2(os.path.join(d, "packs", p, f), os.path.join(rt, f))
+    for rel, (_, src) in over.items():
+        dst = os.path.join(rt, rel)
+        if os.path.exists(dst):
+            os.remove(dst)   # (a romfs hard link: replaced, never written through to the base)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
     if prepare:   # (as make_game.py prepares: the game's own environment, without the build's switches)
         print("+ %s --prepare-shaders" % GAME, flush=True)
         subprocess.run([os.path.join(rt, GAME), "--prepare-shaders"], cwd=rt, check=True, env=load_make_game().game_env())
     with open(os.path.join(rt, "dev_packs.json"), "w", encoding="utf-8") as f:
-        json.dump({"base": b["commit"], "packs": a.packs, "modules": {m: sha(os.path.join(rt, m)) for m, _ in MODULES}}, f, indent=1)
-    print("%s: the base %s%s" % (rt, b["commit"][:8], "".join(", %s from %s" % kv for kv in over.items())))
+        json.dump({"base": b["commit"], "packs": a.packs, "modules": {m[0]: sha(os.path.join(rt, m[0])) for m in MODULES}}, f, indent=1)
+    print("%s: the base %s%s" % (rt, b["commit"][:8], "".join(", %s from %s" % (m, over[m][0]) for m in (GAME, RENDERER) if m in over)))
 
 
 def cmd_ls(a):
@@ -257,7 +350,7 @@ def cmd_ls(a):
         except OSError:
             continue
         print("  pack %s (%s, %s): %s" % (p, meta["head"][:8], "on the base" if meta["base"] == b["commit"] else "on another base",
-                                          ", ".join(meta["files"]) or "-"))
+                                          ", ".join(list(meta["files"]) + meta.get("generated", [])) or "-"))
 
 
 def main(argv=None):
