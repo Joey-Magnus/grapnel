@@ -101,6 +101,8 @@ def say_prepare(words):
 
 
 def say(*words):
+    if words and words[0] == "stage" and len(words) > 1:
+        PHASES.enter(str(words[1]))
     if PREPARE:
         return say_prepare([str(w) for w in words])
     print("@@" + " ".join(str(w) for w in words), flush=True)
@@ -277,15 +279,18 @@ def save_times(work, data):
         print("the build times were not saved (%s)" % e, flush=True)
 
 
-def record_times(work, files, compile_seconds, total_seconds, modules=0, kind="build"):
+def record_times(work, files, compile_seconds, total_seconds, modules=0, kind="build", phases=None):
     """This build in the record: what each module it compiled took (a module a cache already held keeps the time it took
-    before), the compile's and the whole build's seconds. Returns the last build's total, to show beside this one."""
+    before), the compile's and the whole build's seconds, and where they went (phases: PhaseClock's). Returns the last
+    build's total, to show beside this one."""
     data = load_times(work)
     previous = data["builds"][-1]["total_seconds"] if data["builds"] else None
     data["seconds"].update({str(k): round(float(v), 1) for k, v in files.items() if v > 0})
     data["builds"].append({"when": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": kind, "modules": int(modules),
                            "compiled": len(files), "compile_seconds": round(compile_seconds, 1),
                            "total_seconds": round(total_seconds, 1)})
+    if phases:
+        data["builds"][-1]["phases"] = {str(k): round(float(v), 1) for k, v in phases.items()}
     data["builds"] = data["builds"][-KEEP_BUILDS:]
     save_times(work, data)
     return previous
@@ -295,6 +300,62 @@ def clock(seconds):
     """A length of time the way the build's lines say it: '1:02:03'"""
     s = int(round(seconds))
     return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
+
+
+class PhaseClock:
+    """Where a build's time went (the dev-loop proposal's A1): each stage (say("stage", ...)), the lift's steps and the compile's
+    parts, from the lines the steps already print and when they come, with no new line for the builders to read. The planning
+    is build.py's start to its "<n> files, <n> jobs" line (the object keys: every source read and hashed); the compile and
+    each link are its own "compiled in" and "linked" lines. Kept in build_times.json beside the totals (record_times) and shown
+    at the end of the build"""
+    LIFT_STEP = re.compile(r"lift: (.+?) (?:\(\d+ process(?:es)?\) )?in ([\d.]+)s \(")
+    DISCOVERY = re.compile(r"discovered \d+ functions \((\d+)s\)$")
+    PLANNED = re.compile(r"\d+ files, \d+ jobs, ")
+    COMPILED = re.compile(r"compiled in (\d+)s, \d+ failed$")
+    LINKED = re.compile(r"linked (.+?): \d+ MB \((\d+)s\)$")
+
+    def __init__(self, started, now=time.time):
+        self.now, self.seconds, self.stage, self.since = now, {}, "checks", started
+
+    def add(self, name, seconds):
+        self.seconds[name] = self.seconds.get(name, 0.0) + max(0.0, float(seconds))
+
+    def enter(self, stage):
+        """A stage starts (None: the build's timed part ends); the one before it has taken until now"""
+        t = self.now()
+        if self.stage is not None:
+            self.add(self.stage, t - self.since)
+        self.stage, self.since = stage, t
+
+    def line(self, line):
+        """A line a step printed, as it comes"""
+        m = self.LIFT_STEP.match(line)
+        if m:
+            return self.add("lift: " + m.group(1), m.group(2))
+        m = self.DISCOVERY.match(line)
+        if m:   # (the image and the functions' discovery, before the steps that say their own time)
+            return self.add("lift: image and discovery", m.group(1))
+        if self.stage == "compile" and self.PLANNED.match(line):
+            return self.add("compile: planning", self.now() - self.since)
+        m = self.COMPILED.match(line)
+        if m:
+            return self.add("compile: compiling", m.group(1))
+        m = self.LINKED.match(line)
+        if m:
+            return self.add("compile: linking " + os.path.basename(m.group(1).replace("\\", "/")), m.group(2))
+
+    def table(self):
+        """The lines the build ends with: each stage, the parts it is known to be made of under it"""
+        rows = []
+        for stage in ("checks", "read", "lift", "compile", "finish"):
+            if stage in self.seconds:
+                rows.append("  %-34s %6.0f s" % (stage, self.seconds[stage]))
+                rows += ["    %-32s %6.0f s" % (name.split(": ", 1)[1], s) for name, s in self.seconds.items()
+                         if name.startswith(stage + ": ")]
+        return ["where the time went:"] + rows
+
+
+PHASES = PhaseClock(STARTED)
 
 
 class Silent(Exception):
@@ -348,6 +409,7 @@ def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROO
             if shown is not None:
                 print(shown, file=output, flush=True)
             lines.append(line)
+            PHASES.line(line)
             if on_line:
                 on_line(line)
     except Silent:
@@ -2392,8 +2454,10 @@ def main(a=None):
                       work, kept >> 20, "" if lift_kept is None else " and the translation's other files (%d MB)" % (lift_kept >> 20)),
                   flush=True)
     total_seconds = time.time() - STARTED
+    PHASES.enter(None)
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
-                            kind="update" if a.update else "build")
+                            kind="update" if a.update else "build", phases=PHASES.seconds)
+    print("\n".join(PHASES.table()), flush=True)
     print("the build took %s, compiled in %s%s" % (clock(total_seconds), clock(compile_seconds),
                                                     "" if previous is None else " (the last one %s)" % clock(previous)), flush=True)
     say("times", "%.0f" % total_seconds, "%.0f" % compile_seconds, "-1" if previous is None else "%.0f" % previous)
