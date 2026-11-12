@@ -72,7 +72,7 @@ def main():
         (folder / "cache_types.inc").write_text(structs, encoding="utf-8")
         (folder / "cache_functions.inc").write_text(functions, encoding="utf-8")
         exe = folder / "check.exe"
-        subprocess.run([args.cxx, "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-I" + str(folder),
+        subprocess.run([args.cxx, "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I" + str(folder),
                         str(ROOT / "tests/program_cache_one_variant_test.cpp"), "-o", str(exe)], check=True, cwd=folder)
         out = {}
         for mode in ("whole", "light"):

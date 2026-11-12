@@ -40,7 +40,7 @@ def main():
     check_source()
     with tempfile.TemporaryDirectory(prefix="warm-bounded-") as tmp:
         exe = Path(tmp) / "warm-bounded"
-        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
+        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-pthread",
                         str(ROOT / "tests/warm_bounded_test.cpp"), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=120)
 

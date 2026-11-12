@@ -19,7 +19,7 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="program-life-") as tmp:
         exe = Path(tmp) / "program-life"
-        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",
+        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
                         str(ROOT / "tests/program_life_test.cpp"), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 

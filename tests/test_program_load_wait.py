@@ -50,7 +50,7 @@ def main():
         (tmp / "load_types.inc").write_text(types, encoding="utf-8")
         (tmp / "load_functions.inc").write_text(functions, encoding="utf-8")
         exe = tmp / "program-load-wait"
-        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread", "-I" + str(tmp),
+        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-pthread", "-I" + str(tmp),
                         str(ROOT / "tests/program_load_wait_test.cpp"), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=60)
 

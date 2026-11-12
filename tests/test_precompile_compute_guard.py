@@ -53,6 +53,8 @@ struct {uintptr_t device=0x1234;struct{bool pipelineCreationCacheControl=false;}
 VkPipelineCache pcache=0x5678;
 struct Program {struct Stage{uintptr_t module;};std::vector<Stage>stages{{0x2468}};unsigned workgroup[3]{32,1,1};uintptr_t layout=0x1357;VkPipeline compute_pipeline=0xbeef;};
 struct Pre {std::mutex mu;bool abandoned=false;std::atomic<size_t> computes_cached{0},computes_compiled{0},computes_failed{0};};
+constexpr int VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT=0x1;
+bool env_on(const char*){return false;}   // (RX_VK_NOOPT: not set, and the precompile does not follow it)
 int mode=0,calls=0,destroys=0,logged=0; bool completed=false;
 void logf(const char*,...){++logged;}
 int faults_noted=0; void note_driver_fault(){++faults_noted;}
@@ -97,11 +99,15 @@ def main():
     precompile=block(source,'void precompile_run(')
     arm=block(precompile,'if (i < computes.size()) {')
     # ci/made identities are checked at the boundary as well as inside the API spy.
-    armed=arm.replace('VkPipeline made = VK_NULL_HANDLE;', 'VkPipeline made = VK_NULL_HANDLE; expected_ci=&ci; expected_out=&made;')
+    # (the arm takes its create info and its cache answer from these two, so the fixture takes them from the source as well)
+    info=block(source,'VkComputePipelineCreateInfo compute_pipeline_info(')
+    asked=block(source,'VkPipeline compute_pipeline_cached(')
+    ask='VkPipeline made = compute_pipeline_cached(p, false);'
+    armed=arm.replace(ask, ask+' expected_ci=&ci; expected_out=&made;')
     assert armed != arm
     # (the precompile runs before play, where cached_compute is guarded_compute with the start's cache: vk_draw.cpp create_cached)
     stand_in='\nVkResult cached_compute(const VkComputePipelineCreateInfo*ci,VkPipeline*pl){return guarded_compute(pcache,ci,pl);}\n'
-    cpp=HEAD+wrapper+stand_in+'\nvoid actual_arm(Program&program,Pre*pre){std::vector<Program*>computes{&program};size_t i=0;'+armed+'\ncompleted=true;}\n'+r'''
+    cpp=HEAD+wrapper+stand_in+info+'\n'+asked+'\nvoid actual_arm(Program&program,Pre*pre){std::vector<Program*>computes{&program};size_t i=0;'+armed+'\ncompleted=true;}\n'+r'''
 int main(int argc,char**argv){
  SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX);
  CHECK(argc==2);int which=std::atoi(argv[1]);Program program;Pre pre;
