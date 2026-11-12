@@ -115,7 +115,7 @@ def main():
     import subprocess, tempfile, os
     need("presenter_queue_pick(" in dev_make, "create_device does not choose the presenter's queue with presenter_queue_pick")
     with tempfile.TemporaryDirectory() as tmp:
-        exe = os.path.join(tmp, "presenter_queue_test")
+        exe = os.path.join(tmp, "presenter_queue_test" + (".exe" if os.name == "nt" else ""))
         subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests" / "presenter_queue_test.cpp"),
                         "-o", exe], check=True)
         out = subprocess.run([exe], capture_output=True, text=True)

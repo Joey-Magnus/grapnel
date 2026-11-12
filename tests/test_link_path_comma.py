@@ -53,7 +53,7 @@ def link_functions(linux, mingw, work):
     missing = sorted(set(NAMES) - {n.name for n in functions})
     if missing:
         raise AssertionError("%s has no %s" % (BUILD_SCRIPT, ", ".join(n + "()" for n in missing)))
-    ns = {"os": os, "LINUX": linux, "kit": types.SimpleNamespace(WORK=work),
+    ns = {"os": os, "LINUX": linux, "MACOS": False, "kit": types.SimpleNamespace(WORK=work),
           "toolchain": types.SimpleNamespace(mingw=lambda: mingw)}
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(BUILD_SCRIPT), "exec"), ns)
     return ns["linker"], ns["HOT_ORDER"]

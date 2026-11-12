@@ -85,14 +85,15 @@ class HostMarch(unittest.TestCase):
         build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
         self.assertIn("from host_cpu import host_march", build)
         self.assertIn('MARCH = os.environ.get("RX_MARCH") or ("apple-m1" if MACOS else host_march())', build)
-        self.assertIn('if not MACOS and MARCH != "x86-64-v3":', build)
+        self.assertIn("if not MACOS:", build)
+        self.assertIn('if MARCH != "x86-64-v3":', build)
         appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
         self.assertIn("RX_MARCH=x86-64-v3 RX_VK_ONLY=1", appimage)   # (its prebuilt renderer: not the CI runner's CPU)
 
     def test_build_message_names_the_cause(self):
         """'this CPU has no AVX2' only when the CPU chose the level: an RX_MARCH of znver2 (AVX2 and more) said it too"""
         build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-        start = build.index('MARCH = os.environ.get("RX_MARCH") or host_march()')
+        start = build.index('MARCH = os.environ.get("RX_MARCH") or ("apple-m1" if MACOS else host_march())')
         block = build[start:build.index("CPU = [", start)]
         for env, host, want in (({"RX_MARCH": "znver2"}, "x86-64-v3", "built for znver2 (RX_MARCH)"),
                                 ({"RX_MARCH": "x86-64-v3"}, "x86-64", ""),
@@ -100,7 +101,7 @@ class HostMarch(unittest.TestCase):
                                 ({}, "x86-64-v3", "")):
             out = io.StringIO()
             with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out):
-                exec(block, {"os": os, "host_march": lambda h=host: h})
+                exec(block, {"os": os, "host_march": lambda h=host: h, "MACOS": False})
             if want:
                 self.assertIn(want, out.getvalue(), env)
             else:

@@ -6,7 +6,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--cc", "gcc"]
-RUN_ALL_SKIP = {"linux": "Windows setup directory transactions"}
+RUN_ALL_SKIP = {"linux": "Windows setup directory transactions", "macos": "Windows setup directory transactions"}
 
 
 def function(source, marker):

@@ -17,7 +17,8 @@ import subprocess
 import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--dav1d", "{dav1d}"]
-RUN_ALL_SKIP = {"windows": "the dav1d library is built for Windows by scripts/windows/dav1d.sh; checked on Linux"}
+RUN_ALL_SKIP = {"windows": "the dav1d library is built for Windows by scripts/windows/dav1d.sh; checked on Linux",
+                "macos": "the dav1d library is checked on Linux"}
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "dav1d_av1" / "lossless_64x48.ivf"

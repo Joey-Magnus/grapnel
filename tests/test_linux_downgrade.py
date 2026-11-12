@@ -55,7 +55,7 @@ def handlers(answer, run_worker=False):
                 kw["target"]()
         return types.SimpleNamespace(start=start)
     worker = types.SimpleNamespace(Thread=thread)
-    namespace = dict(os=os, linux_update=linux_update, messagebox=popup, threading=worker,
+    namespace = dict(os=os, sys=sys, linux_update=linux_update, messagebox=popup, threading=worker,
                      tk=types.SimpleNamespace(TclError=RuntimeError), folder_has_dlss=lambda _: False)
     exec(compile(ast.Module(body=methods, type_ignores=[]), "production-builder-handlers", "exec"), namespace)
     app = types.SimpleNamespace(tools="v2.1.0", latest=None, source_picked=False, update_tag=None,

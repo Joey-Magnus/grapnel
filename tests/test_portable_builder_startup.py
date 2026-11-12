@@ -12,7 +12,7 @@ import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--dotnet", "{dotnet}"]
-RUN_ALL_SKIP = {"linux": "Windows Desktop WPF application startup"}
+RUN_ALL_SKIP = {"linux": "Windows Desktop WPF application startup", "macos": "Windows Desktop WPF application startup"}
 
 
 def main():

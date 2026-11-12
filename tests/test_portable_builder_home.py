@@ -7,7 +7,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--dotnet", "{dotnet}", "--cc", "gcc"]
-RUN_ALL_SKIP = {"linux": "Windows portable Builder home and Windows path semantics; native .NET fixture on Windows"}
+RUN_ALL_SKIP = {"linux": "Windows portable Builder home and Windows path semantics; native .NET fixture on Windows", "macos": "Windows portable Builder home and Windows path semantics; native .NET fixture on Windows"}
 
 
 def main():

@@ -10,7 +10,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
-RUN_ALL_SKIP = {"linux": "Windows setup uses Win32 file APIs"}
+RUN_ALL_SKIP = {"linux": "Windows setup uses Win32 file APIs", "macos": "Windows setup uses Win32 file APIs"}
 
 
 def main():

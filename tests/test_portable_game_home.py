@@ -10,7 +10,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN_ALL_SKIP = {"linux": "Windows portable Builder association"}
+RUN_ALL_SKIP = {"linux": "Windows portable Builder association", "macos": "Windows portable Builder association"}
 
 
 @unittest.skipUnless(os.name == "nt", "Windows association contract")

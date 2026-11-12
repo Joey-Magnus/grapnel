@@ -1253,8 +1253,8 @@ def main():
             wgpu_lib = os.path.join(WGPU, "lib", "libwgpu_native.dylib")
             if not os.path.isfile(wgpu_lib):
                 raise SystemExit("macOS requires %s" % wgpu_lib)
-            link = [cc] + target() + ["-o", exe, "-Wl,-map," + exe + ".map", "-Wl,-dead_strip",
-                                      "-Wl,-export_dynamic",
+            link = [cc] + target() + ["-o", exe] + linker("-map", exe + ".map") + [
+                                      "-Wl,-dead_strip", "-Wl,-export_dynamic",
                                       "-Wl,-rpath,@executable_path", "@" + rsp] + HOT_ORDER() + \
                    (["-fprofile-instr-generate"] if PGO == "gen" else []) + \
                    (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS + [wgpu_lib,

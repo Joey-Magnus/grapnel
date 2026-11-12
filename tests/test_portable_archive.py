@@ -7,7 +7,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--dotnet", "{dotnet}"]
-RUN_ALL_SKIP = {"linux": "Windows portable home path contract"}
+RUN_ALL_SKIP = {"linux": "Windows portable home path contract", "macos": "Windows portable home path contract"}
 
 
 def main():

@@ -6,7 +6,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--cc", "gcc"]
-RUN_ALL_SKIP = {"linux": "Windows native setup MAX_PATH contract"}
+RUN_ALL_SKIP = {"linux": "Windows native setup MAX_PATH contract", "macos": "Windows native setup MAX_PATH contract"}
 
 
 def main():

@@ -10,7 +10,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
-RUN_ALL_SKIP = {"linux": "Windows setup entry paths"}
+RUN_ALL_SKIP = {"linux": "Windows setup entry paths", "macos": "Windows setup entry paths"}
 
 
 def function(source, marker):

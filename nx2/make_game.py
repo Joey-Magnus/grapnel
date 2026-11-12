@@ -1041,7 +1041,7 @@ def stop_stray_compilers(work, default_work):
     An interrupted Builder update can leave a compiler holding a64_fpx.h (Errno 22)
     or its output executable (WinError 1224), including across packaged versions.
     Unknown orphan ownership is preserved. Never terminate an unexamined child tree."""
-    if os.name != "nt":
+    if LINUX or MACOS:
         return
     ps = ("Get-CimInstance Win32_Process | "
           "Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
