@@ -163,17 +163,20 @@ int main(int argc, char **argv) {
         assert(strcmp(tx_ultrawide(1), "21:9 (monitor's)") == 0 && output_for_aspect(1) == custom_index() + 1);
         if (!opts.handheld) assert(strcmp(tx_output_res(custom_index() + 1), "3440x1440 (native)") == 0);
         output_extras.clear();
-        // (a 5120x2160 21:9 primary, as tested on #2566: its 21:9 modes, a first start at 21:9 (monitor's) with the game's own
-        // size. The arrows walk the 21:9 modes, the game's own shows what it draws, and back at 21:9 is the size started with)
-        for (const Out m : {Out{2560, 1080}, Out{3408, 1440}, Out{3440, 1440}, Out{3936, 1656}, Out{4352, 1832}, Out{5120, 2160}})
-            output_extras.push_back(m);
+        // (a 5120x2160 21:9 primary, as tested on #2566: its 21:9 modes as Windows lists them (3012x1271 among them), rounded
+        // and with 21:9's common sizes as the list takes them (display_modes.h offered, with_common: 3008x1264 and 3840x1600
+        // come from those two steps). A first start at 21:9 (monitor's) with the game's own size. The arrows walk those sizes,
+        // the game's own shows what it draws, and back at 21:9 is the size started with)
+        for (const display_modes::Size m : display_modes::with_common(display_modes::offered(
+                 {{2560, 1080}, {3012, 1271}, {3408, 1440}, {3440, 1440}, {3936, 1656}, {4352, 1832}, {5120, 2160}})))
+            if (display_modes::ratio_name(m) == "21:9") output_extras.push_back({m.w, m.h});
         screen_w = host_w = 5120, screen_h = host_h = 2160;
         opts.output_res = 0;
         opts.ultrawide = aspect_of_choice(0, 1);
         assert(aspect_shape(opts.ultrawide) == "21:9" && strcmp(tx_ultrawide(opts.ultrawide), "21:9 (monitor's)") == 0);
         if (!opts.handheld) assert(strcmp(tx_output_res(0), "2728x1152 (game's)") == 0);
         {
-            const unsigned widths[] = {2560, 3408, 3440, 3936, 4352, 5120};
+            const unsigned widths[] = {2560, 3008, 3408, 3440, 3840, 3936, 4352, 5120};   // (#2566's retest on that screen)
             int at = 0;
             for (unsigned w : widths) {
                 at = step_output_choice(at, 1);
