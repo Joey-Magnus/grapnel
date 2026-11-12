@@ -441,7 +441,7 @@ static int env_line_allowed(const char *name, const char *value) {
        the file select) */
     static const char *const by_name[] = {
         "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
-        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_WATCH", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
+        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_CHAIN", "HOS_WATCH", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
         "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
         "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
         "RX_WGSL_OVERRIDE"};
@@ -641,6 +641,7 @@ static const unsigned char oot_item_kinds[] = {OOT_CHEAT_ITEMS(OOT_NO_SECTION, O
 static int oot_item_count(Ctx *c, const char *name);
 static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
 static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value);
+static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size);
 
 static void oot_inventory_refresh(Ctx *c, int64_t now) {
     void rx_option_set(int id, int value);
@@ -657,6 +658,17 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
     {   /* Link's age for the Debug tab's Switch age row: 0 child, 1 adult, -1 no save loaded (Sequence_IsChildhood) */
         int child = 1;
         rx_option_set(OOT_CHEAT_AGE_ID, loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? 0 : 1) : -1);
+    }
+    if (loaded) {   /* the map Link is in and his age, logged when either changes: where a log's problem happened, the "Where in
+                       the game" of the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp reads the last of these lines) */
+        static char logged[100];
+        char map[80], line[100];
+        int child = 1;
+        if (oot_gamedata_string(c, 0x1d6189dau, map, sizeof map) && map[0]) {   /* Sequence_CurrentBanc */
+            snprintf(line, sizeof line, "%s (%s)", map,
+                     oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? "child" : "adult") : "age not known");
+            if (strcmp(line, logged)) hos_log("map: %s", line), snprintf(logged, sizeof logged, "%s", line);
+        }
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {
         probed = 1;   /* (one line naming every count, both spellings: which names the pouch knows) */
@@ -986,14 +998,24 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         release_link(c);
     }
     *c = saved;
-    /* (issue 2217) An area that hides the minimap while Link is in it sets MapIconDeactivateByAreaActor, which is saved,
-       and shows the minimap again as he walks out. This map change takes him out without that: the flag stayed set, and
-       no area had a minimap from then on, in that save and every one made from it. Cleared once the event manager takes the
-       request (0: it did not, and Link stays); the map he arrives in sets it again where it hides its own. A save it is
-       already stuck in is mended by its next teleport. */
+    /* (issues 2217, 2588) A map-hiding area can leave this saved flag set when a debug teleport skips its exit.
+       Only clear it once the event manager takes the request; the destination may hide its own minimap.
+       Use the game's Bool setter (mgr, value, hash): it queues the change for the live value AND the save's copy.
+       Writing only the live byte restores the HUD until the next load, but saves keep the old hidden value. */
     int hidden = 0;
-    if (ok && result && oot_gamedata_bool(c, 0x9a4dd779u, &hidden) && hidden && oot_gamedata_set_bool(c, 0x9a4dd779u, 0))
-        hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): shown again");
+    if (ok && result && oot_gamedata_bool(c, 0x9a4dd779u, &hidden) && hidden) {
+        A64Fn set_bool = a64_lookup(0x806a2b20ULL);
+        const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
+        if (set_bool && mgr) {
+            c->x[0] = mgr, c->x[1] = 0, c->x[2] = 0x9a4dd779u;   /* MapIconDeactivateByAreaActor */
+            set_bool(c);
+            *c = saved;
+            hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): restore queued");
+        } else {   /* (another game build: say so, a report's log then shows why the minimap stayed away) */
+            hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): %s not found, left hidden",
+                    set_bool ? "the game data manager" : "the game's Bool setter");
+        }
+    }
     teleport.requested_at = now;
     teleport.check_at = now + 1500000000LL;
     teleport.destination = index;
@@ -1751,15 +1773,15 @@ static int game_main(int argc, char **argv) {
     }
     hos_mem_init(hos_image_end);
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
-           Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
+           Aspect ratio (on unless it says 0) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.
-           A custom output wider than 32:9 takes precedence over both HOS_ASPECT and Ultrawide, matching the menu's picture. Wider
+           A custom output wider than 32:9 takes precedence over both HOS_ASPECT and the Aspect ratio, matching the menu's picture. Wider
            than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
            constant in the game's data was changed and the 16:9 picture stretched to the window. */
         const char *e = getenv("HOS_ASPECT");
         float want = e ? (float)atof(e) : 0.0f;
         if (!e) {
-            int on = 0;
+            int saved = -1, version = 0;   /* (the Aspect ratio's ultrawide= and options_version=, -1 / 0 without them) */
             char path[MAX_PATH];
             const DWORD len = hos_game_path_a(path, MAX_PATH);
             char *slash = len ? strrchr(path, SEP) : NULL;
@@ -1769,12 +1791,15 @@ static int game_main(int argc, char **argv) {
                 if (o) {
                     char line[80];
                     while (fgets(line, sizeof line, o)) {
-                        if (!strncmp(line, "ultrawide=", 10)) on = atoi(line + 10) != 0;
+                        if (!strncmp(line, "ultrawide=", 10)) saved = atoi(line + 10) != 0;
+                        if (!strncmp(line, "options_version=", 16)) version = atoi(line + 16);
                     }
                     fclose(o);
                 }
             }
             const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+            /* (no line: the monitor's shape; an older file's 16:9 on a screen narrower than 16:9 too: hos_aspect_on) */
+            const int on = hos_aspect_on(saved, version, sw, sh);
             if (on && sh > 0) want = (float)sw / (float)sh;
         }
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
@@ -1819,6 +1844,8 @@ static int game_main(int argc, char **argv) {
     uint64_t sp = c->x[31];
     void hos_prof_start(void);
     hos_prof_start();   /* HOS_PROFILE=<seconds> */
+    void hos_chain_start(void);
+    hos_chain_start();  /* HOS_CHAIN=<path> */
 #ifdef _WIN32
     timeBeginPeriod(1);   /* 1 ms timer resolution: the 60 Hz vsync and the game's frame pacing sleep in short steps */
     no_power_throttling();

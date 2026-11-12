@@ -250,6 +250,12 @@ def main():
         reader = block(cache, marker)
         if "compile_worker_count(" in reader or "usable_cpus()" not in reader:
             raise SystemExit("cache readers must keep the logical usable-CPU budget")
+    jobs = (ROOT / "gpu/vk/vk_jobs.cpp").read_text(encoding="utf-8")
+    background = block(jobs, "void start() {").split("    for (unsigned i = 0;")[0]
+    background = background.replace("void start()", "unsigned background_budget()")
+    background = background.replace("std::thread::hardware_concurrency()", "fixture_hw")
+    background = background.replace('getenv("RX_VK_WORKERS")', "fixture_override")
+    background += "    return n;\n}\n"
     with tempfile.TemporaryDirectory(prefix="compile-threads-") as folder:
         folder = Path(folder)
         native = 'namespace mkwvk { void logf(const char*, ...) {} }\n#include "vk_compile_threads.h"\n#include <cstdio>\nint main() { std::printf("%u\\n", mkwvk::compile_worker_count(std::min(64u, std::max(1u, std::thread::hardware_concurrency())))); }\n'
@@ -265,6 +271,25 @@ int main() {
     const bool logical = std::getenv("RX_VK_COMPILE_LOGICAL") != nullptr;
     CHECK(warnings == (logical ? 0u : 1u));
     if (!logical) CHECK(warned_workers == 64);
+}
+""",
+            "background": COMMON + r"""
+unsigned fixture_hw = 16, fixture_cores = 8;
+const char* fixture_override = nullptr;
+unsigned compile_core_count_detect() { return fixture_cores; }
+""" + count + background + r"""
+int main(int argc, char**) {
+    const bool unknown = argc > 1;
+    if (unknown) fixture_cores = 0;
+    const bool logical = std::getenv("RX_VK_COMPILE_LOGICAL") != nullptr;
+    CHECK(background_budget() == 6);
+    fixture_hw = 12; CHECK(background_budget() == 4);
+    fixture_hw = 1; CHECK(background_budget() == 2);
+    fixture_override = "1"; CHECK(background_budget() == 1);
+    fixture_override = "3"; CHECK(background_budget() == 3);
+    fixture_override = "16"; CHECK(background_budget() == (unknown || logical ? 16u : 8u));
+    fixture_override = "99"; CHECK(background_budget() == (unknown || logical ? 16u : 8u));
+    fixture_override = "0"; CHECK(background_budget() == 1);
 }
 """,
             "native": native,
