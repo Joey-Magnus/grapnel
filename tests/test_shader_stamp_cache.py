@@ -180,8 +180,11 @@ class ShaderStampCacheTests(unittest.TestCase):
                 for name, job in before.items():
                     shader = [f for f in job["flags"] if f.startswith("-DHOOKSHOT_SHADER_STAMP=")]
                     version = [f for f in job["flags"] if f.startswith("-DHOOKSHOT_VERSION=")]
+                    recorded = [f for f in job["flags"] if f.startswith("-DHOOKSHOT_COMPILE_FLAGS=")]
                     self.assertEqual(len(shader), int(name == "gpu/vk/vk_shader.cpp"))
                     self.assertEqual(len(version), int(name == "gpu/vk/vk_menu.cpp"))
+                    # (the CPU-flag define is host/hos_main.c only: tests/test_compile_flags.py)
+                    self.assertEqual(recorded, [])
                     if not name.startswith(("host/posix/", "third_party/zstd/", "gen/")):   # (plain C libraries, the fonts' bytes)
                         self.assertIn("-DHOOKSHOT_RELEASE", job["flags"])
                 self.assertEqual(self.changed(before, self.jobs(linux, version="new", release=True)),
