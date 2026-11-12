@@ -3343,7 +3343,8 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const ImU32 green = ui::rgba(72, 255, 110), ink = ui::kInkBright, dim = ui::kSoft, soft = ui::kInk;
     const Tab num(c.f.strong, big), tab(c.f.strong, small), lab(c.f.strong, label);
     const float nw = num.width(fps_text), lw = ui::size_of(c.f.strong, small, "FPS").x;
-    const float sw = fps_sub[0] ? tab.width(fps_sub) : 0;
+    const char* sub_text = i18n::tr(fps_sub);   // ("game 60" in the menu's language)
+    const float sw = fps_sub[0] ? tab.width(sub_text) : 0;
     const float gw = 208 * s;   // (the column's width from the graph on)
     // (while the menu is open: the top right under the banner, the number and the frame time only, unless the window is so much
     // wider than 16:9 that the column fits beside the menu's, in its own corner)
@@ -3392,14 +3393,15 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
         c.d->AddText(c.f.strong, small, ImVec2(x + nw + 4 * s, top + 14 * s), num_col, "FPS");
     }
     float y = top + 32 * s;
-    if (fps_sub[0]) tab.draw(c.d, at(sw), y, soft, fps_sub, s), y += row;
+    if (fps_sub[0]) tab.draw(c.d, at(sw), y, soft, sub_text, s), y += row;
     if (level < fs::kFrameTime) return;
     if (fps_ms_text[0]) {   // ("16.7 ms" in the colour of its distance from the cap's frame time, "1% low 58" beside it)
         const ImU32 ms_col = grade_col[fps_ms_now > 0 ? fs::rate_grade(1000.0 / fps_ms_now, target) : 0];
-        const float mw = tab.width(fps_ms_text), gap = 10 * s, low_w = tab.width(fps_low_text);
+        const char* low_text = i18n::tr(fps_low_text);   // ("1% low 58" in the menu's language)
+        const float mw = tab.width(fps_ms_text), gap = 10 * s, low_w = tab.width(low_text);
         const float x = at(mw + gap + low_w);
         tab.draw(c.d, x, y, ms_col, fps_ms_text, s);
-        tab.draw(c.d, x + mw + gap, y, soft, fps_low_text, s);
+        tab.draw(c.d, x + mw + gap, y, soft, low_text, s);
         y += row;
     }
     if (level < fs::kGraph) return;
@@ -3512,7 +3514,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
             c.d->AddCircleFilled(ImVec2(x0 + 4 * s, by + lh * 0.5f), 2.6f * s, dot);
             nx += 12 * s;
         }
-        lab.draw(c.d, nx, by + 1 * s, soft, name, s);
+        lab.draw(c.d, nx, by + 1 * s, soft, i18n::tr(name), s);
         tab.draw(c.d, x1 - tab.width(value), by, value_col, value, s);
         by += lh;
     };
@@ -3546,10 +3548,9 @@ void draw_startup(ui::Ctx& c) {
     ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y + 78 * k), ui::kDim, v.version.c_str());
     if (!v.title.empty()) {
         y += 120 * k;
-        if (!v.step.empty()) {   // ("STEP 2 OF 2" as "Step 2 of 2")
-            std::string step = v.step;
-            for (size_t i = 1; i < step.size(); i++) step[i] = (char)tolower((unsigned char)step[i]);
-            ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, step.c_str());
+        if (!v.step.empty()) {   // ("STEP 2 OF 2" as "Step 2 of 2", in the menu's language)
+            const char* step = v.step == "STEP 1 OF 2" ? "Step 1 of 2" : v.step == "STEP 2 OF 2" ? "Step 2 of 2" : v.step.c_str();
+            ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, step);
         }
         ui::text_centre(c, c.f.heading, 24 * k, ImVec2(cx, y + 20 * k), ui::kInk, v.title.c_str());
         const float x0 = cx - 270 * k, x1 = cx + 270 * k, by = y + 64 * k;

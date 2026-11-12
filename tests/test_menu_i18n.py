@@ -38,8 +38,19 @@ def tables():
 class MenuI18nTests(unittest.TestCase):
     def setUp(self):
         self.tables, self.langs = tables()
-        menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
-        self.menu = set(c_strings(menu))
+        # (the menu's own texts, and those of the start-up screen and the FPS counter, which it draws: vk_progress.h, fps_stats.h)
+        self.menu = set()
+        for name in ("vk_menu.cpp", "vk_progress.h", "fps_stats.h"):
+            self.menu |= set(c_strings((VK / name).read_text(encoding="utf-8")))
+        self.menu |= {s.replace("%%", "%") for s in self.menu}   # (a printf "%%" is the table's "%")
+
+    def test_a_script_without_a_font_stays_english(self):
+        """A language whose letters no font on the PC draws (ja, ko, zh without a CJK font) is not drawn as boxes: script_fonts
+        tells vk_menu_i18n.cpp, and lang_now answers English for it"""
+        imgui = (VK / "vk_imgui.cpp").read_text(encoding="utf-8")
+        i18n = (VK / "vk_menu_i18n.cpp").read_text(encoding="utf-8")
+        self.assertIn("i18n::font_missing(lang)", imgui)
+        self.assertRegex(i18n, r"int lang_now\(\) \{\s*const int i = chosen_lang\(\);\s*return no_font\.load\(\) & \(1u << i\) \? 0 : i;")
 
     def test_languages(self):
         self.assertEqual(self.langs[0][:3], ("en", "English", "nullptr"))

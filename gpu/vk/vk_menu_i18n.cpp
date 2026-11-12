@@ -9,6 +9,7 @@
 #include "vk_menu_i18n.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -232,7 +233,7 @@ bool set_game_language(int index) {
     return ok;
 }
 
-int lang_now() {
+static int chosen_lang() {
     if (opts.menu_lang > 0) return std::clamp(opts.menu_lang - 1, 0, menu_i18n::kLangCount - 1);
     // (Auto: the language the game runs in (not the Game language row's next one), its code, else its first part (fr-CA: fr,
     // en-GB: en), else English)
@@ -246,6 +247,19 @@ int lang_now() {
         return 0;
     }();
     return started;
+}
+namespace {
+std::atomic<unsigned> no_font{0};   // (bit i: language i has no font for its letters on this PC)
+}
+void font_missing(const char* lang) {
+    for (int i = 1; i < menu_i18n::kLangCount; i++)
+        if (same_code(lang, menu_i18n::kLangs[i].code)) no_font.fetch_or(1u << i);
+}
+/// The language the menu is drawn in: the one chosen, or English where no font was found for its letters (boxes instead of
+/// letters are no menu; the log says which font was missing)
+int lang_now() {
+    const int i = chosen_lang();
+    return no_font.load() & (1u << i) ? 0 : i;
 }
 const char* lang_code() { return menu_i18n::kLangs[lang_now()].code; }
 int plural(int n) {

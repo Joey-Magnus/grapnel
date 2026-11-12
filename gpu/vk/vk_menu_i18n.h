@@ -12,6 +12,8 @@ namespace mkwvk::i18n {
 int lang_now();
 /// Its code ("pt-BR", "ja", "en")
 const char* lang_code();
+/// The font for a language's letters was not found (vk_imgui.cpp script_fonts): the menu falls back to English
+void font_missing(const char* lang);
 /// The plural form a count takes in it: 0 one, 1 more than one, 2 many (Russian and Polish only: 5 and up, 11 to 14, ...)
 int plural(int n);
 /// The Menu language row's choices: 0 Auto, then each of menu_i18n::kLangs by its own name

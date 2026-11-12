@@ -175,7 +175,8 @@ void script_fonts(const char* lang) {
             merged += std::string(merged.empty() ? "" : ", ") + path, merge(std::move(b), path.c_str());
             break;   // (one system font a script)
         }
-        logf("vk: ui: the menu in %s: %s", lang, merged.empty() ? "no font of its letters found (they may show as boxes)" : merged.c_str());
+        logf("vk: ui: the menu in %s: %s", lang, merged.empty() ? "no font of its letters found (the menu stays in English)" : merged.c_str());
+        if (merged.empty() && strcmp(key, "*")) i18n::font_missing(lang);   // (a script with no letters to draw: boxes are no menu)
     }
 }
 
