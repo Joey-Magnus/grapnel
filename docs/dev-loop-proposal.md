@@ -1,6 +1,7 @@
 # Proposal: a faster development loop
 
-Status: proposal, not started. Tracking issue: (to be filled in when it is opened).
+Status: proposal, reviewed 2026-11-11 (the decisions below are settled); not started. §2 is meant to move into F1's
+subsystem maps when they are written, and the proposal then keeps only the plan.
 
 **Why.** Today, a one-line change to the renderer or the host means relinking a 426 MB exe. Then comes a cold start
 and a walk back to the scene being worked on. Small slips cost much more: an `RX_VK_*` switch left in the shell, or one
@@ -15,24 +16,25 @@ line, so the references survive edits.
 
 ---
 
-## Decisions needed
+## Decisions
 
-The maintainers decide these before the matching work starts. Everything else follows from the plan.
+Settled in review (#2636, 2026-11-11):
 
-1. **What agents may read (F6).** Reading a file sends it to the model's provider. CONTRIBUTING.md says nothing made
-   from the game leaves the PC, and [`scripts/cpu_categories.py`](../scripts/cpu_categories.py) already applies that to
-   "a map of the game's code", which stays local. Pick one, and write it into AGENTS.md:
-   - **strict:** agents never read `work/`;
-   - **excerpts on request:** single functions, locally, never into anything posted;
-   - **local models only** for `work/`.
+1. **What agents may read (F6): strict.** Agents never read `work/` or anything made from the game's files: lifted C,
+   `functions.txt`, `image.bin`, a build's linker maps, dumps, captures with game data. That follows from
+   CONTRIBUTING.md, and it is how [`scripts/cpu_categories.py`](../scripts/cpu_categories.py) already treats "a map of
+   the game's code".
+   - **The same answer covers a hand-written table of game-function addresses with names and meanings.** It is a map of
+     the game's code, so it stays in a local file outside the repo, not in `docs/`. A local tool may read it with
+     `--local`, and F4 is narrowed to that.
+2. **The developer entry point is `nx2/dev.py`.** It imports make_game's profiles (`nx2/profiles.py`); `scripts/` is for standalone tools.
+3. **Scenario files go in `tests/scenarios/`.** They are marked as needing the game, so `run_all.py` skips them in CI like the other game-only checks.
+4. **Warnings and clang-tidy (E4) are advisory to start.** Once the baseline has settled, a PR of its own makes new findings in changed renderer files fail CI.
+5. **No dev-only host split (C2) for now.** A no-op build on Linux, both links included, takes 18 s in a maintainer's setup. Decide only if Phase 0's Windows link times show the exe link is the bottleneck.
+6. **The asynchronous update check (C3) goes ahead,** as its own player-facing PR with a worklist row, measured on a slow network.
 
-   A related question to settle with it: may a hand-written table of game-function addresses with names and meanings
-   live in the repo, given that rule?
-2. **Where the developer entry point lives:** `nx2/dev.py`, beside `make_game.py` (proposed), or `scripts/dev.py`.
-3. **Where scenario files live:** a new top-level `scenarios/`, or `tests/scenarios/`.
-4. **Warnings and clang-tidy in CI (E4):** advisory or failing, given a baseline of today's findings.
-5. **Whether a dev-only split of the host out of the exe (C2) is acceptable at all**, if Phase 0's measurements say it would help.
-6. **Whether to make the update check asynchronous for players (C3).** That is a player-facing change, decided separately from this proposal.
+Across all of it: anything shared or dev-only stays opt-in, and players' paths and the work-folder layout the Builders
+use don't change.
 
 ---
 
@@ -67,7 +69,7 @@ Four loops, each with a target:
 
 Six workstreams, each a series of small PRs ordered in [§11](#11-rollout):
 
-- **A: the build graph.** No unneeded relifts, links, rehashing or broad header rebuilds, and no full rebuild after a failed link.
+- **A: the build graph.** An opt-in object store shared by every checkout and worktree. No unneeded relifts, links, rehashing or broad header rebuilds, and no full rebuild after a failed link.
 - **B: renderer and shader reload.** A relaunch to a scripted scene, built on the control bridge, then shader overrides from disk. A live swap of the renderer DLL is designed but deferred.
 - **C: host and game code.** Debug info and a console in dev builds, a shorter boot, and an optional dev-only host split.
 - **D: testing.** Run only the checks a change affects, one shared source-cutting helper, a sanitizer lane, scenario files, and run summaries that can be compared.
@@ -103,6 +105,7 @@ phases as subprocesses: read and unpack, then the lift (`nx2/lift.py`, `nx2/spli
 **Compiling** ([`nx2/build.py`](../nx2/build.py)):
 
 - **Objects are keyed by content.** `object_key` is a sha1 of the source, the normalised flags and a blob of headers. Objects are hard-linked from `<work>/objcache/<key>.o` when present (a home-grown ccache).
+- **The cache belongs to one work folder** (`OBJ_CACHE`), although `flag_text` already makes the keys independent of the folder. A fresh worktree therefore starts from an empty cache.
 - **Scheduling.** Longest jobs first, under a memory gate ([compiler-memory-accounting.md](compiler-memory-accounting.md)).
 - **Flags:**
 
@@ -133,6 +136,7 @@ phases as subprocesses: read and unpack, then the lift (`nx2/lift.py`, `nx2/spli
 - **Since #2324 the key hashes the modules the lift imports** (`lift_sources`, checked by [`tests/test_lift_cache.py`](../tests/test_lift_cache.py)). Editing `build.py`, `make_game.py` or an `nx2/test_*.py` no longer relifts.
 - It still hashes every `.c/.h/.cpp/.hpp/.txt/.json` under `nx2/` and a64-kit, whether the lift reads it or not.
 - It still hashes **every `A64_*`, `OOT_*` and `RX_*` variable** in the environment, except `COMPILE_ONLY_ENV = ("RX_HOT_OPT", "RX_PGO")` (#2518). So `RX_RELEASE`, or an `RX_VK_*` switch left set in the shell, still relifts.
+- It also hashes **make_game's own environment, which carries paths**: `OOT_WORK`, `OOT_EXEFS`, `OOT_ROMFS`, `OOT_DUMP`. The exefs files' contents are hashed as well, so the paths add nothing but a difference: two checkouts of the same tree, or a moved work folder, never share a lift.
 - **Updates keep the lift** (#2324, `keep_translation` / `kept_before`, `build.py --kept-lift`). An update with an unchanged key skips it; #2324 measured an update going from 100 s to 9 s.
 - **The emit is single-process on Windows.** `emit_jobs` returns 1 where there is no `fork`. The per-file passes (`split_big`, the patches and edits) run as spawn workers since #2324 (`file_jobs`).
 
@@ -290,7 +294,7 @@ In rough order of how often it bites:
 | Failure | [A7](#a7-no-relift-after-a-failure-that-isnt-the-lifts-s-reaches-players)'s narrower handling | the same; `dev.py status` names the failing object |
 
 - **Dev and release share the lifted objects.** They are most of the compile time, and the cache is content-keyed, so switching profiles costs only the host and renderer objects.
-- **That needs the lift key to stop hashing `RX_RELEASE`.** [A2](#a2-a-lift-key-that-hashes-only-the-environment-the-lift-reads-m) does that.
+- **That needs the lift key to stop hashing `RX_RELEASE`.** [A2](#a2-a-lift-key-that-hashes-only-what-changes-the-lifted-c-m) does that.
 - **A profile is named in one place,** `nx2/profiles.py`, imported by `make_game.py`, `build.py` and `dev.py`.
 
 ### 4.2 One entry point: `nx2/dev.py`
@@ -363,13 +367,15 @@ Sizes: S under a day, M a few days, L a week or more.
 - **Safety:** the `@@times` line keeps its format; new fields are added beside it, and the Builders ignore unknown ones (checked).
 - **Test:** game-free: the timings file has the new fields; `Runner.cs`'s parser accepts a file with extra keys.
 
-### A2. A lift key that hashes only the environment the lift reads (M)
+### A2. A lift key that hashes only what changes the lifted C (M)
 
 - **Files: mostly done (#2324).** `lift_sources` hashes the imported modules, and `test_lift_cache.py` checks the import walk. What's left: the `nx2` and a64-kit `.c/.h/.json/.txt` files the lift never reads are still hashed. Narrow that list to the files the imported modules open, found the same way.
-- **Environment:** replace "every `A64_*`, `OOT_*` and `RX_*` variable but `COMPILE_ONLY_ENV`" with an allow-list of the variables the lift reads, e.g. `LIFT_ENV = ("A64_HOT_CHUNK", "A64_HOT_FUNCS", "OOT_EXEFS", ...)`.
-  - **The check:** a test greps `os.environ` / `getenv` across `lift_sources()` and fails on a name it reads that isn't in `LIFT_ENV`. It is the inverse of `test_lift_cache.py`'s existing check that lift sources don't read `COMPILE_ONLY_ENV`.
+- **Environment:** replace "every `A64_*`, `OOT_*` and `RX_*` variable but `COMPILE_ONLY_ENV`" with `LIFT_ENV`, an allow-list of the variables **whose values change the lifted C**, e.g. `A64_HOT_CHUNK` and `A64_HOT_FUNCS`.
+  - **Path-valued inputs are hashed by what they point to, never by the path.** The exefs files' contents already are, and the hot list and the chunk boundaries are. So `OOT_WORK`, `OOT_EXEFS`, `OOT_ROMFS` and `OOT_DUMP` leave the key, and two checkouts of one tree share a lift. In a maintainer's setup, a lift keyed without the paths gave byte-identical lifted C across folders.
+  - **The check:** a test greps `os.environ` / `getenv` across `lift_sources()` and fails on a name it reads that isn't in `LIFT_ENV` and isn't a path whose target is hashed. It is the inverse of `test_lift_cache.py`'s existing check that lift sources don't read `COMPILE_ONLY_ENV`.
 - **Open point:** does the lift read `RX_RELEASE`? make_game puts it in the lift's environment. If the lift doesn't read it, it leaves the key, and dev and release share a lift.
-- **Payoff:** `RX_VK_*` switches in the shell, or moving between profiles, stop relifting.
+- **Then, optional: a lift snapshot shared across work folders.** A finished lift is snapshotted under its path-free key (reflinks where the file system has them, hard links or copies otherwise). A new work folder with the same key takes the snapshot, and `make_game` skips the lift. Same opt-in rule as [A10](#a10-an-opt-in-object-store-shared-across-work-folders-m).
+- **Payoff:** `RX_VK_*` switches in the shell, moving between profiles, or a new checkout of the same tree stop relifting.
 
 ### A3. A parallel emit on Windows (M–L; reaches players; gated)
 
@@ -386,7 +392,7 @@ Sizes: S under a day, M a few days, L a week or more.
 
   Skip the link when the key matches and the output exists with its recorded size. The exe and the DLL have separate keys.
 - **Test:** game-free: a synthetic object set. No change: skipped. One object changed: relinked. A flag changed: relinked. Output deleted: relinked.
-- **Payoff:** removes the largest fixed cost of the middle and outer loops. The size of the saving waits on A1.
+- **Payoff:** a fixed cost off every build. **A data point:** in a maintainer's Linux setup, a whole build with nothing to compile took 18 s, both links included, so lld links the exe in seconds there. A4 is still worth doing (it's S). Windows' link time is the number to measure in Phase 0.
 
 ### A5. A stat cache in front of content hashing (S–M; gated)
 
@@ -398,7 +404,7 @@ Sizes: S under a day, M a few days, L a week or more.
 - **What:** host, renderer, opus and runtime objects compile with `-MD -MF <obj>.d`. Their key covers the headers in the last compile's depfile; with no depfile it uses today's blob, so the first build is as conservative as today. Lifted chunks keep their blob: every chunk includes the runtime headers.
 - **Why safe:** the depfile is clang's record of what it read. A newly added `#include` changes the source, so the key changes anyway.
 - **Test:** game-free: two sources, two headers. Edit one header and check only its includer recompiles.
-- **Payoff:** a `host/hos.h` edit rebuilds its includers, not the whole host; likewise one renderer header.
+- **Payoff:** a `host/hos.h` edit rebuilds its includers, not the whole host; likewise one renderer header. **Seen in practice:** one `gpu/vk` header edit plus one `.cpp` rebuilt 16 renderer objects in a maintainer's setup, because of the blob.
 
 ### A7. No relift after a failure that isn't the lift's (S; reaches players)
 
@@ -420,6 +426,27 @@ Sizes: S under a day, M a few days, L a week or more.
 - **What:** move the environment make_game builds for the lift and the compile into `nx2/profiles.py`, which `make_game.py` imports. Then `dev.py` with `status`, `build` and `times`.
 - **Test:** game-free: the `release` profile's environment equals what `make_game.py` built before the change, for fixed inputs.
 
+### A10. An opt-in object store shared across work folders (M)
+
+The biggest single lever for the worktree-per-PR workflow that people and agents use. It changes nothing for players.
+
+- **What:** one content-addressed object store shared by every checkout and worktree, behind a switch such as `HOOKSHOT_OBJ_STORE=<folder>`. Unset, `OBJ_CACHE` stays `<work>/objcache`, as today. The objects' names are already independent of the folder (`object_key` over `flag_text`), so every workspace produces the same names.
+- **No races:** each build gets a private object folder, hard-linked from the store before it starts. Its new objects are linked back into the store atomically as they finish, every few seconds. Two builds at once never write the same entry.
+- **Two catches, from a maintainer's setup:**
+  - **Seed the git-ignored inputs.** `hot_funcs.txt`, `hot_order.txt` and `image/chunks.txt` must reach a new checkout's work folder. `make_game.py` copies them from `ROOT/work`, which is empty in a fresh worktree, and without them the chunk boundaries differ, and so does every lifted object's name.
+  - **The PGO profile's path ends up in the hot pieces' keys,** so the profile has to sit at a content-addressed path to be shared.
+- **Measured** (a maintainer's setup, Linux, `main`, 22 jobs):
+
+  | Build | Time |
+  |---|---|
+  | A fresh worktree, cold store (renderer 81 s, lift 107 s, compile 515 s) | ~720 s |
+  | The same `main` in a second fresh worktree, warm store (0 of 258 files compiled, the lift reused, both links) | **18 s** |
+  | One `gpu/vk` header and one `.cpp` changed (16 renderer objects, because of the header blob) | 26 s |
+
+  The outputs were byte-identical either way.
+- **Who:** hckrman101 offered to upstream their wrapper as an opt-in on `build.py` / `make_game.py`, in a PR of its own.
+- **Test:** game-free: two work folders over one store build the same synthetic sources. The second compiles nothing, and its objects are links to the first's. A build killed mid-link-back leaves no partial entry.
+
 ---
 
 ## 6. Workstream B: renderer and shader reload
@@ -432,11 +459,19 @@ The bridge already does the hard part: launch, wait for `in_play` or a map, tele
 
 1. **A `relaunch` command** in the bridge (`host/control.c`) and in `hookshot_ctl.py`. It takes the Restart path the Insert menu uses, and the client reconnects to the new process.
 2. **A staged DLL swap, dev only** (`HOS_DEV_DLL_SWAP`). `dev.py` builds `hookshot_vk.dll.new`. At start-up, before `load_vulkan`, the host renames it over the old DLL. The existing `HOS_RESTART_OF` wait already orders that after the old process has exited. Release never looks for `.new`.
+   - **Check the symbols before the rename, not just `MKWVK_API_VERSION`.** On Linux the renderer `.so` also resolves symbols from the exe, and it is opened with `RTLD_NOW`. A `.so` and an exe built from different trees therefore fail at `dlopen`, before `mkwvk_init`'s version check runs, and to the user the game just never opens a window.
+     - `dev.py` checks that every undefined, non-runtime symbol of the `.new` file, as `nm -D --undefined-only` lists it, is one the running exe exports. This is the pairing check that `build.py`'s `check_vk_symbols` can't make at build time. If one is missing, it keeps the old DLL and names the symbol.
+     - Windows gets the equivalent over the DLL's imports from the exe, where there are any.
+   - **Name the missing symbol when loading fails.** The POSIX `LoadLibraryA` shim (`host/posix/win32_posix.c`) records `ERROR_FILE_NOT_FOUND` for any `dlopen` failure and drops `dlerror()`'s text. It should keep that text, and `load_vulkan`'s failure line should print it.
 3. **A dev environment file** (C3): the update check off, preparation off, audio off, optionally headless.
 4. **Measure it.** Phase 0 times save → scene on a Tier 1 PC with a warm cache. If it is fast enough, B3 stays shelved.
 
-**Tests:** `tests/test_control.py`'s fake game gets the `relaunch` command, and `test_hookshot_ctl.py` gets the client
-side. A check that the `.new` swap only happens under its switch. The full loop is run in the game locally and reported.
+**Tests:**
+
+- `tests/test_control.py`'s fake game gets the `relaunch` command, and `test_hookshot_ctl.py` gets the client side.
+- A check that the `.new` swap only happens under its switch.
+- The symbol check refuses a fixture `.so` that names a symbol the fixture exe doesn't export.
+- The full loop is run in the game locally and reported.
 
 ### B2. Built-in shaders from disk (S–M)
 
@@ -476,7 +511,8 @@ If it is started, the teardown export goes first, on its own; it also gives a cl
 
 ### C2. A dev-only split of the host (L, gated)
 
-**Only if A1 shows the exe link dominates host edits, even after A4.**
+**Not now (decision 5).** It is kept here only in case Phase 0's Windows link times show the exe link dominates host
+edits even after A4. On Linux, a no-op build with both links takes 18 s, which says it won't be needed there.
 
 - **Must stay in the exe**, because lifted code reaches it directly:
   - `A64_MEM`, `a64_dirty` and the a64 runtime;
@@ -494,7 +530,7 @@ If it is started, the teardown export goes first, on its own; it also gives a cl
 ### C3. A shorter boot (S)
 
 - **What:** a dev environment template, `docs/dev_env.txt.example`, passed by `dev.py run` through `HOS_ENV_FILE`. It turns off the update check and start-up preparation, keeps audio muted, and optionally runs headless.
-- **Separately, and for players (decision 6):** make the update check asynchronous. It is a blocking network call at start-up, with a timeout of about 2.5–3 s. It gets its own PR, measured on a slow network.
+- **Separately, and for players (decision 6: agreed):** make the update check asynchronous. It is a blocking network call at start-up, with a timeout of about 2.5–3 s. It gets its own PR and its own worklist row, measured on a slow network.
 
 ### C4. Lifted code (reference)
 
@@ -529,14 +565,18 @@ further. `nx2/test_leaf.py` and `test_insn.py` already check the translator with
 
 ### D4. Scenario files on the control bridge (M)
 
-- **What:** text files (location: decision 3), each naming:
+- **What:** text files in `tests/scenarios/` (decision 3), marked as needing the game so `run_all.py` skips them in CI. Each names:
   - an environment (merged over C3's template);
-  - a `hookshot_ctl` sequence: wait, load a slot from the scenario's own local user folder, teleport, wait for the map, presses;
+  - a `hookshot_ctl` sequence: wait, load a slot, teleport, wait for the map, presses;
   - a duration;
   - captures: screenshots at given frames, `RX_VK_FRAME_LOG`, `HOS_PRESENT_TRACE`, E3's counters;
   - optional log assertions.
 
   `dev.py run <scenario>` plays one, on Windows and Linux, replacing ad hoc `run-vk.ps1` runs.
+- **A fresh copy of a clean save for every run,** in the scenario's own local user folder, so no run starts from what the last one left.
+- **In-session A/B as a first-class option** (`ab: <switch> every <seconds>`). One game session flips a switch through a file every N seconds, and the results are reported per half. Both halves then see the same scenes and the same load.
+  - **Why not compare separate runs:** in a maintainer's measurements of a flicker-type metric, counts varied 5–20x between sessions of the same build. In-session A/B was the only comparison that held up.
+  - This needs the switch to be read live (from a file) rather than once at start-up. Each switch that takes part says so in E1's list.
 - **A starting set:** title to gameplay (boot time), Kokiri Forest by day, Hyrule Field by night, the Castle Town flower field (the regmap regression), and a walk through the menus.
 - **Data:** results stay in `work/runs/`. Screenshots may go in PRs, as today; dumps and probes stay local.
 
@@ -548,8 +588,22 @@ further. `nx2/test_leaf.py` and `test_insn.py` already check the translator with
   - the counters;
   - the assertion results.
 
-  `dev.py run --compare <run>` prints the differences, and a `tested-configurations.md` row comes from a summary. `scripts/cpu_report.py` and `chain.py` stay the tools for CPU questions; the summary links to their output where a run made it.
-- **Test:** game-free: a synthetic frame-log fixture gives a known summary.
+  A `tested-configurations.md` row comes from a summary. `scripts/cpu_report.py` and `chain.py` stay the tools for CPU questions; the summary links to their output where a run made it.
+- **Comparisons:**
+  - **The halves of an in-session A/B (D4) are the comparison to trust.**
+  - **`dev.py run --compare <run>` across sessions also reports each metric's spread,** so a difference inside the noise is shown as such.
+- **A sanity metric beside every target metric.** The default is mean luma: in a maintainer's runs, it caught a "fix" whose 0 flashes came from a blown-out exposure. A summary shows the target metric, its spread, and the sanity metric together.
+- **Test:** game-free: a synthetic frame-log fixture gives a known summary, and an A/B fixture gives known per-half results.
+
+### D6. Timing runs never share the machine with a build (S)
+
+- **What:** fps and frame-time numbers taken beside a compile are worthless, and `dev.py run --watch` rebuilds on save, so this would happen by default. `dev.py` takes a lock in `work/`:
+  - builds and plain runs share it;
+  - a timing run, meaning any scenario with captures or A/B, takes it exclusively;
+  - a build started during a timing run waits, and a timing run waits for builds.
+
+  The summary records whether the run held the lock exclusively.
+- **Test:** game-free: two `dev.py` processes against fixture commands. The timing one waits for the build, and a build waits for the timing one.
 
 ---
 
@@ -593,7 +647,7 @@ further. `nx2/test_leaf.py` and `test_insn.py` already check the translator with
 - **Warnings:** in the dev profile, host and renderer objects (not lifted code, `third_party`, eden or sirit) build with `-Wall -Wextra -Wno-unused-parameter -Wshadow -Wimplicit-fallthrough -Wformat=2`. No `-Werror`; `dev.py build` shows only the warnings in files changed against `main`.
 - **clang-tidy:** a short `.clang-tidy` of checks that find bugs, not style: `bugprone-*` minus the noisy ones, `clang-analyzer-core.*` and `unix.*`, `performance-unnecessary-copy-initialization`.
   - It runs from A8's `compile_commands.json` on changed files, locally and in CI. CI covers the renderer only, since the host's flags need a lift.
-  - A baseline file keeps CI quiet about today's findings (decision 4).
+  - **Advisory to start (decision 4).** Everything builds with `-Wno-everything` today, so the first baseline will be large. Once it has settled, a PR of its own makes new findings in changed renderer files fail CI.
 - **Python:** no new linter; CONTRIBUTING.md says to match the file you are editing.
 
 ---
@@ -656,21 +710,17 @@ Three principles:
   - A comment leaves the SPIR-V words unchanged, and these headers aren't in the shader stamp, so players' caches are unaffected.
 - **The check:** files matching a glob in the list have the banner, and files with a banner are in the list. The existing `--check` modes prove the words are current.
 
-### F4. Game functions: from the doc to the code (S, if a function map lands)
+### F4. Game functions: local lookups only (S)
 
-If a table of the game's functions (address, name, meaning, how sure) lands in `docs/`, subject to decision 1, F4 adds
-only a lookup. It never renames anything in the code, the lifted C or the build:
+Decision 1 settles this: a table of game-function addresses with names and meanings is a map of the game's code, so it
+stays in a local file outside the repo. Nothing in `docs/` lists game functions, and nothing in the repo renames them.
+What F4 keeps is tooling that reads a person's own local map when one exists:
 
-- **`dev.py fn <address|name>`** finds the function's row, the `patch_…` in `nx2/oot_*.py` that hooks it, and the host code that names or calls it (`f_…`, `guest_call`, `a64_lookup` sites).
-  - With `--local`, on the PC only, it also gives where the function is lifted in `work/`, as a pointer for a person to open.
-- **`scripts/oot_annotate.py`**, an optional filter, entirely separate from the profilers. It reads text, appends the row's name to each `f_<address>`, and passes everything else through:
-
-  ```
-  python -I scripts/hotlist.py samples.txt | python -I scripts/oot_annotate.py
-  ```
-
-  `prof.py`, `crit.py`, `hotlist.py` and `cpu_report.py` stay exactly as they are. A doc edit shows on the next run of the filter and triggers nothing else.
-- **Why no renaming:** comments in lifted C would change the text `object_key` hashes, so a doc edit would recompile the chunks it names. Link-time aliases would make a doc edit relink. The tools keep printing `f_<address>`, which is what one searches the map for.
+- **`dev.py fn --local <address|name>`** reads the local map (its path from `HOOKSHOT_GAME_MAP`, which is never inside the repo), and lists the repo code that names the address. That covers the `patch_…` in `nx2/oot_*.py` that hooks it, and the host code that calls it (`guest_call` / `a64_lookup` sites).
+  - It prints only to the local terminal, and says so on its first line.
+  - Agents don't run it (decision 1).
+- **`scripts/oot_annotate.py --map <local file>`**, an optional filter, entirely separate from the profilers. It appends the local map's name to each `f_<address>` in its input and passes everything else through, so its output is as local as its input. `prof.py`, `crit.py`, `hotlist.py` and `cpu_report.py` stay as they are, in the way `cpu_report.py --guest-map` already takes game code from a local file.
+- **No renaming:** comments in lifted C would change the text `object_key` hashes, and link-time aliases would make a doc edit relink. The tools keep printing `f_<address>`.
 
 ### F5. A repo map for agents: `dev.py where` (M)
 
@@ -700,14 +750,14 @@ only a lookup. It never renames anything in the code, the lifted C or the build:
 
 ### F6. The data boundary for agents, written down (S, first)
 
-- **What:** an AGENTS.md section turning decision 1 into a rule:
+- **What:** decision 1 as an AGENTS.md section:
 
   | Layer | Examples | An agent may |
   |---|---|---|
   | Shareable | the repo's source and docs, `hookshot_log.txt` (CONTRIBUTING: no game data), screenshots | read, quote, post |
-  | Local | `work/`: lifted C, `functions.txt`, `image.bin`, a build's linker maps, `game_data: yes` captures, dumps, program caches, saves | per decision 1 |
+  | Local | `work/` and anything made from the game's files: lifted C, `functions.txt`, `image.bin`, a build's linker maps, dumps, `game_data: yes` captures, program caches, saves, and maps of the game's code such as a table of function addresses | **never read** |
 
-- **Tools follow it mechanically:** local-layer output only behind `--local`, labelled on its first line.
+- **Tools follow it mechanically:** local-layer output only behind `--local`, labelled on its first line; nothing writes from `work/` or a local map into the repo.
 
 ### F7. Checks across `docs/` (S)
 
@@ -729,22 +779,24 @@ Each PR is claimed in #dev-work before work starts, as [workflow.md](workflow.md
 | PR | Content | Done when |
 |---|---|---|
 | 0.1 | **A1** per-phase timing | each phase and both links in `build_times.json`; three runs recorded on Windows and Linux: a clean build, a no-op rebuild, a one-file renderer edit |
-| 0.2 | the numbers, added to this file | link times, hashing, the Windows emit, and save → scene through the bridge |
+| 0.2 | the numbers, added to this file | link times, above all **Windows' exe link** (decision 5), hashing, the Windows emit, and save → scene through the bridge |
 
-**Gate:** if a no-op rebuild is mostly the exe link, A4 goes first and C2 gets designed. Otherwise C2 is dropped.
+**Gate:** if Windows' no-op rebuild is mostly the exe link even after A4, C2 is reconsidered. Otherwise it stays dropped (Linux: 18 s for a whole no-op build).
 
 ### Phase 1: quick wins (2–3 weeks)
 
 | PR | Content | Depends on |
 |---|---|---|
-| 1.1 | **F6** the data boundary in AGENTS.md (after decision 1) | — |
-| 1.2 | **A4** skip unchanged links | 0.1 |
-| 1.3 | **A9** `profiles.py` + `dev.py status/build/times` | — |
-| 1.4 | **A7** keep the lift after source compile errors; classify link failures | — |
-| 1.5 | **A8** `compile_commands.json` | 1.3 |
-| 1.6 | **D1** `run_all.py --changed` | — |
-| 1.7 | **B1** bridge `relaunch`, the staged DLL swap (dev), **C3**'s template, `dev.py run --watch` | 1.2, 1.3 |
-| 1.8 | **F1** `docs/README.md` index + its check | — |
+| 1.1 | **F6** the data boundary in AGENTS.md (decision 1: strict) | — |
+| 1.2 | **A10** the opt-in shared object store (offered by hckrman101) | — |
+| 1.3 | **A4** skip unchanged links | 0.1 |
+| 1.4 | **A9** `profiles.py` + `dev.py status/build/times` | — |
+| 1.5 | **D6** the lock between builds and timing runs | 1.4 |
+| 1.6 | **A7** keep the lift after source compile errors; classify link failures | — |
+| 1.7 | **A8** `compile_commands.json` | 1.4 |
+| 1.8 | **D1** `run_all.py --changed` | — |
+| 1.9 | **B1** bridge `relaunch`, the staged DLL swap with its symbol check (dev), `dlerror()` in the loader's failure line, **C3**'s template, `dev.py run --watch` | 1.3, 1.4, 1.5 |
+| 1.10 | **F1** `docs/README.md` index + its check | — |
 
 **Exit:**
 
@@ -757,10 +809,10 @@ Each PR is claimed in #dev-work before work starts, as [workflow.md](workflow.md
 
 | PR | Content | Depends on |
 |---|---|---|
-| 2.1 | **A2** the `LIFT_ENV` allow-list + its check; narrower data-file hashing | 1.3 |
+| 2.1 | **A2** the `LIFT_ENV` allow-list without path variables + its check; narrower data-file hashing; then, optionally, the shared lift snapshot | 1.4 |
 | 2.2 | **A6** depfiles | — |
 | 2.3 | **A5** stat cache (if 0.2 says so) | 0.2 |
-| 2.4 | **B2** `RX_VK_SHADER_DIR` + `dev.py shaders --watch` | 1.7 |
+| 2.4 | **B2** `RX_VK_SHADER_DIR` + `dev.py shaders --watch` | 1.9 |
 | 2.5 | **D2** `tests/srccut.py` + the `vk_menu.cpp` readers | — |
 | 2.6 | **D3** sanitizer lane | — |
 | 2.7 | **E1** the switch list, its check, generated tables | — |
@@ -778,8 +830,8 @@ Each PR is claimed in #dev-work before work starts, as [workflow.md](workflow.md
 
 | PR | Content |
 |---|---|
-| 3.1 | **D4** scenario files + the starting set |
-| 3.2 | **D5** run summaries, `--compare`, tested-configurations rows |
+| 3.1 | **D4** scenario files in `tests/scenarios/` + the starting set; in-session A/B (offered by hckrman101) |
+| 3.2 | **D5** run summaries with spread and a sanity metric, `--compare`, tested-configurations rows |
 | 3.3 | **E2** capture headers |
 | 3.4 | **E3** memory counters + `scripts/counters.py` |
 | 3.5 | **E4** dev warnings; `.clang-tidy` + baseline; CI on the renderer |
@@ -788,15 +840,15 @@ Each PR is claimed in #dev-work before work starts, as [workflow.md](workflow.md
 | 3.8 | **D2** remaining migrations |
 | 3.9 | **F5** `dev.py index` / `where` |
 | 3.10 | **F2** `doc:` anchors + check |
-| 3.11 | **F4** `dev.py fn` and `oot_annotate.py`, if a function map has landed |
+| 3.11 | **F4** `dev.py fn --local` and `oot_annotate.py --map`, over a person's local map |
 
 ### Phase 4: only with a measured reason
 
 | PR | Content | Gate |
 |---|---|---|
 | 4.1 | **A3** parallel emit on Windows | 0.2: the emit is minutes |
-| 4.2 | **C2** dev-only host split | 0.2: the exe link dominates host edits after A4 |
-| 4.3 | **C3** asynchronous update check (players) | decision 6; measured on a slow network |
+| 4.2 | **C2** dev-only host split: not now (decision 5) | only if 0.2's Windows numbers show the exe link dominates host edits after A4 |
+| 4.3 | **C3** asynchronous update check (players) | agreed (decision 6); its own worklist row; measured on a slow network |
 | 4.4 | **B3** teardown export, then the live swap | B1 used for weeks, with a written reason it isn't enough; one API bump, batched |
 
 ---
@@ -843,11 +895,15 @@ Windows and Linux against the previous version. For A3, lifted C byte-for-byte f
 | Maps go stale and mislead agents | F1–F7 | No map without a check; generated sections are never hand-edited; `where`'s index is rebuilt, not committed |
 | Local content reaches a provider or the repo | F4–F6 | F6 first; local output only behind `--local`; nothing writes from `work/` into `docs/` |
 | Interface changes invalidate players' caches | B1, B3, C2 | Batch into one `MKWVK_API_VERSION` bump; C2 has its own table and leaves `vk_api.h` alone |
+| A renderer from another tree is swapped in and never loads | B1 | The symbol check before the rename keeps the old DLL; the loader's failure line names the missing symbol |
+| Two builds race on the shared store | A10 | Each build writes a private folder and links entries back atomically; a killed build leaves no partial entry |
+| A new checkout's objects never match the store | A10 | Seed `hot_funcs.txt`, `hot_order.txt` and `chunks.txt`; keep the PGO profile at a content-addressed path |
+| Timing numbers taken beside a build | D4, D5 | D6's lock; the summary records whether the run held it exclusively |
 
 ### Open questions
 
 1. Does the lift read `RX_RELEASE`, or any `RX_*` beyond `COMPILE_ONLY_ENV`? (A2's check answers it.)
-2. What share of a no-op rebuild is the exe link, the DLL link and the hashing? (Phase 0)
+2. What share of a no-op rebuild on **Windows** is the exe link, the DLL link and the hashing? On Linux the whole no-op build is 18 s. (Phase 0; decides whether C2 is ever reconsidered)
 3. How long is the Windows emit on the same PC as a Linux one? (Phase 0; decides A3)
 4. How long is save → scene through the bridge with the dev template and a warm cache? (Phase 0; decides whether B3 is ever needed)
 5. Why did issue 1197's stale runtime object keep its key? (A7, A6)
