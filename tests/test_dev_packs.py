@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -357,8 +358,9 @@ def test_predict_budget(d):
         packs.run = real_run
     check("make_game.py gets the budget (%s)" % seen, seen and seen[0].get("RX_VK_PREDICT_S") == "60"
           and seen[0].get("HOOKSHOT_KEEP_BUILD_FILES") == "1")
-    # (base itself, its git and its build stood in for: the budget it hands make_game.py, and the budget base.json keeps)
-    got = {}
+    # (base itself, its git, its build and the game's prepare stood in for: make_game.py builds without preparing and never sees
+    # the budget, which would change its lift key; the prepare after it gets it; base.json keeps it)
+    got, prepared = {}, []
 
     def fake_make_game(tree, b, work, game, env):
         got.update(env)
@@ -366,13 +368,18 @@ def test_predict_budget(d):
             write(Path(game) / m[0], b"built")
             if m[1]:
                 write(Path(work) / "sa" / "build" / m[1], b"map")
-    saved = packs.make_game, packs.changed_files, packs.git
+    saved = packs.make_game, packs.changed_files, packs.git, packs.subprocess.run
     packs.make_game, packs.changed_files, packs.git = fake_make_game, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
+    packs.subprocess.run = lambda argv, **kw: prepared.append(kw.get("env")) or packs.subprocess.CompletedProcess(argv, 0)
     try:
         packs.main(["base", str(d / "b60"), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT), "--predict-s", "60"])
     finally:
-        packs.make_game, packs.changed_files, packs.git = saved
-    check("base hands make_game.py the budget (%s)" % got, got.get("RX_VK_PREDICT_S") == "60")
+        packs.make_game, packs.changed_files, packs.git, packs.subprocess.run = saved
+    check("make_game.py builds without preparing and never sees the budget (%s)" % got,
+          got.get("HOOKSHOT_NO_PREPARE") == "1" and "RX_VK_PREDICT_S" not in got)
+    if not packs.CROSS:
+        check("the prepare after it gets the budget (%s)" % [e and e.get("RX_VK_PREDICT_S") for e in prepared],
+              len(prepared) == 1 and prepared[0].get("RX_VK_PREDICT_S") == "60")
     check("base.json keeps it", json.loads((d / "b60" / "base.json").read_text()).get("predict_s") == 60)
     base_dir, game = fake_base(d, predict_s=45)
     p = base_dir / "packs" / "tr"
@@ -425,6 +432,22 @@ def test_warm(d):
                                             "prepare": False}))
     (base_dir / "warm-runtime" / "dev_packs.json").write_text(json.dumps({"base": "c" * 40, "packs": ["x"]}))
     refused("warming a runtime with a pack in it", ["warm", str(base_dir), "--run", cmd], "not this base's runtime with no pack")
+    shutil.rmtree(base_dir / "warm-runtime")
+    # (a cache in the runtime that is a link to a file outside it is never followed: its bytes stay out of the base)
+    outside = d / "outside.bin"
+    outside.write_bytes(b"not a cache of this runtime")
+    packs.main(["rt", str(base_dir), str(base_dir / "warm-runtime")])
+    lnk = base_dir / "warm-runtime" / "mkw_vk_pipelines_play_7.bin"
+    try:
+        os.symlink(outside, lnk)
+    except OSError:
+        lnk = None
+    if lnk is None:
+        print("  skipped: a file link in the warm-up's runtime (this account cannot make one)")
+        shutil.rmtree(base_dir / "warm-runtime")
+    else:
+        packs.main(["warm", str(base_dir), "--run", '"%s" -c "pass"' % sys.executable.replace("\\", "/")])
+        check("a linked cache file is not copied back", not (game / "mkw_vk_pipelines_play_7.bin").exists())
 
 
 def test_busy(d):

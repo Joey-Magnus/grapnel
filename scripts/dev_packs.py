@@ -43,6 +43,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 import subprocess
 import sys
 import time
@@ -267,10 +268,22 @@ def run(cmd, cwd, env=None):
 
 
 def base_env(predict_s):
-    """make_game.py's environment for a base. predict_s > 0: the preparation stops building the predicted pipelines (the whole
+    """The preparation's environment for a development base. predict_s > 0: it stops building the predicted pipelines (the whole
     game's, about 51,000) after that many seconds and leaves the rest to be built in play when first drawn (gpu/vk/vk_draw.cpp,
-    RX_VK_PREDICT_S). For development only: a player's build prepares them all. 0 (the default) changes nothing"""
+    RX_VK_PREDICT_S). For development only: a player's build prepares them all. 0 (the default) changes nothing. Given to the
+    game's prepare only, never to make_game.py: its lift key hashes every RX_ variable"""
     return {"RX_VK_PREDICT_S": str(predict_s)} if predict_s > 0 else {}
+
+
+def prepare(game, b):
+    """The game's own preparation in a game folder, as make_game.py runs it (the game's environment, without the build's
+    switches), with the base's budget; nothing on a Windows game built on Linux, which prepares at its first start"""
+    if CROSS:
+        print("the shaders were not prepared now (a Windows game built on Linux): the game prepares them at its first start", flush=True)
+        return
+    print("+ %s --prepare-shaders%s" % (GAME, " (RX_VK_PREDICT_S=%d)" % b["predict_s"] if b.get("predict_s") else ""), flush=True)
+    subprocess.run([os.path.join(game, GAME), "--prepare-shaders"], cwd=game, check=True,
+                   env=dict(load_make_game().game_env(), **base_env(b.get("predict_s", 0))))
 
 
 def make_game(tree, b, work, game, env):
@@ -369,7 +382,10 @@ def cmd_base(a):
     b = {"commit": git(tree, "rev-parse", "HEAD"), "work": work, "game": game, "romfs": os.path.abspath(a.romfs),
          "exefs": os.path.abspath(a.exefs), "seeded_from": a.seed, "language": a.language, "predict_s": a.predict_s}
     t = time.time()
-    make_game(tree, b, work, game, base_env(a.predict_s))
+    # (a budget: make_game.py builds without preparing, then the preparation runs here with it, so it never reaches the lift key)
+    make_game(tree, b, work, game, {"HOOKSHOT_NO_PREPARE": "1"} if a.predict_s > 0 else {})
+    if a.predict_s > 0:
+        prepare(game, b)
     b["build_s"] = round(time.time() - t)
     b["outputs"] = build_outputs(game)
     for m in MODULES:   # (the maps beside the modules, for profilers)
@@ -487,7 +503,7 @@ def cmd_rt(a):
     for f in [b["game"], b["work"], os.path.join(d, "packs")] + list(pack_folders(d).values()):
         if overlaps(rt, f):
             sys.exit("%s overlaps %s: a runtime goes in a folder of its own" % (rt, f))
-    over, prepare = {}, False   # (a file in the runtime -> the pack and the path it comes from, or None: the pack removes it)
+    over, needs_prepare = {}, False   # (a file in the runtime -> the pack and the path it comes from, or None: the pack removes it)
     for p in a.packs:
         pdir = os.path.join(d, "packs", p)
         with open(os.path.join(pdir, "pack.json"), encoding="utf-8") as f:
@@ -508,7 +524,7 @@ def cmd_rt(a):
             if rel in over:
                 sys.exit("packs %s and %s both bring %s: merge their branches and build one pack" % (over[rel][0], p, rel))
             over[rel] = (p, src)
-        prepare |= meta["prepare"]
+        needs_prepare |= meta["prepare"]
     os.makedirs(rt)
     for top, _, fs in os.walk(os.path.join(b["game"], "romfs")):
         dst = os.path.join(rt, os.path.relpath(top, b["game"]))
@@ -531,12 +547,8 @@ def cmd_rt(a):
         if src:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
-    if prepare and CROSS:
-        print("the shaders were not prepared now (a Windows game built on Linux): the game prepares them at its first start", flush=True)
-    elif prepare:   # (as make_game.py prepares: the game's own environment, without the build's switches)
-        print("+ %s --prepare-shaders" % GAME, flush=True)
-        subprocess.run([os.path.join(rt, GAME), "--prepare-shaders"], cwd=rt, check=True,
-                       env=dict(load_make_game().game_env(), **base_env(b.get("predict_s", 0))))
+    if needs_prepare:
+        prepare(rt, b)
     with open(os.path.join(rt, "dev_packs.json"), "w", encoding="utf-8") as f:
         json.dump({"base": b["commit"], "packs": a.packs, "modules": {m[0]: sha(os.path.join(rt, m[0])) for m in MODULES}}, f, indent=1)
     print("%s: the base %s%s" % (rt, b["commit"][:8], "".join(", %s from %s" % (m, over[m][0]) for m in (GAME, RENDERER) if m in over)))
@@ -572,10 +584,18 @@ def cmd_warm(a):
     copied = []
     for name in sorted(os.listdir(rt)):
         src, dst = os.path.join(rt, name), os.path.join(b["game"], name)
-        if os.path.isfile(src) and is_cache(name) and not (os.path.isfile(dst) and same_file(src, dst)):
-            shutil.copy2(src, dst + ".tmp")
-            os.replace(dst + ".tmp", dst)
-            copied.append(name)
+        # (a cache the game wrote: a plain file in the runtime, never a link, whose bytes go into a new temporary file of the
+        # base's own and then over the old one, so neither a link in the runtime nor one left in the base is followed)
+        if os.path.islink(src) or not os.path.isfile(src) or not is_cache(name) or os.path.islink(dst):
+            continue
+        if os.path.isfile(dst) and same_file(src, dst):
+            continue
+        fd, tmp = tempfile.mkstemp(prefix=name + ".", suffix=".tmp", dir=b["game"])
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as f:
+            shutil.copyfileobj(f, out, 1 << 22)
+        shutil.copystat(src, tmp)
+        os.replace(tmp, dst)
+        copied.append(name)
     b["warmed"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "runs": a.run, "files": copied}
     write_base(d, b)
     shutil.rmtree(rt)
