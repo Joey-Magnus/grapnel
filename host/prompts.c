@@ -1043,15 +1043,123 @@ static void mark_box(uint64_t box, uint32_t bits) {
     if (word) *word |= bits & word[1];
 }
 
+/* ---- the texts on screen when the prompts change. A box the game lays out and draws once while it stays on screen (the hint
+   bars at the bottom: the ocarina's, the pause menu's, the songbook's, one box per icon) sees no layout or draw of its own
+   after a change, so the hooks never rewrite it and it keeps the old icons until it is shown again. So the boxes with button
+   codes the layout has seen are kept (shown), and a change marks them to be laid out again (shown_mark): their layout rewrites
+   their codes on the game's thread, as any box's. A box whose picture another thread makes (UpdateTextBoxTextureThread: +380
+   bit 2) is not asked for a new one by that layout, so it would show nothing for the new codes (their glyphs never drawn):
+   its next draw makes its picture there and then (shown_picture), as the draw does for the boxes whose picture it makes
+   itself. A box is only marked while it is still the one seen (its first word, its text and its length), one freed since let
+   go. The hint bar's spacing (the layouts' part) is the bar's as it was made: it follows when the bar is shown again */
+#define SHOWN_BOXES 256
+#define TEXT_PICTURE 0x80e6e0e0ull   /* (the box's picture: (box, the draw's two words at +24), f_8152b670 calls it so) */
+uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);   /* hos_hostcall.c */
+/* (state: 0 nothing to do, 1 marked by a change, 2 laid out again since, its picture to be made at its next draw) */
+static struct { uint64_t box, vt, text; uint32_t len; int state; } shown[SHOWN_BOXES];
+static SRWLOCK shown_lock = SRWLOCK_INIT;
+static volatile LONG shown_pending;   /* (boxes in state 1 or 2: with none, the hooks look no further) */
+
+static int box_text(uint64_t box, uint64_t *vt, uint64_t *text, uint32_t *len) {
+    const uint64_t *v = (const uint64_t *)hos_guest_range(box, 8);
+    const uint64_t *t = (const uint64_t *)hos_guest_range(box + 0xf0, 8);
+    const uint32_t *n = (const uint32_t *)hos_guest_range(box + 0x124, 4);
+    if (!v || !t || !n || !*t || *n < 3 || *n > 65536) return 0;
+    *vt = *v, *text = *t, *len = *n;
+    return 1;
+}
+
+static void shown_drop(int i) {   /* (shown_lock held) */
+    if (shown[i].state) InterlockedDecrement(&shown_pending);
+    shown[i].state = 0;
+}
+
+static void shown_keep(uint64_t box) {
+    uint64_t vt, text;
+    uint32_t len;
+    if (!box_text(box, &vt, &text, &len)) return;
+    const uint8_t *s = (const uint8_t *)hos_guest_range(text, len);
+    int bind[BINDS] = {0}, codes = 0;
+    for (uint32_t i = 0; s && i + 2 < len && !codes; i++) {
+        if ((s[i] != 0xEE && s[i] != 0xEF) || (s[i + 1] & 0xC0) != 0x80 || (s[i + 2] & 0xC0) != 0x80) continue;
+        codes = text_code((unsigned)(s[i] & 0x0F) << 12 | (unsigned)(s[i + 1] & 0x3F) << 6 | (s[i + 2] & 0x3F),
+                          HOS_PROMPT_SWITCH, bind) >= 0;
+        i += 2;
+    }
+    if (!codes) return;
+    AcquireSRWLockExclusive(&shown_lock);
+    int at = -1, free_at = -1;
+    for (int i = 0; i < SHOWN_BOXES && at < 0; i++)
+        if (shown[i].box == box) at = i;
+        else if (!shown[i].box && free_at < 0) free_at = i;
+    if (at < 0) {
+        static int next;   /* (full: the oldest place again) */
+        at = free_at >= 0 ? free_at : next++ % SHOWN_BOXES;
+        shown_drop(at);
+    }
+    shown[at].box = box, shown[at].vt = vt, shown[at].text = text, shown[at].len = len;
+    if (shown[at].state == 1) shown[at].state = 2;   /* (laid out again: the codes rewritten above) */
+    ReleaseSRWLockExclusive(&shown_lock);
+}
+
+/* after a change of the font: each box kept that is still the one seen, to be laid out again; how many */
+static int shown_mark(void) {
+    int n = 0;
+    AcquireSRWLockExclusive(&shown_lock);
+    for (int i = 0; i < SHOWN_BOXES; i++) {
+        uint64_t vt, text;
+        uint32_t len;
+        if (!shown[i].box) continue;
+        const uint64_t *status = (const uint64_t *)hos_guest_range(shown[i].box + 8, 8);
+        uint32_t *word = status && *status ? (uint32_t *)hos_guest_range(*status, 8) : NULL;
+        if (!word || !box_text(shown[i].box, &vt, &text, &len) || vt != shown[i].vt || text != shown[i].text ||
+            len != shown[i].len) {
+            shown_drop(i);
+            shown[i].box = 0;   /* (not the box seen any more) */
+            continue;
+        }
+        __atomic_fetch_or(word, (0x20000 | 0x100000) & word[1], __ATOMIC_RELAXED);
+        if (!shown[i].state) InterlockedIncrement(&shown_pending);
+        shown[i].state = 1, n++;
+    }
+    ReleaseSRWLockExclusive(&shown_lock);
+    return n;
+}
+
+/* at a box's draw: its picture made, when a change laid it out again and another thread makes its pictures. The game's
+   context is mid-call (the draw's own arguments still to be read): every register comes back as it was */
+static void shown_picture(uint64_t box) {
+    if (!shown_pending) return;
+    int due = 0;
+    AcquireSRWLockExclusive(&shown_lock);
+    for (int i = 0; i < SHOWN_BOXES && !due; i++)
+        if (shown[i].box == box && shown[i].state == 2) due = 1, shown_drop(i);
+    ReleaseSRWLockExclusive(&shown_lock);
+    const uint32_t *flags = due ? (const uint32_t *)hos_guest_range(box + 380, 4) : NULL;
+    Ctx *g = flags && (*flags >> 2 & 1) ? hos_ctx() : NULL;
+    const uint64_t *info = g ? (const uint64_t *)hos_guest_range(g->x[2] + 24, 16) : NULL;
+    if (!info) return;
+    uint64_t x[31], v[32][2];
+    const uint8_t f[4] = {g->n, g->z, g->c, g->v};
+    memcpy(x, g->x, sizeof x);
+    memcpy(v, g->vreg, sizeof v);
+    hos_call_guest(g, TEXT_PICTURE, box, info[0], info[1], 0);
+    memcpy(g->x, x, sizeof x);
+    memcpy(g->vreg, v, sizeof v);
+    g->n = f[0], g->z = f[1], g->c = f[2], g->v = f[3];
+}
+
 /* nx2/oot_patches.py, as the game lays a text box out (f_8152aec0, before it looks at the box's status: laid out now) */
 void hos_prompts_text_layout(uint64_t box) {
     if (text_rewrite(box)) mark_box(box, 0x20000);
+    shown_keep(box);
 }
 
 /* nx2/oot_patches.py, as the game draws a text box (f_8152b670, each time it shows it): a box rewritten is laid out again at
    the next update (its status) */
 void hos_prompts_text_draw(uint64_t box) {
     if (text_rewrite(box)) mark_box(box, 0x20000 | 0x100000);
+    shown_picture(box);
 }
 
 /* nx2/oot_patches.py, as FreeType draws a glyph (ft_smooth_render, f_81680c60; slot: its FT_GlyphSlot): the font the glyph
@@ -1101,7 +1209,9 @@ static int live_font(const char *dir, int face) {
         memcpy(q, b + 8, (size_t)n - 8);
         ReleaseSRWLockExclusive(&slot_lock);
         InterlockedIncrement(&font_changes);
-        hos_log("prompts: now the %s icons in texts, %d buttons on these controls", faces[face], bound);
+        const int boxes = shown_mark();   /* (after font_changes: their layout rewrites them) */
+        hos_log("prompts: now the %s icons in texts, %d buttons on these controls; %d texts on screen laid out again",
+                faces[face], bound, boxes);
     } else if (q) {
         hos_log("prompts: the font is no longer where FreeType read it: the icons in texts at the next start");
     }
