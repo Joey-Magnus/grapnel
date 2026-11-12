@@ -195,6 +195,16 @@ def test_pack_folders(d):
     (work / "objcache" / "ab" / "mine.o").write_bytes(b"pack")
     packs.link_objects(str(base), str(work))
     check("a work folder already there is left as it is", (work / "objcache" / "ab" / "mine.o").exists())
+    real_link = os.link
+
+    def cross_drive(src, dst):
+        raise OSError(18, "Invalid cross-device link")
+    os.link = cross_drive
+    try:
+        packs.link_objects(str(base), str(d / "other-drive"))
+    finally:
+        os.link = real_link
+    check("on another drive the objects are copied", (d / "other-drive" / "objcache" / "ab" / "abcdef.o").read_bytes() == b"object")
 
 
 def test_generated_and_runtime(d):

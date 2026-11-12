@@ -311,6 +311,14 @@ def game_language(game):
         return None
 
 
+def link_or_copy(src, dst):
+    """A hard link, or a copy where the two folders are on different drives (as make_game.py falls back)"""
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
 def link_objects(base_work, work):
     """A new work folder with the base's compiled objects (hard links: the object cache's keys hold no folder path) and the note of
     the compiler's headers they were made with, so only what a change touches compiles"""
@@ -321,7 +329,7 @@ def link_objects(base_work, work):
         dst = os.path.join(work, "objcache", os.path.relpath(top, src))
         os.makedirs(dst, exist_ok=True)
         for f in fs:
-            os.link(os.path.join(top, f), os.path.join(dst, f))
+            link_or_copy(os.path.join(top, f), os.path.join(dst, f))
     os.makedirs(work, exist_ok=True)
     if os.path.isfile(os.path.join(base_work, "system_headers.txt")):
         shutil.copy2(os.path.join(base_work, "system_headers.txt"), os.path.join(work, "system_headers.txt"))
@@ -449,7 +457,7 @@ def cmd_rt(a):
         dst = os.path.join(rt, os.path.relpath(top, b["game"]))
         os.makedirs(dst, exist_ok=True)
         for f in fs:
-            os.link(os.path.join(top, f), os.path.join(dst, f))
+            link_or_copy(os.path.join(top, f), os.path.join(dst, f))
     for name in os.listdir(b["game"]):
         s = os.path.join(b["game"], name)
         if os.path.isfile(s):
