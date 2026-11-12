@@ -269,6 +269,8 @@ uint64_t vk_timeline_completed();
 /// A future submission completion covering images retired during replay; zero: no safe value.
 uint64_t vk_retirement_value();
 void vk_timeline_wait(uint64_t v);
+int vk_part_state(uint64_t part);   // (1: that part of a submission is done on the GPU, 0: submitted, -1: not known)
+bool vk_part_wait(uint64_t part);   // (waits for it, 250 ms at most; false: not known, wait for the value)
 uint32_t memory_generation();
 /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
 bool memory_written_since(uint64_t guest, uint64_t size, uint32_t gen);

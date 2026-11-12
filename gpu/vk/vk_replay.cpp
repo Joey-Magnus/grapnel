@@ -2328,6 +2328,36 @@ static void wait_rec_seq(uint64_t seq, uint64_t timeout_ns, int* ok) {
         *ok = vkWaitSemaphores(dev.device, &wi, timeout_ns) == VK_SUCCESS;
     }
 }
+} // namespace
+/// (hookshot) For a capture's late pages (vk_memory.cpp capture_make): where the part of a submission that wrote a page back
+/// is on the GPU. 1: its recording is done, so its write-back is in guest memory; 0: submitted and not done; -1: not known
+/// (not submitted yet: a part's pages are noted just before its submit; or the recordings have no timeline of their own)
+int vk_part_state(uint64_t part) {
+    if (!rec_timeline || per_queue_fences_off() || !part) return -1;
+    uint64_t seq = 0;
+    {
+        std::lock_guard mk(rec_map_mu);
+        auto it = part_rec.find(part);
+        if (it == part_rec.end()) return -1;
+        seq = it->second;
+    }
+    uint64_t reached = 0;
+    if (vkGetSemaphoreCounterValue(dev.device, rec_timeline, &reached) != VK_SUCCESS) return -1;
+    return reached >= seq ? 1 : 0;
+}
+/// (hookshot) Waits for that part's recording, 250 ms at most as vk_timeline_wait: true when the caller may go on (the part
+/// is done, or the limit passed and it goes on without it), false when the part is not known and the caller is to wait
+/// for the submission's value as before
+bool vk_part_wait(uint64_t part) {
+    int ok = 0;
+    if (!wait_recorded_part(part, 250000000ull, &ok)) return false;
+    if (!ok) {
+        static std::atomic<int> logged{0};
+        if (logged++ < 8) logf("vk: a capture's wait for the part %llu of a write-back timed out", (unsigned long long)part);
+    }
+    return true;
+}
+namespace {
 uint64_t fence();
 /// (hookshot) A fence of one queue (nvnQueueFenceSync): the value of that queue's last submission
 uint64_t fence_q(uint64_t queue) {

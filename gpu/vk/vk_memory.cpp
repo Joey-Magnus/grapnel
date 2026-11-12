@@ -825,6 +825,7 @@ struct Capture {
     size_t nbytes = 0;
     std::vector<uint32_t> late;      // (indices into pages: copied again by the replay once late_value is done)
     uint64_t late_value = 0;
+    uint64_t late_part = 0;          // (the part of that work to wait for instead, LateWait below; 0: the value)
     // (hookshot) "shadow staging": the texture pages of this capture, copied from guest memory into ordinary cached RAM too, for
     // take_capture's texture shadow to read instead of the buffer above (often write-combined here: CPU reads ~0.3 GB/s).
     // sidx[i] = the staging slot of pages[i] (4 KB a slot), or -1: that page is read from the buffer. Empty sidx: no staging.
@@ -869,6 +870,38 @@ void stage_put(Capture& c) {   // (the block back to the kept ones, at most four
         stage_free.emplace_back(std::move(c.stage), c.stage_bytes);
     }
     c.stage.reset(), c.stage_bytes = 0;
+}
+// (hookshot) What a capture's late pages wait for. A late page is one the CPU wrote that work still on the GPU writes back
+// (capture_make). It used to be the page's submission, whose value is done with its last part (issue 997): the whole of the
+// frame before's GPU work, the end of which the next frame's replay then waited for (0.8-2.4 ms a take, on the game's main
+// thread and its presentation thread, once the present no longer held them for the same GPU work). A page written back
+// from a mirror is in guest memory once the part that copies it back is done (memory_end_submission, at each part's end;
+// wb_parts has the part of the page's newest write-back), so:
+// - a page whose part is done is not late at all: the copy made now has the GPU's words;
+// - the other late pages wait for the newest of their parts, when every one of them has a part;
+// - a late page written in place (part 0: no mirror, the later parts of its submission may write guest memory again) keeps
+//   the wait for the submission's value, for all of the capture's late pages, as before.
+// The newest part is the page's last writer among the work recorded so far, the same thing its value said before: a part
+// recorded later that writes the page again is not noted yet either way. RX_VK_CAPTURE_PART=0: the value always, as before
+struct LateWait {
+    uint64_t value = 0;   // (the newest value among the late pages; 0: none is late)
+    uint64_t part = 0;    // (the newest part among them)
+    bool whole = false;   // (one of them has no part: the value is what is waited for)
+    uint64_t wait_part() const { return whole ? 0 : part; }
+};
+/// Counts a page whose write-back's value is past what the GPU has completed. state: vk_part_state of its part (1 done,
+/// 0 submitted, -1 not known), not looked at when part is 0. True when the page is late
+bool late_page(LateWait& w, uint64_t value, uint64_t part, int state) {
+    if (part && state == 1) return false;
+    w.value = std::max(w.value, value);
+    if (part) w.part = std::max(w.part, part);
+    else w.whole = true;
+    return true;
+}
+/// The wait itself: the part when there is one and it is known, else the value. Both give up after 250 ms
+void late_wait(uint64_t value, uint64_t part) {
+    if (part && vk_part_wait(part)) return;
+    vk_timeline_wait(value);
 }
 std::mutex cap_mu;
 std::deque<std::unique_ptr<Capture>> captures;
@@ -1115,6 +1148,8 @@ std::atomic<bool> captures_seen{false};
 std::atomic<uint64_t> cap_view_gen{1};   // (bumped when a capture is published or a page is stamped: cached reads go stale)
 void cap_view_bump() { cap_view_gen.fetch_add(1, std::memory_order_release); }
 double st_tk_all, st_tk_stamp, st_tk_copy, st_tk_late, st_tk_lock;   // (memory_take_capture's parts, ms)
+std::atomic<int64_t> st_cap_part_done{0};   // (pages a capture did not take as late: their part had written them back)
+int64_t st_tk_late_value;   // (and those of them that waited for the submission's value: a page in place, or no part known)
 int64_t st_tk_late_n;   // (the takes that waited for the GPU for their late pages)   // (a capture was ever made: the replay thread's; without it nothing owns pages)
 
 // ---- texture storage in the capture ----
@@ -1705,7 +1740,7 @@ std::unique_ptr<Capture> capture_make() {
         if (!spare.empty()) c = std::move(spare.back()), spare.pop_back();
     }
     if (!c) c = std::make_unique<Capture>();
-    c->pages.clear(), c->copied.clear(), c->slots.clear(), c->nbytes = 0, c->late.clear(), c->late_value = 0;
+    c->pages.clear(), c->copied.clear(), c->slots.clear(), c->nbytes = 0, c->late.clear(), c->late_value = 0, c->late_part = 0;
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
     stage_put(*c);
     // (only the pools mirrored in VRAM, the ones the mirrors are filled from, and only their part of the write marks:
@@ -1759,21 +1794,34 @@ std::unique_ptr<Capture> capture_make() {
 // done: the replay waits instead, while the game goes on. RX_VK_CAPTURE_WAIT=1: the game's thread waits, 0: no wait
     if (n > 0) {
         static const int cap_wait = getenv("RX_VK_CAPTURE_WAIT") ? atoi(getenv("RX_VK_CAPTURE_WAIT")) : 2;
-        uint64_t v = 0;
+        static const bool by_part = !getenv("RX_VK_CAPTURE_PART") || atoi(getenv("RX_VK_CAPTURE_PART")) != 0;
+        LateWait lw;
         if (cap_wait) {
             const uint64_t done = vk_timeline_completed();
-            std::lock_guard lk(wb_pages_mu);
-            if (!wb_pages.empty())
-                for (int64_t i = 0; i < n; i++) {
-                    const uint64_t pv = wb_pages.get(pages[i]);
-                    if (pv > done) {
-                        v = std::max(v, pv);
-                        if (cap_wait == 2) c->late.push_back((uint32_t)i);
+            struct Cand { uint32_t index; uint64_t value, part; };
+            static thread_local std::vector<Cand> cand;   // (the pages past `done`: their parts are looked up outside the lock)
+            cand.clear();
+            {
+                std::lock_guard lk(wb_pages_mu);
+                if (!wb_pages.empty())
+                    for (int64_t i = 0; i < n; i++) {
+                        const uint64_t pv = wb_pages.get(pages[i]);
+                        if (pv > done) cand.push_back({(uint32_t)i, pv, by_part ? wb_parts.get(pages[i]) : 0});
                     }
+            }
+            uint64_t seen_part = 0;   // (pages of one part come together: one look a part)
+            int seen_state = -1;
+            for (const Cand& p : cand) {
+                if (p.part && p.part != seen_part) seen_part = p.part, seen_state = vk_part_state(p.part);
+                if (!late_page(lw, p.value, p.part, seen_state)) {
+                    st_cap_part_done++;
+                    continue;
                 }
+                if (cap_wait == 2) c->late.push_back(p.index);
+            }
         }
-        if (v && cap_wait == 2) c->late_value = v;
-        else if (v) vk_timeline_wait(v);
+        if (lw.value && cap_wait == 2) c->late_value = lw.value, c->late_part = lw.wait_part();
+        else if (lw.value) late_wait(lw.value, lw.wait_part());
     }
     if (n > 0) shadow_written(pages, n);
     if (n > 0) {
@@ -1895,9 +1943,20 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         // RX_VK_MIRROR_MB=1024 on an 8 GB card it was most of a capture's 2.4-3 ms, six submits a frame: Hyrule Field at
         // 35-45 fps instead of 55, issue 995)
         const auto tw = std::chrono::steady_clock::now();
-        vk_timeline_wait(c->late_value);
-        st_tk_late += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tw).count();
+        const bool by_part = c->late_part && vk_part_wait(c->late_part);   // (the part that writes them back, LateWait)
+        if (!by_part) vk_timeline_wait(c->late_value);   // (else the value)
+        const double late_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tw).count();
+        st_tk_late += late_ms;
         st_tk_late_n++;
+        st_tk_late_value += !by_part;
+        {   // (RX_VK_LOG_CAPTURE_LATE=1: each take that waited, 200 lines, and every one over 10 ms)
+            static const bool log_late = env_on("RX_VK_LOG_CAPTURE_LATE");
+            static int logged;
+            if (log_late && (late_ms > 10 || logged < 200) && logged++ < 400)
+                logf("vk: capture late wait %.2f ms: %zu pages, value %llu, part %llu (%s), completed %llu now", late_ms, c->late.size(),
+                     (unsigned long long)c->late_value, (unsigned long long)c->late_part, by_part ? "waited for" : "the value waited for",
+                     (unsigned long long)vk_timeline_completed());
+        }
         uint8_t* const base = (uint8_t*)host->guest_base();
         for (uint32_t i : c->late)
             guarded_copy((uint8_t*)c->map + (uint64_t)i * 4096, base + ((uint64_t)c->pages[i] << kPageShift), 4096);
@@ -2020,12 +2079,14 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         st_tk_stamp += std::chrono::duration<double, std::milli>(tk1 - tk_locked).count();
         st_tk_all += std::chrono::duration<double, std::milli>(tk2 - tk0).count();
         if (++n % 600 == 0) {
-            logf("vk: a capture taken (ms): all %.3f; GPU wait for late pages %.3f (%lld of 600 takes), pools lock %.3f, retires "
-                 "and stamps %.3f, bytes copied %.3f; %zu kept (%llu MB), %zu spare buffers, %zu texture pages copied (%llu MB)",
-                 st_tk_all / 600, st_tk_late / 600, (long long)st_tk_late_n, st_tk_lock / 600, st_tk_stamp / 600, st_tk_copy / 600,
+            logf("vk: a capture taken (ms): all %.3f; GPU wait for late pages %.3f (%lld of 600 takes, %lld for a whole submission), pools lock %.3f, retires "
+                 "and stamps %.3f, bytes copied %.3f; %zu kept (%llu MB), %zu spare buffers, %zu texture pages copied (%llu MB), "
+                 "%lld pages not late (their part had written them back)",
+                 st_tk_all / 600, st_tk_late / 600, (long long)st_tk_late_n, (long long)st_tk_late_value, st_tk_lock / 600, st_tk_stamp / 600, st_tk_copy / 600,
                  cap_bufs.size(), (unsigned long long)(cap_bytes >> 20), cap_free.size(), shadow_n.load(std::memory_order_relaxed),
-                 (unsigned long long)(shadow_n.load(std::memory_order_relaxed) >> 8));
+                 (unsigned long long)(shadow_n.load(std::memory_order_relaxed) >> 8), (long long)st_cap_part_done.exchange(0));
             st_tk_all = st_tk_stamp = st_tk_copy = st_tk_late = st_tk_lock = 0, st_tk_late_n = 0;
+            st_tk_late_value = 0;
         }
     }
     return true;
