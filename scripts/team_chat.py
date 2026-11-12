@@ -144,13 +144,16 @@ def wait_for_login_token(port_holder, ready, timeout):
         def do_GET(self):
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             token = (query.get("loginToken") or [None])[0]
-            self.send_response(200 if token else 400)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            text = "Signed in. You can close this tab." if token else "No login token in this request."
-            self.wfile.write(("<!doctype html><title>Hookshot team chat</title><p>%s</p>" % text).encode("utf-8"))
             if token:
-                found["token"] = token
+                found["token"] = token   # (kept even if the browser closes the tab before the page below is sent)
+            text = "Signed in. You can close this tab." if token else "No login token in this request."
+            try:
+                self.send_response(200 if token else 400)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(("<!doctype html><title>Hookshot team chat</title><p>%s</p>" % text).encode("utf-8"))
+            except OSError:
+                pass   # (the browser went away first, e.g. WinError 10053; the token above is what matters)
 
         def log_message(self, *args):
             pass
