@@ -65,8 +65,10 @@ def main():
 
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
     constants = block(hid, "enum { B_A") + ";\n" + block(api, "enum { HOS_SW_A") + ";\n"
-    constants += block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"   # (the keys-only controls)
+    constants += block(api, "enum { HOS_PAD_SOUTH") + ";\n"   # (Sprint's gamepad input)
+    constants += block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"   # (the keys-only controls, and Sprint)
     constants += block(api, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"
+    constants += block(api, "enum { HOS_OPT_SPRINT") + ";\n"   # (the Controls tab's Sprint row: the fixture's rx_option says on)
     constants += block(api, "enum { HOS_BIND_PAD") + ";\n"   # (the live input's !bind)
     for name in ("STATE_SIZE", "NPAD_NO1", "ATTR_CONNECTED"):
         matches = re.findall(r"^#define " + name + r"\s+[^\n]+", hid, re.M)
@@ -76,7 +78,9 @@ def main():
     script = block(hid, "static void scripted_input(")
     end = hid.index(script) + len(script)
     cheat_state = re.search(r"^static uint64_t flight_input;\nstatic uint64_t free_camera_axes;\nstatic int free_camera_height;\n"
-                            r"static int move_stick_held;", hid, re.M).group(0)
+                            r"static int move_stick_held;[^\n]*\nstatic int sprint_now;", hid, re.M).group(0)
+    cheat_state += "\n" + block(hid, "enum { SPRINT_KEY") + ";\n" + block(hid, "static int pad_sprint_down(")   # (Sprint)
+    cheat_state += "\n" + block(hid, "static void sprint_step(")   # (npad_states': A held, without the roll)
     cheat_spies = """
 volatile int hos_oot_live_action;
 int hos_oot_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }

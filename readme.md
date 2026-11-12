@@ -507,6 +507,15 @@ Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>
 and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
 With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
 
+**Sprint:** hold <kbd>Shift</kbd> while you move and Link runs. On a controller, press the left stick in once while you
+move: Link keeps running until you stop, then press it again. Sprint holds A, the game's own run, only while the left
+stick (or the movement keys) is pushed, so standing still it does not talk, open or pick up. A pressed while Link moves
+is a roll, so Sprint starts with the stick let go for a moment (120 ms; `HOS_SPRINT_STILL_MS=<ms>` in
+`hookshot_env.txt` changes it, 0 starts with the roll). The Controls tab's **Sprint** row turns it off: its key and
+button then do nothing. For it, B moved to <kbd>V</kbd> on the keyboard, and the stick's press is no longer the Switch's LS. An
+options file from before Sprint that still had Shift on B and the press on LS gets the new defaults; a control you bound
+otherwise keeps yours. Sprint has its own row on the Controls page.
+
 **Mouse in the game's menus (Windows):** the title screen and its file list, the pause menu, the Key Items, Threads of
 Time and Map pages, the options and the save dialogs free the mouse while they are shown. Point at an entry to select
 it, left-click to choose it (A) and right-click to go back (B); the tabs, the L and R signs and the Back prompt can be
@@ -525,7 +534,7 @@ anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes th
 (8BitDo, GameSir and others; SDL gives them Nintendo's ids). Some of them may turn it into weak rumble or none: set
 `HOS_HD_RUMBLE=0` to give them the plain motor rumble.
 
-To change which gamepad button or key presses a Switch button, or which keys move and turn the camera, open the
+To change which gamepad button or key presses a Switch button or sprints, or which keys move and turn the camera, open the
 Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom
 face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</kbd> clears it, and Reset to defaults
 puts them all back. A gamepad button taken from another Switch button swaps with it. The page saves them in
@@ -551,8 +560,8 @@ key_a=69,13
 buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
 `rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions: `move_up`
 `move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`, and the ocarina's five notes,
-which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`. A button the file leaves out keeps
-its default.
+which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`; `sprint` takes both a `pad_` and a
+`key_` line. A button the file leaves out keeps its default.
 
 </details>
 

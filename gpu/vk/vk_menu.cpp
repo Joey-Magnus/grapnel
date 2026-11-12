@@ -901,7 +901,7 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
+    // Controls (13 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background, false, true},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -909,6 +909,9 @@ Row rows[] = {
     {TAB_CONTROLS, "Disable camera centering", &opts.disable_camera_centering, 0, 1, 1, tx_onoff,
      "Stops the camera gradually turning toward the direction you move, useful with native mouse look. Off keeps the "
      "game's standard behavior. Manual camera controls and recentering still work.", nullptr, false, true},
+    {TAB_CONTROLS, "Sprint", &opts.sprint, 0, 1, 1, tx_onoff,
+     "Link runs while you move: Shift held, or the left stick pressed once until you stop (the Controls page binds them). "
+     "It holds A, the game's own run, started without the roll. Off: those do nothing.", nullptr, false, true},
     {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
      "How far the camera turns for a mouse movement, with either Mouse camera: at 1.00 native look turns 0.1 degree a "
      "count. The - and = keys change it in game too.", nullptr, false, true},
@@ -1357,7 +1360,7 @@ const char* ini_key(const Row& r) {
 const char* const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus", "minus",
                                            "left", "up", "right", "down", "move_up", "move_down", "move_left",
                                            "move_right", "cam_up", "cam_down", "cam_left", "cam_right",
-                                           "note_l", "note_r", "note_a", "note_y", "note_x"};
+                                           "note_l", "note_r", "note_a", "note_y", "note_x", "sprint"};
 bool can_bind() { return host && host->binding && host->bind && host->pad_raw; }
 const char* tx_pad_layout(int v) {
     static const char* t[] = {"Nintendo (Def)", "Xbox / PC", "Swap Face", "Custom"};
@@ -1481,12 +1484,13 @@ void save() {
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
         // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
-        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h)
-        fprintf(f, "options_version=6\n");
+        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h; 7: Sprint, Shift and the left stick's press by
+        // default, see host/nn_hid.c binds_sprint_migrate)
+        fprintf(f, "options_version=7\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
-        for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the stick's and camera's rows, HOS_KEY_MOVE_*/CAM_*, have no pad_ line; the ocarina note rows do)
-            if (i < HOS_SW_N || (i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X)) {
+        for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the stick's and camera's rows, HOS_KEY_MOVE_*/CAM_*, have no pad_ line; the ocarina note rows and Sprint do)
+            if (i < HOS_SW_N || (i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X) || i == HOS_KEY_SPRINT) {
                 const int alternate = host->binding(HOS_BIND_PAD, i, 1);
                 fprintf(f, "pad_%s=%d", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
                 if (alternate >= 0) fprintf(f, ",%d", alternate);
@@ -1953,14 +1957,14 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
 
 // ---- (hookshot) the Controls page: what presses each of the Switch's buttons, a gamepad input and up to two keys ----
 struct Control {
-    int button;   // HOS_SW_*, or HOS_KEY_* (keys only)
+    int button;   // HOS_SW_*, or HOS_KEY_* (the stick's and camera's: keys only)
     const char* name;
 };
 const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {HOS_SW_Y, "Y"}, {HOS_SW_L, "L"},
                             {HOS_SW_R, "R"}, {HOS_SW_ZL, "ZL"}, {HOS_SW_ZR, "ZR"}, {HOS_SW_PLUS, "Plus"},
                             {HOS_SW_MINUS, "Minus"}, {HOS_SW_LS, "Left stick press"}, {HOS_SW_RS, "Right stick press"},
                             {HOS_SW_UP, "D-pad up"}, {HOS_SW_DOWN, "D-pad down"}, {HOS_SW_LEFT, "D-pad left"},
-                            {HOS_SW_RIGHT, "D-pad right"}, {HOS_KEY_MOVE_UP, "Move forward"},
+                            {HOS_SW_RIGHT, "D-pad right"}, {HOS_KEY_SPRINT, "Sprint"}, {HOS_KEY_MOVE_UP, "Move forward"},
                             {HOS_KEY_MOVE_DOWN, "Move back"}, {HOS_KEY_MOVE_LEFT, "Move left"},
                             {HOS_KEY_MOVE_RIGHT, "Move right"}, {HOS_KEY_CAM_UP, "Camera up"},
                             {HOS_KEY_CAM_DOWN, "Camera down"}, {HOS_KEY_CAM_LEFT, "Camera left"},
@@ -1968,7 +1972,7 @@ const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {
                             {HOS_KEY_OC_NOTE_R, "Ocarina note (R)"}, {HOS_KEY_OC_NOTE_A, "Ocarina note (A)"},
                             {HOS_KEY_OC_NOTE_Y, "Ocarina note (Y)"}, {HOS_KEY_OC_NOTE_X, "Ocarina note (X)"}};
 constexpr int kControls = sizeof controls / sizeof controls[0];   // (then "Reset to defaults")
-// (the stick's and camera's directions: keys only; the ocarina's note rows take a gamepad input too, host/nn_hid.c)
+// (the stick's and camera's directions: keys only; the ocarina's note rows and Sprint take a gamepad input too, host/nn_hid.c)
 bool keys_only(int i) { return i < kControls && controls[i].button >= HOS_KEY_MOVE_UP && controls[i].button <= HOS_KEY_CAM_RIGHT; }
 // a pad input's name on the controller of the button prompts (the Button prompts row's choice; Auto: the face in use),
 // else by its place
@@ -2796,6 +2800,10 @@ void draw_controls(ui::Ctx& c) {
     const char* title = page_row ? page_row->name : sel_i < kControls ? controls[sel_i].name : "Reset to defaults";
     const char* help = listening ? (listening == 1 ? "Press the gamepad button to use. Esc cancels." : "Press the key to use. Esc cancels.")
                        : page_row ? page_row->help
+                       : sel_i < kControls && controls[sel_i].button == HOS_KEY_SPRINT
+                           ? "Link runs while you move: the key while it is held, the gamepad button pressed once until you "
+                             "stop. It holds A, the game's own run, started without the roll, and only while you move, so "
+                             "standing still it does not talk or pick up. Enter binds; Delete clears it."
                                   : "Either gamepad input or an assigned key presses the selected Switch button. Enter binds the "
                                     "selected input and Delete clears it. A button's only gamepad input stays with it: it does not move into "
                                     "another's empty Input 2. The game's button icons follow after a restart.";

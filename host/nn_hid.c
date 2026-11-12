@@ -501,20 +501,24 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
 /* ---- (hookshot) the controls: the gamepad inputs (by position) and the keys that press each Switch button, from
    hookshot_options.ini beside the executable when it has them: pad_<button>=<position>[,<position>] (HOS_PAD_*, -1 none) and
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
-   first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
-   stick's and the camera's directions, and the ocarina's five note controls (which take a gamepad input too).
-   A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
-   only while the mouse is captured ---- */
+   first use; what the file leaves out keeps its default. After the Switch's buttons (HOS_KEY_*): the left stick's and the
+   camera's directions (keys only), the ocarina's five note controls (which take a gamepad input too), and Sprint (keys
+   and gamepad inputs: held while Link is steered, it holds A, the game's run). A key can be a mouse button (1 2 4 5 6:
+   left, right, middle, 4, 5), which counts only while the mouse is captured ---- */
 static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
                                                   "minus", "left", "up", "right", "down", "move_up", "move_down",
                                                   "move_left", "move_right", "cam_up", "cam_down", "cam_left",
-                                                  "cam_right", "note_l", "note_r", "note_a", "note_y", "note_x"};
+                                                  "cam_right", "note_l", "note_r", "note_a", "note_y", "note_x", "sprint"};
+/* (the left stick's press is Sprint's, the Switch's LS none: the game's run is A held, and the press sprints as in PC
+   games; binds_default) */
 static const signed char pad_default[HOS_SW_N] = {
-    HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
+    HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, -1, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
     HOS_PAD_RIGHT, HOS_PAD_DOWN};
 static int is_note_row(int i) { return i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X; }
-static int has_pad(int i) { return i < HOS_SW_N || is_note_row(i); }
+static int has_pad(int i) { return i < HOS_SW_N || is_note_row(i) || i == HOS_KEY_SPRINT; }
+/* (the Switch's buttons and Sprint trade gamepad inputs by hos_bind's slot rules; the note rows share theirs) */
+static int pad_swaps(int i) { return i < HOS_SW_N || i == HOS_KEY_SPRINT; }
 #ifndef VK_XBUTTON1
 #define VK_XBUTTON1 0x05
 #define VK_XBUTTON2 0x06
@@ -524,13 +528,13 @@ static int is_mouse_vk(int vk) { return vk == VK_LBUTTON || vk == VK_RBUTTON || 
                                         vk == VK_XBUTTON1 || vk == VK_XBUTTON2; }
 /* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for Plus; the
    mouse's left button Y, attack, and right button ZL, shield and lock-on, as before; WASD the left stick, the arrows or
-   IJKL the camera) */
+   IJKL the camera; Shift Sprint, and V B) */
 static const unsigned char key_default[HOS_KEY_N][2] = {
-    {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
+    {'E'}, {'V'}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
     {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
-    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}, {0}, {0}, {0}, {0}, {0}};   /* (the five note rows start unset: oc_pad_word) */
+    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}, {0}, {0}, {0}, {0}, {0}, {VK_SHIFT}};   /* (the five note rows start unset: oc_pad_word) */
 static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
-static int pad_bind[HOS_KEY_N][2];
+static int pad_bind[HOS_KEY_N][2];   /* (-1 for the keys-only controls, !has_pad) */
 static volatile LONG key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
 
 /* ---- (hookshot) the ocarina's five note controls, driven by the wait flag nx2/oot_patches.py's patch sets ---- */
@@ -544,7 +548,7 @@ static uint64_t oc_consumed_pads;
 static void binds_default(void) {
     AcquireSRWLockExclusive(&pad_bind_lock);
     for (int i = 0; i < HOS_KEY_N; i++) {
-        pad_bind[i][0] = i < HOS_SW_N ? pad_default[i] : -1;   /* (the note rows: -1, unset) */
+        pad_bind[i][0] = i < HOS_SW_N ? pad_default[i] : i == HOS_KEY_SPRINT ? HOS_PAD_LSTICK : -1;   /* (the note rows: -1, unset) */
         pad_bind[i][1] = -1;
     }
     ReleaseSRWLockExclusive(&pad_bind_lock);
@@ -558,6 +562,34 @@ static int pad_code(const char *text) {
     return end != text && code >= 0 && code < HOS_PAD_N ? (int)code : -1;
 }
 
+/* An options file from before version 7 (no Sprint) wrote the old defaults: Shift B and the left stick's press LS. Where it
+   still has them, they move to Sprint as a new file's do (B to V, when no control has V), so Shift and the press sprint;
+   a control the player bound otherwise keeps theirs, and Sprint, without a line of its own, gets none of its defaults
+   another control has. (Run inside binds_load, before anyone reads the bindings.) */
+static void binds_sprint_migrate(int version, const int seen_pad[HOS_KEY_N], const int seen_key[HOS_KEY_N]) {
+    if (version < 7 && seen_key[HOS_SW_B] && !seen_key[HOS_KEY_SPRINT] && key_bind[HOS_SW_B][0] == VK_SHIFT) {
+        int v_taken = 0;
+        for (int i = 0; i < HOS_KEY_N; i++)
+            for (int k = 0; k < 2; k++) v_taken |= key_bind[i][k] == 'V';
+        if (!v_taken) {
+            key_bind[HOS_SW_B][0] = 'V';
+            hos_log("hid: Shift is Sprint now, B is V (an options file from before Sprint)");
+        }
+    }
+    if (version < 7 && seen_pad[HOS_SW_LS] && !seen_pad[HOS_KEY_SPRINT] && pad_bind[HOS_SW_LS][0] == HOS_PAD_LSTICK) {
+        pad_bind[HOS_SW_LS][0] = pad_bind[HOS_SW_LS][1], pad_bind[HOS_SW_LS][1] = -1;
+        hos_log("hid: the left stick's press is Sprint now, not LS (an options file from before Sprint)");
+    }
+    for (int i = 0; i < HOS_KEY_N; i++) {   /* (Sprint's defaults, where another control has them) */
+        if (i == HOS_KEY_SPRINT || is_note_row(i)) continue;
+        for (int k = 0; k < 2 && !seen_pad[HOS_KEY_SPRINT]; k++)
+            if (pad_bind[i][k] >= 0 && pad_bind[i][k] == pad_bind[HOS_KEY_SPRINT][0])
+                pad_bind[HOS_KEY_SPRINT][0] = pad_bind[HOS_KEY_SPRINT][1], pad_bind[HOS_KEY_SPRINT][1] = -1;
+        for (int k = 0; k < 2; k++)
+            for (int s = 0; s < 2 && !seen_key[HOS_KEY_SPRINT]; s++)
+                if (key_bind[i][k] && key_bind[i][k] == key_bind[HOS_KEY_SPRINT][s]) key_bind[HOS_KEY_SPRINT][s] = 0;
+    }
+}
 static void binds_load(void) {
     static volatile LONG state;   /* 0 not read, 1 being read, 2 read */
     if (state == 2) return;
@@ -577,7 +609,8 @@ static void binds_load(void) {
     int changed = 0;
     if (f) {
         char line[80];
-        int version = 0, had_keys = 0;   /* (options_version: 3 since the mouse's buttons are bindings) */
+        int version = 0, had_keys = 0;   /* (options_version: 3 since the mouse's buttons are bindings, 7 since Sprint) */
+        int seen_pad[HOS_KEY_N] = {0}, seen_key[HOS_KEY_N] = {0};
         while (fgets(line, sizeof line, f)) {
             char *eq = strchr(line, '=');
             if (!eq) continue;
@@ -589,6 +622,8 @@ static void binds_load(void) {
                 if (strcmp(line + 4, bind_names[i]) || (pad && !has_pad(i))) continue;
                 changed++;
                 const char *comma = strchr(eq + 1, ',');
+                if (pad) seen_pad[i] = 1;
+                else seen_key[i] = 1;
                 if (pad) {
                     pad_bind[i][0] = pad_code(eq + 1);
                     pad_bind[i][1] = comma ? pad_code(comma + 1) : -1;
@@ -611,6 +646,7 @@ static void binds_load(void) {
                 if (!taken && !key_bind[mouse_to[m][0]][1]) key_bind[mouse_to[m][0]][1] = mouse_to[m][1];
             }
         }
+        binds_sprint_migrate(version, seen_pad, seen_key);
     }
     if (changed) hos_log("hid: %d controls from hookshot_options.ini", changed);
     InterlockedExchange(&state, 2);
@@ -639,20 +675,20 @@ void hos_bind(int set, int button, int slot, int code) {
     if (set == HOS_BIND_PAD) {
         if (!has_pad(button) || code < -1 || code >= HOS_PAD_N) return;
         AcquireSRWLockExclusive(&pad_bind_lock);
-        if (button < HOS_SW_N) {   /* (among the Switch's buttons: the slot rules; the note rows keep theirs) */
+        if (pad_swaps(button)) {   /* (among the Switch's buttons and Sprint: the slot rules; the note rows keep theirs) */
             const int old = pad_bind[button][slot];
             if (code >= 0 && code != old) {
                 /* (the input taken from where it is: it gets the replaced input; with none (an empty Input 2), its own
                    other input moves into its Input 1; a button it is the only gamepad input of keeps it, and nothing changes) */
-                for (int i = 0; i < HOS_SW_N; i++)
+                for (int i = 0; i < HOS_KEY_N; i++)
                     for (int k = 0; k < 2; k++)
-                        if (pad_bind[i][k] == code && old < 0 && pad_bind[i][1 - k] < 0) {
+                        if (pad_swaps(i) && pad_bind[i][k] == code && old < 0 && pad_bind[i][1 - k] < 0) {
                             ReleaseSRWLockExclusive(&pad_bind_lock);
                             return;
                         }
-                for (int i = 0; i < HOS_SW_N; i++)
+                for (int i = 0; i < HOS_KEY_N; i++)
                     for (int k = 0; k < 2; k++)
-                        if (pad_bind[i][k] == code) {
+                        if (pad_swaps(i) && pad_bind[i][k] == code) {
                             if (old >= 0) pad_bind[i][k] = old;
                             else if (k == 0) pad_bind[i][0] = pad_bind[i][1], pad_bind[i][1] = -1;
                             else pad_bind[i][1] = -1;
@@ -835,6 +871,47 @@ static uint64_t flight_input;
 static uint64_t free_camera_axes;
 static int free_camera_height;
 static int move_stick_held;   /* (the left stick pushed as the game got it: hos_move_stick_held) */
+static int sprint_now;   /* (Sprint as read_input last read it, SPRINT_KEY | SPRINT_PAD: sprint_step's) */
+enum { SPRINT_KEY = 1, SPRINT_PAD = 2 };
+
+/* Sprint's gamepad input held at the last read of the pads (pad_raw_now): SPRINT_PAD */
+static int pad_sprint_down(void) {
+    int down = 0;
+    AcquireSRWLockShared(&pad_bind_lock);
+    for (int k = 0; k < 2; k++) {
+        const int p = pad_bind[HOS_KEY_SPRINT][k];
+        down |= p >= 0 && p < HOS_PAD_N && (pad_raw_now >> p & 1);
+    }
+    ReleaseSRWLockShared(&pad_bind_lock);
+    return down ? SPRINT_PAD : 0;
+}
+
+/* Sprint: the game's run is A held while Link moves, but A pressed while he moves is a roll. So a sprint starts with A pressed
+   and the left stick let go for a moment (HOS_SPRINT_STILL_MS, 120 ms; 0 none: A as he moves, the roll), then the stick
+   comes back with A still held: the run. Its key (Shift) runs while it is held; its gamepad input (the left stick's press)
+   is a toggle, pressed once while Link moves, it runs until the stick comes back to the middle, and then wants a new press.
+   held: SPRINT_KEY | SPRINT_PAD as read now; steered: the left stick pushed; now: hos_now_ns. Only while the menu is shut. */
+static void sprint_step(uint64_t *buttons, int32_t stick[4], int held, int steered, int menu_open, int64_t now) {
+    static int was_pad, latched, running, still_ms = -1;
+    static int64_t started;
+    if (still_ms < 0) {
+        const char *e = getenv("HOS_SPRINT_STILL_MS");
+        still_ms = e && *e ? atoi(e) : 120;
+        if (still_ms < 0 || still_ms > 2000) still_ms = 120;
+    }
+    const int pad = !!(held & SPRINT_PAD);
+    if (!steered || menu_open) latched = 0;
+    else if (pad && !was_pad) latched = 1;   /* (pressed while he moves) */
+    was_pad = pad;
+    const int want = steered && !menu_open && (latched || (held & SPRINT_KEY));
+    if (!want) {
+        running = 0;
+        return;
+    }
+    if (!running) running = 1, started = now;
+    *buttons |= 1ULL << B_A;
+    if (now - started < (int64_t)still_ms * 1000000) stick[0] = stick[1] = 0;   /* (A goes down with Link standing: no roll) */
+}
 
 uint64_t hos_flight_input(void) {
     return __atomic_load_n(&flight_input, __ATOMIC_RELAXED);
@@ -950,6 +1027,7 @@ static uint64_t oc_pad_word(uint64_t buttons) {
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
+    sprint_now = 0;
     void hos_mouse_native_stick(int held);
     scripted_input(buttons, stick);
     /* (hookshot) HOS_CONTROL: the control bridge's presses (host/control.c); one that asked to be exclusive keeps the
@@ -978,7 +1056,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         static const char *env;
         static int looked;
         if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
-        if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick);
+        if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick), sprint_now = pad_sprint_down();
         return;
     }
     {   /* (hookshot) while the Insert menu is open the pads are its own, as the keyboard is (key()), and after it
@@ -991,6 +1069,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         if (!pad_after_menu) {
             *buttons |= pb;
             stick_max(stick, ps);
+            sprint_now = pad_sprint_down();
         }
         if (pb || ps[0] > 12000 || ps[0] < -12000 || ps[1] > 12000 || ps[1] < -12000 || ps[2] > 12000 || ps[2] < -12000 ||
             ps[3] > 12000 || ps[3] < -12000)
@@ -1027,6 +1106,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     if (captured)
         for (int i = 0; i < HOS_SW_N; i++)
             if (bound_down(i, 1)) *buttons |= 1ULL << i;
+    if (bound_down(HOS_KEY_SPRINT, captured)) sprint_now |= SPRINT_KEY, player_used();
     /* (the left stick's and the camera's keys: WASD and the arrows or IJKL by default) */
     const int cx = bound_down(HOS_KEY_CAM_RIGHT, captured) - bound_down(HOS_KEY_CAM_LEFT, captured),
               cy = bound_down(HOS_KEY_CAM_UP, captured) - bound_down(HOS_KEY_CAM_DOWN, captured);
@@ -1091,7 +1171,13 @@ static void npad_states(Ctx *c) {
             buttons &= ~(climb | (1ULL << B_L));
         }
         __atomic_store_n(&flight_input, flight, __ATOMIC_RELAXED);
-        __atomic_store_n(&move_stick_held, abs(stick[0]) > 4096 || abs(stick[1]) > 4096, __ATOMIC_RELAXED);
+        const int steered = abs(stick[0]) > 4096 || abs(stick[1]) > 4096;
+        __atomic_store_n(&move_stick_held, steered, __ATOMIC_RELAXED);
+        /* Sprint (the Controls page's row; Shift and the left stick's press by default): A held, only while the left stick is
+           pushed (standing still, A would talk, open, pick up), started without the roll (sprint_step). The Controls tab's
+           Sprint row off: its key and button do nothing */
+        const int sprint_held = rx_option(HOS_OPT_SPRINT, 1) ? sprint_now : 0;
+        sprint_step(&buttons, stick, sprint_held, steered, menu_open, hos_now_ns());
         __atomic_store_n(&free_camera_axes, axes, __ATOMIC_RELAXED);
         __atomic_store_n(&free_camera_height, height, __ATOMIC_RELAXED);
     }

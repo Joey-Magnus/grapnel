@@ -34,7 +34,7 @@ typedef int SRWLOCK;   /* (host/nn_hid.c guards the pad table with these since #
 #define SRWLOCK_INIT 0
 static void AcquireSRWLockShared(SRWLOCK *p) { (void)p; }
 static void ReleaseSRWLockShared(SRWLOCK *p) { (void)p; }
-static int pad_bind[HOS_KEY_N][2];   /* (the ocarina note layer reads it; hos_oc_wait stays 0, so nothing is consumed) */
+static int pad_bind[HOS_KEY_N][2];   /* (the ocarina note layer and Sprint read it; hos_oc_wait stays 0, so nothing is consumed) */
 static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
 static int pad_after_menu;
 static LONG oc_consumed_keys[256];
@@ -90,6 +90,7 @@ void pads_read(uint64_t *buttons, int32_t stick[4]) {
 }
 void binds_load(void) {
     key_bind[B_X][0] = 'P';
+    pad_bind[HOS_KEY_SPRINT][0] = pad_bind[HOS_KEY_SPRINT][1] = -1;
     /* (the left stick's and the camera's keys are bindings too: the defaults, WASD and the arrows) */
     key_bind[HOS_KEY_MOVE_UP][0] = 'W', key_bind[HOS_KEY_MOVE_DOWN][0] = 'S', key_bind[HOS_KEY_MOVE_LEFT][0] = 'A';
     key_bind[HOS_KEY_MOVE_RIGHT][0] = 'D', key_bind[HOS_KEY_CAM_UP][0] = VK_UP, key_bind[HOS_KEY_CAM_DOWN][0] = VK_DOWN;
