@@ -225,7 +225,6 @@ std::condition_variable job_cv;
 int job_slots = 1;
 constexpr size_t kUnrollWords = 120000;              // (a layer unrolled to more than this is left rolled)
 constexpr uint64_t kBuildHeadroom = 8ull << 30;     // (memory to spare before a build starts)
-int jobs_running = 0;   // (with mu)
 
 bool on() {
     static const bool v = env_switch("RX_VK_FSR4_TUNE") != 0 && dev.props.vendorID == 0x1002;
@@ -364,10 +363,6 @@ void build_unrolled(VkPipeline original, std::shared_ptr<std::vector<uint32_t>> 
             job_cv.notify_one();
         }
     } slot;
-    {
-        std::lock_guard lk(mu);
-        jobs_running++;
-    }
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<uint32_t> unrolled;
     int left = -1;
@@ -408,10 +403,6 @@ void build_unrolled(VkPipeline original, std::shared_ptr<std::vector<uint32_t>> 
             better[original] = made;
             better_count++;
         }
-    }
-    {
-        std::lock_guard lk(mu);
-        --jobs_running;
     }
     // (each one kept as soon as it is built, whether or not the game closes normally: a build of a minute is not done again)
     if (made && s > 1.0) pipeline_cache_save_play();
