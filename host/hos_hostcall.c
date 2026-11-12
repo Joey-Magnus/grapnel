@@ -87,8 +87,8 @@ int a64_call_miss(Ctx *c, uint64_t target) {
     uint64_t i = (target - HOS_HOSTCALL_BASE) / 16;
     if (i >= (uint64_t)ncalls) return 0;
     HostCall *h = &calls[i];
-    /* (the ring and the counts only for HOS_HOSTCALL_STATS / HOS_HLE_STATS / tracing: every NVN call took two interlocked increments
-       on lines all game threads share) */
+    /* (the ring and the counts only for HOS_HOSTCALL_STATS / HOS_HLE_STATS / tracing: every NVN call took two interlocked
+       increments on lines all game threads share) */
     static int stats = -1;
     if (stats < 0) stats = env_on("HOS_HOSTCALL_STATS") || hos_trace || hos_hle_stats;
     if (!stats) {
