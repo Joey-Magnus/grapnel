@@ -4713,6 +4713,20 @@ void texture_released(const nvn_tex* t) {
         }
 }
 
+void texture_pool_finalized(uint64_t lo, uint64_t hi) {
+    if (hi <= lo || env_on("RX_VK_KEEP_FINALIZED_POOLS")) return;
+    for (auto it = gpu_owned.lower_bound(lo); it != gpu_owned.end() && it->first < hi;)
+        it = it->second.first <= hi ? gpu_owned.erase(it) : std::next(it);
+    const uint32_t gen = memory_generation();
+    for (auto& kv : textures) {
+        Texture* t = kv.second.get();
+        if (t->gpu >= lo && t->gpu < hi && t->gpu_written && !t->released) {
+            t->released = true;
+            t->release_gen = gen;
+        }
+    }
+}
+
 uint64_t texture_made() {
     return st_made;
 }

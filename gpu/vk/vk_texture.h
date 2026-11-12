@@ -191,6 +191,9 @@ Texture* texture_for_present(const nvn_tex* t);
 /// Ages the cache by one present; images nothing used for a while go, after the work that last read them
 void texture_frame(uint64_t completed_value);
 void texture_released(const nvn_tex* t);
+/// (hookshot) An NVN memory pool in [lo, hi) was finalized and left the guest pool table: its GPU-owned ranges and
+/// GPU-written textures are marked released so keep_finalized and drawn_over do not pin dead pools' targets forever
+void texture_pool_finalized(uint64_t lo, uint64_t hi);
 /// (diagnostics: what guest memory holds of a texture's storage now, level by level, logged)
 void texture_log_guest(const Texture* t);
 /// (diagnostics, the replay's lock held) the textures the GPU wrote in [gpu, gpu + size), appended to out

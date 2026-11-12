@@ -105,7 +105,7 @@ std::atomic<uint64_t> guest_pools_gen{1};   // (bumped when that table is replac
 std::map<uint64_t, Pool> imported;    // by lo, made on first use
 Pool* last_pool = nullptr;            // (the last pool_of hit: draws in a row bind buffers of the same pools)
 extern Pool* pool_cache[4096];
-void retire_pool(std::map<uint64_t, Pool>::iterator it);
+void retire_pool(std::map<uint64_t, Pool>::iterator it, bool inherit = true);
 Pool* pool_lookup(uint64_t guest, uint64_t size);
 struct SrwMutex {   // (a slim reader/writer lock: half std::mutex's cost, taken for every buffer a draw binds)
     SRWLOCK l = SRWLOCK_INIT;
@@ -925,7 +925,7 @@ uint64_t cap_spare_max() {
     static const uint64_t v = [] {
         if (const char* e = getenv("RX_VK_CAP_SPARE_MB")) return e[0] && atoll(e) ? (uint64_t)atoll(e) << 20 : ~0ull;
         uint64_t used = 0, allowed = 0;
-        return vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 32ull << 20 : ~0ull;
+        return vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 32ull << 20 : 128ull << 20;
     }();
     return v;
 }
@@ -1030,9 +1030,9 @@ bool cap_buf_get(uint64_t need, VkBuffer& buffer, VmaAllocation& alloc, void*& m
     std::lock_guard lk(cap_free_mu);
     if (cap_prewarm_on()) {
         static bool first = true;
-        if (first) {   // (the first capture: the classes a load asks for)
+        if (first) {   // (the first capture: the classes a load asks for, within cap_spare_max)
             first = false;
-            for (uint64_t c : {32ull << 20, 64ull << 20, 128ull << 20, 192ull << 20}) cap_prewarm_class(c);
+            for (uint64_t c : {32ull << 20, 64ull << 20}) cap_prewarm_class(c);
         }
     }
     size_t best = cap_free.size();
@@ -1909,11 +1909,13 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
     st_tk_lock += std::chrono::duration<double, std::milli>(tk_locked - tl).count();
     cur_cap_value = value;
     cur_cap_gen = 0;
-    // (captures past the last kKeep, or past the byte budget, retired once the work that read them is done)
+    // (captures past the last kKeep, or past the byte budget, or idle for 120+ submissions past 96 MB, retired once the work that read them is done)
     while (!cap_bufs.empty()) {
         auto oldest = cap_bufs.begin();
-        const bool over = cap_bufs.size() > kKeep || cap_bytes > kCapBytesMax;
-        if (!over || std::max(oldest->second.value, oldest->second.last_use) > completed) break;
+        const uint64_t last_val = std::max(oldest->second.value, oldest->second.last_use);
+        const bool over = cap_bufs.size() > kKeep || cap_bytes > kCapBytesMax ||
+                          (cap_bytes > (96ull << 20) && last_val + 120 <= completed);
+        if (!over || last_val > completed) break;
         cap_buf_retire(oldest);
     }
     uint32_t g = 0;
@@ -2552,7 +2554,7 @@ void cut_cpu_words(const Pool& p, std::vector<VkBufferCopy>& runs) {
 // a parallel replay thread's pool cache still point at a live one.)
 std::deque<std::map<uint64_t, Pool>::node_type> retired_pools;
 
-void retire_pool(std::map<uint64_t, Pool>::iterator it) {
+void retire_pool(std::map<uint64_t, Pool>::iterator it, bool inherit) {
     Pool* old = &it->second;
     shadow_free(*old);   // (its write-backs in this submission, if any, copied whole)
     guest_pages_set(old->lo, old->hi, 0);
@@ -2565,14 +2567,57 @@ void retire_pool(std::map<uint64_t, Pool>::iterator it) {
     // foliage records, written by the GPU while the scene loaded and its pools were remade larger, came out zero: every
     // count 0, the trees' leaf clusters never drawn. RX_VK_NO_INHERIT=1: as before
     static const bool no_inherit = env_on("RX_VK_NO_INHERIT");
-    if (old->mstate == Pool::MIRROR_ON && !no_inherit) old->inherit_pending = true, old->retired_epoch = mirror_epoch;
+    if (inherit && old->mstate == Pool::MIRROR_ON && !no_inherit) old->inherit_pending = true, old->retired_epoch = mirror_epoch;
     pools_gen++;
     retired_pools.push_back(imported.extract(it));
     last_pool = nullptr;
     std::fill(std::begin(pool_cache), std::end(pool_cache), nullptr);
     static int logged;
-    if (logged++ < 8 || retired_pools.size() % 64 == 0)
+    if (inherit && (logged++ < 8 || retired_pools.size() % 64 == 0))
         logf("vk: pool %#llx remade larger (%zu retired)", (unsigned long long)old->lo, retired_pools.size());
+}
+
+void retire_finalized_pools() {   // (pools_mu held)
+    static const bool keep = env_on("RX_VK_KEEP_FINALIZED_POOLS");
+    if (keep || imported.empty()) return;
+    static uint64_t checked_gen = ~0ull;
+    const uint64_t gen = guest_pools_gen.load(std::memory_order_relaxed);
+    if (gen == checked_gen) return;
+    checked_gen = gen;
+    std::vector<std::pair<uint64_t, uint64_t>> gone;
+    uint64_t freed_bytes = 0;
+    for (auto it = imported.begin(); it != imported.end();) {
+        const uint64_t lo = it->second.lo, hi = it->second.hi;
+        auto g = std::lower_bound(guest_pools.begin(), guest_pools.end(), hi,
+                                  [](const GuestPool& p, uint64_t v) { return p.lo < v; });
+        const bool alive = g != guest_pools.begin() && std::prev(g)->hi > lo;
+        if (alive) {
+            ++it;
+            continue;
+        }
+        auto cur = it++;
+        freed_bytes += hi - lo;
+        gone.push_back({lo, hi});
+        retire_pool(cur, false);
+    }
+    if (gone.empty()) return;
+    {
+        std::lock_guard sk(shadow_mu);
+        for (const auto& [lo, hi] : gone) {
+            for (auto it = tex_spans.lower_bound(lo); it != tex_spans.end() && it->first < hi;)
+                it = it->second.first <= hi ? tex_spans.erase(it) : std::next(it);
+            shadow_drop_range(lo, hi);
+        }
+        tex_spans_changed = true;
+    }
+    for (const auto& [lo, hi] : gone) texture_pool_finalized(lo, hi);
+    static uint64_t total_n, total_bytes;
+    total_n += gone.size(), total_bytes += freed_bytes;
+    static int logged;
+    if (logged++ < 32 || logged % 16 == 0)
+        logf("vk: %zu finalized pool(s) retired (%llu MB; %llu pools, %llu MB in all)", gone.size(),
+             (unsigned long long)(freed_bytes >> 20), (unsigned long long)total_n,
+             (unsigned long long)(total_bytes >> 20));
 }
 int64_t st_sync_bytes, st_sync_copies, st_wb_bytes, st_mirrors;
 int64_t st_sync_live_pages, st_sync_cap_pages, st_sync_old_pages;   // (mirror syncs' dirty pages: live / this submit's capture / an earlier one's)
@@ -3354,6 +3399,7 @@ void imports_give_back() {   // (pools_mu held)
 
 void memory_begin_submission() {
     std::lock_guard lk(pools_mu);
+    retire_finalized_pools();
     reap_mirrors();
     retired_imports_give_back();
     mirror_epoch++;
@@ -3366,7 +3412,7 @@ void memory_begin_submission() {
     {
         uint64_t want = 0;
         for (Pool* p : mirror_wanted) want += p->hi - p->lo;
-        if (mirror_epoch % 64 == 0 || mirror_bytes + want > mirror_budget()) mirrors_give_back(want);
+        if (mirror_epoch % 64 == 0 || mirror_bytes + want > mirror_budget() || !retired_pools.empty()) mirrors_give_back(want);
     }
     if (mirror_wanted.empty()) return;
     for (Pool* p : mirror_wanted) mirror_make(*p);

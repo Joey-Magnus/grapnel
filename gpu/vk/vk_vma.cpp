@@ -103,7 +103,12 @@ VmaPool images_pool() {
         uint64_t heap = 0;
         for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
             if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, dev.memory.memoryHeaps[h].size);
-        uint64_t n = std::clamp<uint64_t>(heap / 100 * 15 / kImageBlock, 2, 24);
+        // (hookshot) When sampled textures have their own pool (RX_VK_COMPACT) or render targets have theirs (RX_VK_TARGET_BLOCKS),
+        // image_pool holds only DLSS, frame interpolation and scratch images (~80 MB): preallocating 15% of VRAM here pinned ~1.1 GB
+        // of empty blocks on an 8 GB card that VMA never frees and that fooled room_in_blocks into thinking 1 GB was free for textures.
+        const bool split = (!getenv("RX_VK_COMPACT") || atoi(getenv("RX_VK_COMPACT")) != 0) ||
+                           (!getenv("RX_VK_TARGET_BLOCKS") || atoi(getenv("RX_VK_TARGET_BLOCKS")) != 0);
+        uint64_t n = split ? 0 : std::clamp<uint64_t>(heap / 100 * 15 / kImageBlock, 2, 24);
         if (const char* e = getenv("RX_VK_IMAGE_PREALLOC")) n = (uint64_t)std::max(0, atoi(e));
         pi.minBlockCount = (size_t)n;
         if (n && vmaCreatePool(vma, &pi, &image_pool) != VK_SUCCESS) {   // (no room for them: as before, made as needed)
