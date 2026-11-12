@@ -24,6 +24,15 @@ Studio's C++ tools; on Linux clang and lld. For the Vulkan back end: distro Vulk
 (`RX_CPM`, else `cpm` in the clone, else the old caches in mkw-recomp's `work/eg` or `..\Eglantine\.cache\cpm`).
 Without those the standalone build stops. [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) has the rest.
 
+On Linux, `make_game.py` checks the mandatory Python modules, compilers/linker, renderer headers and FFmpeg
+development libraries before reading or translating the dump, and lists every missing prerequisite in one error.
+It uses the compile's lookup order: CPM caches first, then `HOOKSHOT_*_HEADERS`, then `/usr/local` and `/usr`;
+FFmpeg comes from `HOOKSHOT_FFMPEG` when it holds `lib/libavcodec.a`, otherwise from `pkg-config`. The C probe
+uses the selected compiler, lld and `HOOKSHOT_SYSROOT` if set. A prebuilt renderer does not need renderer headers
+or a C++ compiler unless an NGX SDK selects a source renderer instead. The AppImage uses its bundled tools,
+and `RX_TARGET=windows` keeps the Windows toolchain checks rather than requiring Linux development libraries.
+The button-prompt packages in `nx2/prompt_requirements.txt` remain optional; this check installs nothing.
+
 Run everything with `python -I` from this folder.
 
 | Command | What |
