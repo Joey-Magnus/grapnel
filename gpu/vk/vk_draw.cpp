@@ -1799,6 +1799,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
          made.load(), missing.load(), variant_of.size() - plain_wanted, variants_made.load(), plain_wanted, plain_of.size(), noted_n,
          noted_mesh, noted_fallback, noted_plain, no_variant, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     if (open_seed && !env_on("RX_VK_SEED_CHECK")) seed_close();
+    if (env_on("HOOKSHOT_DECK_PREPARE")) program_cache_release_loaded();
 }
 
 // ---- (hookshot) Stage libraries, as TotK Recomp's runtime/vk_pipeline.c: the part of a pipeline that costs is its shaders, and with
@@ -7593,13 +7594,18 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     return typed_upscale(cmd, dw().imgs[0].imageView, dw().imgs[ntex].imageView, out, level, p.key, keys, true);
 }
 
+static bool portable_cache_ready();
 bool precompile_wanted() {
 #if defined(HOOKSHOT_RELEASE)
     bool on = true;
 #else
     bool on = false;
 #endif
-    if (const char* e = getenv("RX_VK_PRECOMPILE")) on = atoi(e) != 0;
+    if (const char* e = getenv("RX_VK_PRECOMPILE")) return atoi(e) != 0;
+    if (on && portable_cache_ready()) {
+        logf("vk: prepared portable cache: programs and pipelines are loaded when drawn");
+        return false;
+    }
     return on;
 }
 namespace {
@@ -7759,6 +7765,25 @@ uint64_t warmed_stamp(bool libraries) {
     add(v, sizeof v);
     return h;
 }
+static bool portable_cache_ready() {
+#ifdef _WIN32
+    return false;
+#else
+    if (env_on("RX_VK_PREPARE_AGAIN")) return false;
+    const std::string record = prepared_path();
+    const std::string folder = record.substr(0, record.find_last_of("\\/") + 1) + "hookshot_steamdeck_cache";
+    const DWORD attrs = GetFileAttributesA(folder.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    PreparedFor prepared;
+    double hash_ms = 0;
+    if (prepare_check(record, seed_path(), program_cache_stamp(), &prepared, &hash_ms) != PrepareWhy::None ||
+        !prepared.seed_size || prepared.warmed != warmed_stamp(gpl_wanted() && !env_on("RX_VK_NO_WARM"))) return false;
+    // The ready record alone is not enough if the program cache was removed.
+    // Enumerating its keys reads metadata, without retaining thousands of shader modules.
+    std::vector<Program*> loaded;
+    return !program_cache_keys(&loaded).empty() || !loaded.empty();
+#endif
+}
 /// (hookshot) An update: every shader was prepared once here, for another translator. Each release changes the translator, and every
 /// update then held the game's start for the whole seed again (116k variants, minutes on most PCs: "shaders need to be prepared every
 /// update"). With RX_VK_PREPARE_BACKGROUND=1 only what the notes name is built before the game (precompile_run), the rest in play
@@ -7810,7 +7835,7 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
     std::atomic<size_t> next{0}, done{0}, libs{0}, variants{0};
     const auto warm = [&](Program& p) {
         // (a fallback program's pipelines are never linked from libraries: graphics_pipeline)
-        if (p.failed || p.compute || p.fallback || p.stages.empty()) return;
+        if (p.failed || p.compute || p.fallback || p.stages.empty() || !prepare_key_selected(p.key)) return;
         ensure_layout(p);
         Targets at{};
         for (int part = 1; part <= 2; part++)
@@ -8073,6 +8098,79 @@ void prepare_progress_log(const char* what, size_t done, size_t total, std::chro
     if (done) logf("vk: %s: %zu of %zu pipelines in %.0f s, about %.0f s left", what, done, total, s, left);
     else logf("vk: %s: 0 of %zu pipelines in %.0f s (the driver compiles the first ones)", what, total, s);
 }
+static void precompile_stream(const std::vector<std::unique_ptr<PipeNote>>& notes,
+                             void (*progress)(size_t done, size_t total)) {
+    const auto t0 = std::chrono::steady_clock::now();
+    program_cache_release_loaded();
+    std::unordered_set<uint64_t> wanted;
+    std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
+    for (const auto& n : notes) wanted.insert(n->prog), by_program[n->prog].push_back(n.get());
+    const char* which = getenv("RX_VK_PRECOMPILE_COMPUTES");
+    const auto used = computes_read();
+    const bool all = which ? !strcmp(which, "all") : used.empty();
+    if (!all && !(which && !strcmp(which, "none"))) wanted.insert(used.begin(), used.end());
+    auto keys = program_cache_precompile_keys(wanted, all, true);
+    std::erase_if(keys, [](uint64_t key) { return !prepare_key_selected(key); });
+    size_t total = keys.size();
+    for (uint64_t key : keys)
+        if (const auto found = by_program.find(key); found != by_program.end()) total += found->second.size();
+    std::atomic<size_t> next{0}, done{0}, graphics{0}, computes{0};
+    const auto worker = [&] {
+        ub_thread_off();
+        driver_cache_only = true; // The private Mesa disk cache travels with an offline Deck build.
+        for (;;) {
+            const size_t i = next++;
+            if (i >= keys.size() || prepare_stopped()) return;
+            const auto found = by_program.find(keys[i]);
+            size_t counted = 0;
+            program_cache_borrow(keys[i], [&](Program& p) {
+                ensure_layout(p);
+                if (p.compute) {
+                    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+                    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                    ci.stage.module = p.stages[0].module;
+                    ci.stage.pName = "main";
+                    pin_subgroup(ci.stage, p.workgroup[0]);
+                    ci.layout = p.layout;
+                    VkPipeline made = VK_NULL_HANDLE;
+                    if (cached_compute(&ci, &made) == VK_SUCCESS && made) {
+                        vkDestroyPipeline(dev.device, made, nullptr);
+                        computes++;
+                    }
+                } else if (p.fallback) {
+                    fallback_compute_pipelines(p); // Borrow releases these handles with the program.
+                }
+                if (found != by_program.end())
+                    for (const PipeNote* n : found->second)
+                        if (n->variant == p.variant && !prepare_stopped()) {
+                            if (const VkPipeline made = build_graphics(p, n->s, note_targets(*n),
+                                                                      pipeline_topology(p, (VkPrimitiveTopology)n->topo))) {
+                                vkDestroyPipeline(dev.device, made, nullptr);
+                                graphics++;
+                            }
+                            done++, counted++;
+                        }
+            });
+            if (found != by_program.end() && counted < found->second.size()) done += found->second.size() - counted;
+            done++;
+        }
+    };
+    std::vector<std::thread> threads;
+    for (unsigned i = 0; i < std::min(usable_cpus(), 4u); i++) threads.emplace_back(worker);
+    auto log_at = t0 + std::chrono::seconds(10);
+    while (done.load() < total && !prepare_stopped()) {
+        if (progress) progress(done.load(), total);
+        prepare_progress_log("streamed pipeline groups", done.load(), total, t0, log_at);
+        Sleep(100);
+        if (next.load() >= keys.size() + threads.size()) break;
+    }
+    for (auto& thread : threads) thread.join();
+    if (progress) progress(done.load(), total);
+    logf("vk: streamed precompile: %zu program groups, %zu graphics and %zu compute pipelines in %.1f s; objects released after use",
+         keys.size(), graphics.load(), computes.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+}
+
 void precompile_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
@@ -8113,6 +8211,11 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     const std::unordered_set<uint64_t> used = computes_read();
     const bool all_computes = which ? !strcmp(which, "all") : used.empty();
     if (!all_computes && !(which && !strcmp(which, "none"))) wanted.insert(used.begin(), used.end());
+    if (env_on("HOOKSHOT_DECK_PREPARE")) {
+        precompile_stream(notes, progress);
+        predicted_check();
+        return;
+    }
     std::vector<Program*> computes, fallbacks;
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
         ensure_layout(p);
@@ -8313,6 +8416,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     size_t programs = 0;
     PredictCounts left_out;
     std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs, &left_out);
+    std::erase_if(predicted, [](const auto& note) { return !prepare_key_selected(note->prog); });
     const double decide_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const size_t notes_n = notes.size(), predicted_n = predicted.size();
     // (the workers' state on the heap, as precompile_run's: a pipeline the driver never finishes (builds stuck after "vertex format

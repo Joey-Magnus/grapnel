@@ -111,6 +111,7 @@ int driver_faults() { return faults.load(); }
 void prepare_left_workers_note() { left_noted = true; }
 void prepare_progress_log(const char*, size_t, size_t, std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point&) {}
 void ub_thread_off() {}
+bool prepare_key_selected(uint64_t) { return true; }
 void Sleep(unsigned ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
     std::vector<std::unique_ptr<PipeNote>> v;

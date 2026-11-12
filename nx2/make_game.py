@@ -52,6 +52,7 @@ STARTED = time.time()   # (the build's total time, kept in build_times.json and 
 sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
 import toolchain as _toolchain
 import disk as _disk
+import steamdeck_shaders
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
@@ -1876,6 +1877,8 @@ def parse_args():
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
     p.add_argument("--no-prepare-shaders", action="store_true",
                    help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
+    p.add_argument("--steamdeck", metavar="SSH_ADDRESS",
+                   help="prepare shaders on this Linux PC for a Steam Deck, using its driver over SSH (deck@steamdeck)")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
@@ -1893,6 +1896,15 @@ def parse_args():
         a.out = a.out or (os.path.join(os.path.dirname(os.environ["HOOKSHOT_SETUP_BASE"]), "Hookshot")
                           if os.name == "nt" and os.environ.get("HOOKSHOT_BUILDER_PORTABLE") == "1" and
                           os.environ.get("HOOKSHOT_SETUP_BASE") else os.path.join(os.path.expanduser("~"), "Games", "Hookshot"))
+    if a.steamdeck is not None:
+        try:
+            a.steamdeck = steamdeck_shaders.target(a.steamdeck)
+        except steamdeck_shaders.DeckError as error:
+            fail(str(error))
+        if not LINUX:
+            fail("--steamdeck needs a native Linux build on an x86-64 Linux PC.")
+        if a.no_prepare_shaders:
+            fail("--steamdeck cannot be combined with --no-prepare-shaders.")
     if a.game:   # (a path from a launcher: said plainly before any folder is made, not as a traceback halfway in)
         if os.path.isdir(a.game):
             a.romfs, a.exefs = os.path.join(a.game, "romfs"), os.path.join(a.game, "exefs")
@@ -2017,6 +2029,13 @@ def main(a=None):
     # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
     # compiler is still said before the long compile, not after the package has been read
     check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
+    deck_driver = None
+    if getattr(a, "steamdeck", None):
+        try:
+            steamdeck_shaders.check_worker()
+            deck_driver = steamdeck_shaders.fetch_driver(a.steamdeck, os.path.join(work, "steamdeck-drivers"))
+        except (steamdeck_shaders.DeckError, OSError, subprocess.SubprocessError) as error:
+            fail("Steam Deck shader preparation: %s" % error)
     if not LINUX:
         check_windows_sdk()
     stop_stray_compilers(work, a.default_work)
@@ -2127,6 +2146,8 @@ def main(a=None):
     if os.path.exists(src):
         copy_writable(src, os.path.join(work, "image", "chunks.txt"))
     env = {"OOT_WORK": work, "OOT_EXEFS": exefs, "OOT_ROMFS": romfs, "OOT_DUMP": out, "RX_RELEASE": "1", "A64_HOT_CHUNK": "1"}
+    if deck_driver:
+        env["RX_STEAMDECK"] = "1"
     if os.path.exists(os.path.join(work, "hot_funcs.txt")):
         env["A64_HOT_FUNCS"] = os.path.join(work, "hot_funcs.txt")
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
@@ -2403,7 +2424,15 @@ def main(a=None):
     if skipped:
         not_prepared(skipped)
     else:
-        prepare_shaders([os.path.join(game_dir, BESIDE[0]), "--prepare-shaders"], out)
+        cmd = [os.path.join(game_dir, BESIDE[0]), "--prepare-shaders"]
+        if deck_driver:
+            try:
+                steamdeck_shaders.prepare_game(out, deck_driver, os.path.join(work, "steamdeck-prepare"),
+                                              runner=lambda command, folder: prepare_shaders(command, folder))
+            except (steamdeck_shaders.DeckError, OSError, subprocess.SubprocessError) as error:
+                not_prepared(str(error))
+        else:
+            prepare_shaders(cmd, out)
     say("done", out)
 
 

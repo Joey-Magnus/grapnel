@@ -129,6 +129,28 @@ update.
 The same AppImage also builds and starts the game without opening the window, for a machine you reach over SSH or for a
 script: see [Linux, the AppImage from the command line](#build-from-source).
 
+**Building for a Steam Deck:** leave **Prepare shaders now** ticked, select **Prepare for Steam Deck on this PC**, and
+enter the Deck's SSH address (for example `deck@steamdeck`). Set up SSH key access first: the builder connects without
+asking for a password. It reads the Deck's graphics driver and prepares the shaders and pipelines with this PC's CPU,
+moving the bulk of first-start preparation off the Deck. The Deck must stay reachable while the driver is read.
+The [builder screenshot](docs/images/linux-builder-steamdeck.png) shows the option selected.
+The driver stays in the builder cache; copy the complete game folder, including `hookshot_steamdeck_cache` and its
+shader and pipeline caches, to the Deck. These caches are for that GPU and driver: a SteamOS driver update can require
+preparation again. With a matching prepared cache, the game loads programs and pipelines as they are drawn, keeping
+the whole prepared shader bank out of the Deck's limited RAM.
+
+This option needs an x86-64 Linux PC with a systemd user session, at least 8 GiB of available RAM, and the ability to load
+the Deck's driver. Preparation uses at most four workers and 8 GiB of RAM, without swap, in a temporary folder; a failed
+worker leaves the game's existing caches intact. Fresh workers handle the preparation in batches so the driver releases
+its compiler memory between them. A host with an older C library may need a system
+update; the normal Linux build remains available. The builder checks the offline GPU identity and pipeline-cache UUID
+against the real Deck and refuses a mismatch. The full cache was accepted on an LCD Deck, and a short offscreen run
+rendered a copied save in Kakariko Village; see [tested configurations](docs/tested-configurations.md) for the measured
+results and limits. Other Deck hardware must pass
+the same identity check. From a source checkout, add `--steamdeck deck@steamdeck` to `nx2/make_game.py`, or prepare an existing
+game folder with `python -I nx2/steamdeck_shaders.py --game /path/to/Hookshot --deck deck@steamdeck`. The AppImage builds
+against glibc 2.35; a source build still needs a sysroot compatible with the Deck.
+
 For fast GPU memory imports on Linux, the game user needs read/write access to `/dev/udmabuf` (the kernel's
 `udmabuf` module). Without it, Hookshot falls back to host-pointer imports, which can be much slower on AMD/RADV
 (NVIDIA's driver refuses these dma-bufs, so on NVIDIA the game uses host-pointer imports, which are not slow there);

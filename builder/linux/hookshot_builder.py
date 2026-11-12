@@ -470,6 +470,10 @@ class Builder(tk.Tk):
         code = self.cfg.get("language", "en-US")
         self.language = tk.StringVar(value=dict(make_game.LANGUAGES).get(code, names[0]))
         self.prepare = tk.BooleanVar(value=self.cfg.get("prepare", "1") != "0")   # (make_game.py's last step: off, at the first start)
+        self.deck_shaders = tk.BooleanVar(value=self.cfg.get("deck_shaders", "0") == "1")
+        self.deck_host = tk.StringVar(value=self.cfg.get("deck_host", "deck@steamdeck"))
+        if self.deck_shaders.get():
+            self.prepare.set(True)
         self.dlss = tk.BooleanVar(value=self.cfg.get("dlss", "0") == "1")
         self.check_text = tk.StringVar()
         self.space_text = tk.StringVar()
@@ -794,7 +798,7 @@ class Builder(tk.Tk):
         ttk.Label(f, text="Build your game", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(f, text="Pick your game files and where the game goes. Hookshot does the rest, once.", style="Sub.TLabel",
                   wraplength=px(800)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
-        if game_ready(self.cfg.get("out")):
+        if game_ready(self.cfg.get("out")) and not self.deck_shaders.get():
             played = ttk.Frame(f)
             played.grid(row=2, column=0, columnspan=3, sticky="w", pady=(px(16), 0))
             ttk.Button(played, text="Play the game built in %s" % self.cfg["out"],
@@ -841,9 +845,20 @@ class Builder(tk.Tk):
                              cursor="hand2")
         track.grid(row=1, column=0, sticky="we")
         track.bind("<<ComboboxSelected>>", self.on_track_changed)
-        ttk.Checkbutton(options, text="Prepare shaders now", variable=self.prepare, cursor="hand2").pack(anchor="w")
+        ttk.Checkbutton(options, text="Prepare shaders now", variable=self.prepare, command=self.on_prepare_changed,
+                        cursor="hand2").pack(anchor="w")
         ttk.Label(options, text="A few minutes at the end of the build. Unticked, the game prepares them at its first start, "
                   "behind a black window.", style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
+        ttk.Checkbutton(options, text="Prepare for Steam Deck on this PC", variable=self.deck_shaders,
+                        command=self.on_deck_changed, cursor="hand2").pack(anchor="w", pady=(px(8), 0))
+        deck = ttk.Frame(options)
+        deck.pack(anchor="w", fill="x", padx=(px(26), 0), pady=(px(2), 0))
+        ttk.Label(deck, text="Deck SSH address", style="Small.TLabel").pack(side="left", padx=(0, px(8)))
+        self.deck_entry = ttk.Entry(deck, textvariable=self.deck_host, width=24, font="HsNote",
+                                    state="normal" if self.deck_shaders.get() else "disabled")
+        self.deck_entry.pack(side="left")
+        ttk.Label(options, text="Uses the Deck's driver with this PC's CPU. Set up SSH access to the Deck first.",
+                  style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
         ttk.Checkbutton(options, text="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)", variable=self.dlss,
                         command=self.on_dlss_changed, cursor="hand2").pack(anchor="w", pady=(px(12), 0))
         ttk.Label(options, text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them.",
@@ -1139,6 +1154,16 @@ class Builder(tk.Tk):
 
         threading.Thread(target=run, daemon=True).start()
 
+    def on_prepare_changed(self):
+        if not self.prepare.get():
+            self.deck_shaders.set(False)
+        self.deck_entry.configure(state="normal" if self.deck_shaders.get() else "disabled")
+
+    def on_deck_changed(self):
+        if self.deck_shaders.get():
+            self.prepare.set(True)
+        self.deck_entry.configure(state="normal" if self.deck_shaders.get() else "disabled")
+
     def start_make_update(self, folder):
         if not folder:
             self.show_form()
@@ -1147,7 +1172,9 @@ class Builder(tk.Tk):
             return
         dlss = bool(self.dlss.get()) if getattr(self, "dlss_toggled", False) else folder_has_dlss(folder)
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update", folder] + \
-            ([] if self.prepare.get() else ["--no-prepare-shaders"]) + dlss_args(dlss)   # (as the last build chose)
+            ([] if self.prepare.get() else ["--no-prepare-shaders"]) + dlss_args(dlss) + \
+            (["--steamdeck", self.deck_host.get().strip()] if getattr(self, "deck_shaders", None) and
+             self.deck_shaders.get() and self.prepare.get() else [])   # (as the last build chose)
         self.heading.configure(text="Updating your game")
         self.stage_text.set("Compiling what changed")
         self.started = time.time()
@@ -1196,12 +1223,14 @@ class Builder(tk.Tk):
         code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
         dlss = bool(self.dlss.get()) if hasattr(self, "dlss") else False
         self.cfg.update(kind=self.kind.get(), nup=self.nup.get(), romfs=self.romfs.get(), exefs=self.exefs.get(), out=out, language=code,
-                        prepare="1" if self.prepare.get() else "0", **({"dlss": "1" if dlss else "0"} if hasattr(self, "dlss") else {}))
+                        prepare="1" if self.prepare.get() else "0", deck_shaders="1" if self.deck_shaders.get() else "0",
+                        deck_host=self.deck_host.get().strip(), **({"dlss": "1" if dlss else "0"} if hasattr(self, "dlss") else {}))
         save_config(self.cfg)
         # (issue 531) Without HOOKSHOT_JOBS or RX_JOBS, make_game chooses as on Windows, from the memory free now; this window chose
         # fewer, 80% of the total memory at 3.5 GB each, and the CPU sat at 29%
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
             ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"]) + \
+            (["--steamdeck", self.deck_host.get().strip()] if self.deck_shaders.get() and self.prepare.get() else []) + \
             (dlss_args(True) if dlss else [])
         slow = slow_disk_warning(out)   # (a warning, not a stop: a hard drive still builds, only much slower)
         if slow is not None and not messagebox.askokcancel("Hookshot", slow):
@@ -1387,12 +1416,16 @@ class Builder(tk.Tk):
                 text += " · the shaders are prepared at its first start"
             self.stage_text.set(text)
             self.bar.configure(value=1.0)
-            try:
-                add_to_menu(folder)
-            except (OSError, ValueError):   # (no menu entry; the game is built)
-                pass
-            ttk.Button(self.buttons, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
-                       command=lambda: self.play_and_close(folder)).pack(side="right", padx=self.px(4))
+            if self.deck_shaders.get():
+                text += " · copy this folder to your Steam Deck"
+                self.stage_text.set(text)
+            else:
+                try:
+                    add_to_menu(folder)
+                except (OSError, ValueError):   # (no menu entry; the game is built)
+                    pass
+                ttk.Button(self.buttons, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
+                           command=lambda: self.play_and_close(folder)).pack(side="right", padx=self.px(4))
             ttk.Button(self.buttons, text="Open folder", cursor="hand2",
                        command=lambda: subprocess.Popen(["xdg-open", folder])).pack(side="right", padx=self.px(4))
             self.heading.configure(text="Your game is ready")

@@ -43,6 +43,7 @@ class BuildHarness:
         self.gui = SimpleNamespace(
             out=value(str(folder / "out")), kind=value(kind), nup=value(str(nup)),
             romfs=value(str(romfs)), exefs=value(str(exefs)), language=value("English (US)"), prepare=value(True),
+            deck_shaders=value(False), deck_host=value("deck@steamdeck"),
             cfg={"previous": "kept"}, show_progress=lambda: self.events.append(("progress",)), read=lambda proc: None,
             tick=lambda: self.events.append(("tick",)))
 
@@ -82,6 +83,30 @@ class BuilderBuildJobsTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.folder = Path(self.temporary.name)
 
+    def test_deck_build_finishes_with_copy_instructions_and_no_pc_shortcut(self):
+        method = next(n for n in builder.body if isinstance(n, ast.FunctionDef) and n.name == 'on_exit')
+        code = compile(ast.Module(body=[method], type_ignores=[]), str(SOURCE), 'exec')
+        for for_deck in (False, True):
+            labels, menu = [], []
+            text = SimpleNamespace(set=lambda value: labels.append(value))
+            buttons = []
+            scope = {'time': SimpleNamespace(time=lambda: 60), 'game_ready': lambda folder: True,
+                     'add_to_menu': lambda folder: menu.append(folder),
+                     'ttk': SimpleNamespace(Button=lambda parent, **kw:
+                                            (buttons.append(kw['text']) or SimpleNamespace(pack=lambda **kw: None)))}
+            exec(code, scope)
+            gui = SimpleNamespace(proc=None, built='/game', started=0, times=None, shaders_later=False,
+                                  time_text=text, stage_text=text, deck_shaders=value(for_deck),
+                                  buttons=SimpleNamespace(winfo_children=lambda: []),
+                                  bar=SimpleNamespace(configure=lambda **kw: None),
+                                  heading=SimpleNamespace(configure=lambda **kw: None),
+                                  stage_label=SimpleNamespace(configure=lambda **kw: None),
+                                  images={'play': None}, px=lambda n: n, set_step=lambda n: None)
+            scope['on_exit'](gui, 0)
+            self.assertEqual('Play' in buttons, not for_deck)
+            self.assertEqual(bool(menu), not for_deck)
+            self.assertEqual(any('copy this folder to your Steam Deck' in line for line in labels), for_deck)
+
     def assert_started(self, harness, jobs=None):
         self.assertEqual([event[0] for event in harness.events], ["save", "progress", "process", "thread", "start", "tick"])
         gui = harness.gui
@@ -95,7 +120,7 @@ class BuilderBuildJobsTests(unittest.TestCase):
                                        encoding="utf-8", errors="replace", start_new_session=True))
         self.assertEqual(harness.events[0][1], dict(previous="kept", kind=gui.kind.get(), nup=gui.nup.get(),
                                                   romfs=gui.romfs.get(), exefs=gui.exefs.get(), out=gui.out.get(), language="en-US",
-                                                  prepare="1"))
+                                                  prepare="1", deck_shaders="0", deck_host="deck@steamdeck"))
         self.assertEqual(harness.events[3][1], dict(target=gui.read, args=(gui.proc,), daemon=True))
 
     def test_positive_hookshot_jobs_is_passed_on(self):
@@ -103,6 +128,17 @@ class BuilderBuildJobsTests(unittest.TestCase):
         harness.run()
         self.assert_started(harness, 4)
         self.assertEqual(harness.environ, {"HOOKSHOT_JOBS": "4", "RX_JOBS": "2"})
+
+    def test_steamdeck_preparation_passes_the_selected_host(self):
+        harness = BuildHarness(self.folder, {})
+        harness.gui.deck_shaders = value(True)
+        harness.gui.deck_host = value("deck@192.168.1.20")
+        harness.run()
+        command, _ = harness.processes[0]
+        self.assertEqual(command[-2:], ["--steamdeck", "deck@192.168.1.20"])
+        saved = harness.events[0][1]
+        self.assertEqual(saved["deck_shaders"], "1")
+        self.assertEqual(saved["deck_host"], "deck@192.168.1.20")
 
     def test_unticked_prepare_leaves_the_shaders_to_the_first_start(self):
         harness = BuildHarness(self.folder, {})

@@ -53,6 +53,8 @@ typedef void* HANDLE;
 static unsigned fake_hw = 24;
 static uint64_t fake_mask = 0;
 static bool fake_ok = true;
+static bool fake_deck = false;
+static bool env_on(const char*) { return fake_deck; }
 static HANDLE GetCurrentProcess() { return (HANDLE)(intptr_t)-1; }
 static int GetProcessAffinityMask(HANDLE, DWORD_PTR* proc, DWORD_PTR* sys) {
     *proc = (DWORD_PTR)fake_mask, *sys = ~(DWORD_PTR)0;
@@ -87,6 +89,8 @@ int main() {
     CHECK(usable_cpus() == 4 && half_cpus() == 2);
     fake_hw = 0, fake_mask = 0xFF;
     CHECK(usable_cpus() == 1 && half_cpus() == 1);
+    fake_deck = true, fake_hw = 128, fake_mask = ~0ull;
+    CHECK(usable_cpus() == 4 && half_cpus() == 4);
     std::printf("usable and half CPUs: ok\n");
     return 0;
 }
