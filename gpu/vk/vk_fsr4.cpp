@@ -168,14 +168,18 @@ void* symbol(const char* name) {
 #endif
 }
 
-/// (longshot) AMD's passes tuned as the library makes them (fsr4_tune.h: measured gains, outputs bit for bit AMD's): the device
-/// functions it is handed are ours where it makes buffers, layouts, shader modules and compute pipelines and records binds and
-/// dispatches. At once: the network's layers 64 lanes wide, the postpass's weights read from a tail of its storage buffer.
-/// Later: the layers with their loops unrolled (spirv_unroll.h), built on threads of their own (minutes the first time on a
-/// driver, its cache after) and bound in place of the library's once made: RX_VK_FSR4_UNROLL=1 only. Off by default: AMD's
-/// compiler took 40-55 GB of commit charge on the unrolled layers (RX 6700 XT, 16 GB RAM), some failed with out of host
-/// memory and were tried again at every start, and one such start ended in a system crash. RX_VK_FSR4_TUNE=0: as AMD made
-/// them. On AMD's GPUs only (measured on an RX 6700 XT)
+/// AMD's passes tuned as the library makes them (fsr4_tune.h: measured gains, outputs bit for bit AMD's): the device functions
+/// it is handed are ours where it makes buffers, layouts, shader modules and compute pipelines and records binds and
+/// dispatches. At once: the network's layers 64 lanes wide, and the weights the layers and the postpass copy into per-thread
+/// arrays (scratch memory) read from a tail of the library's storage buffer instead. Later: the smaller layers with their loops
+/// unrolled from the library's own code (spirv_unroll.h, its weights then constants in the code), built one at a time on a
+/// thread of their own and bound in place of the library's once made (about a minute each the first time, the pipeline cache
+/// after). On an RX 6700 XT at 720p -> 1440p: 8.97 ms -> 4.04 ms. RX_VK_FSR4_TUNE=0: as AMD made them; RX_VK_FSR4_UNROLL=0: no
+/// unrolled layers. On AMD's GPUs only.
+/// The unrolling's limits are what keep it safe: unrolled whole, the larger layers (passes 4, 5, 10) came to 200,000 words
+/// and AMD's compiler took 40-55 GB of commit charge for them, three at a time, until a PC with 16 GB of RAM crashed. Now a
+/// layer is unrolled only while it stays under kUnrollWords (passes 1, 2 and 12: ~107,000 words, ~3 GB to build), one build
+/// runs at a time, only with kBuildHeadroom of memory to spare, and a build that fails is not tried again
 namespace tune {
 std::mutex mu;
 PFN_vkCreateBuffer real_cb = nullptr;
@@ -188,12 +192,12 @@ PFN_vkCmdBindPipeline real_bind = nullptr;
 PFN_vkCmdDispatch real_dispatch = nullptr;
 PFN_vkCmdUpdateBuffer real_update = nullptr;
 PFN_vkCmdPipelineBarrier real_barrier = nullptr;
-constexpr uint64_t kTail = 64 << 10;   // (bytes added to the library's big storage buffer: the postpass's weights go there)
+constexpr uint64_t kTail = 64 << 10;   // (bytes added to the library's big storage buffer: the weights of the layers and the postpass, ~32 KB)
 VkBuffer big = VK_NULL_HANDLE;          // (its newest: each upscale context makes one)
 uint64_t big_size = 0;                  // (as the library asked for it: the tail starts there)
 std::vector<uint32_t> tail;             // (what the tail holds)
 std::atomic<bool> tail_due{false};      // (written before the first dispatch that reads it)
-std::unordered_map<VkShaderModule, uint8_t> module_kind;   // 1: 64 lanes, 2: reads the tail
+std::unordered_map<VkShaderModule, uint8_t> module_kind;   // (flags) 1: 64 lanes, 2: reads the tail
 std::unordered_map<VkShaderModule, std::shared_ptr<std::vector<uint32_t>>> layer_code;   // (64-lane layers: kept to unroll)
 std::unordered_map<VkShaderModule, std::string> layer_name;
 std::unordered_map<VkPipeline, bool> reads_tail;
@@ -216,9 +220,11 @@ std::unordered_map<VkPipelineLayout, LayoutInfo> layouts;
 std::unordered_map<VkPipeline, VkPipeline> better;
 std::unordered_set<VkPipeline> pending, cancelled;
 std::atomic<int> better_count{0};
-std::mutex job_mu;   // (three jobs at a time: a first build is minutes of CPU, and the game's threads keep theirs)
+std::mutex job_mu;   // (one job at a time: a first build is a minute of CPU and ~3 GB of the driver's memory)
 std::condition_variable job_cv;
-int job_slots = 3;
+int job_slots = 1;
+constexpr size_t kUnrollWords = 120000;              // (a layer unrolled to more than this is left rolled)
+constexpr uint64_t kBuildHeadroom = 8ull << 30;     // (memory to spare before a build starts)
 int jobs_running = 0;   // (with mu)
 
 bool on() {
@@ -226,8 +232,31 @@ bool on() {
     return v;
 }
 bool unroll_on() {
-    static const bool v = env_switch("RX_VK_FSR4_UNROLL") > 0;   // (opt-in: see above)
+    static const bool v = env_switch("RX_VK_FSR4_UNROLL") != 0;
     return v;
+}
+/// What the system can still commit: Windows' commit charge left (RAM and page file), Linux's available memory and free swap.
+/// True when unknown
+bool build_headroom(uint64_t* avail) {
+    *avail = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    if (!GlobalMemoryStatusEx(&m)) return true;
+    *avail = m.ullAvailPageFile;
+#else
+    FILE* f = fopen("/proc/meminfo", "r");
+    if (!f) return true;
+    unsigned long long mem = 0, swap = 0, v = 0;
+    char key[64];
+    while (fscanf(f, "%63s %llu kB\n", key, &v) == 2) {
+        if (!strcmp(key, "MemAvailable:")) mem = v;
+        else if (!strcmp(key, "SwapFree:")) swap = v;
+    }
+    fclose(f);
+    *avail = (uint64_t)(mem + swap) << 10;
+#endif
+    return *avail >= kBuildHeadroom;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL create_buffer(VkDevice d, const VkBufferCreateInfo* ci, const VkAllocationCallbacks* a, VkBuffer* b) {
@@ -287,12 +316,20 @@ VKAPI_ATTR VkResult VKAPI_CALL create_shader_module(VkDevice d, const VkShaderMo
     VkShaderModuleCreateInfo c = *ci;
     {
         std::lock_guard lk(mu);
-        if (fsr4_tune::wants_wave64(entry) && dev.subgroup_max >= 64 && !fsr4_tune::lane_dependent(code, words)) kind = 1;
-        if (fsr4_tune::is_postpass(entry) && big && tail.size() * 4 + 16384 <= kTail &&
-            fsr4_tune::arrays_to_buffer(code, words, (uint32_t)(big_size / 4 + tail.size()), tuned, tail)) {
-            c.codeSize = tuned.size() * 4, c.pCode = tuned.data(), kind = 2, tail_due = true;
-            logf("vk: AMD FSR 4: tuned %s: its constant arrays read from the end of its storage buffer (%zu words there)",
-                 entry.c_str(), tail.size());
+        if (fsr4_tune::wants_wave64(entry) && dev.subgroup_max >= 64 && !fsr4_tune::lane_dependent(code, words)) kind |= 1;
+        // (the layers and the postpass copy constant weight tables into per-thread arrays, which the driver keeps in scratch
+        // memory: read from the tail instead, while it has room)
+        std::vector<uint32_t> add;
+        if ((fsr4_tune::is_postpass(entry) || fsr4_tune::wants_wave64(entry)) && big &&
+            fsr4_tune::arrays_to_buffer(code, words, (uint32_t)(big_size / 4 + tail.size()), tuned, add)) {
+            if ((tail.size() + add.size()) * 4 <= kTail) {
+                tail.insert(tail.end(), add.begin(), add.end());
+                c.codeSize = tuned.size() * 4, c.pCode = tuned.data(), kind |= 2, tail_due = true;
+                logf("vk: AMD FSR 4: tuned %s: its constant arrays read from the end of its storage buffer (%zu words there)",
+                     entry.c_str(), tail.size());
+            } else {
+                logf("vk: AMD FSR 4: %s: its constant arrays left as they were (the tail is full)", entry.c_str());
+            }
         }
     }
     const VkResult r = real_csm(d, &c, a, m);
@@ -303,7 +340,7 @@ VKAPI_ATTR VkResult VKAPI_CALL create_shader_module(VkDevice d, const VkShaderMo
     if (r == VK_SUCCESS && kind) {
         std::lock_guard lk(mu);
         module_kind[*m] = kind;
-        if (kind == 1 && unroll_on()) {
+        if ((kind & 1) && unroll_on()) {   // (the library's own code: unrolled, its weights become constants in it, faster still)
             layer_code[*m] = std::make_shared<std::vector<uint32_t>>(code, code + words);
             layer_name[*m] = entry;
         }
@@ -332,9 +369,14 @@ void build_unrolled(VkPipeline original, std::shared_ptr<std::vector<uint32_t>> 
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<uint32_t> unrolled;
     int left = -1;
-    const bool ok = spirv_unroll::unroll_all(code->data(), code->size(), unrolled, code->size() * 10, 64, &left) && left == 0;
+    const bool ok = spirv_unroll::unroll_all(code->data(), code->size(), unrolled, kUnrollWords, 64, &left) && left == 0;
     VkPipeline made = VK_NULL_HANDLE;
-    if (ok) {
+    uint64_t avail = 0;
+    const bool room = ok && build_headroom(&avail);
+    if (ok && !room)
+        logf("vk: AMD FSR 4: %s: not unrolled now: %llu MB of memory to spare, %llu wanted (the next start tries again)",
+             name.c_str(), (unsigned long long)(avail >> 20), (unsigned long long)(kBuildHeadroom >> 20));
+    if (room) {
         VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mci.codeSize = unrolled.size() * 4, mci.pCode = unrolled.data();
         VkShaderModule module = VK_NULL_HANDLE;
@@ -345,22 +387,10 @@ void build_unrolled(VkPipeline original, std::shared_ptr<std::vector<uint32_t>> 
             ci.stage.pSpecializationInfo = nullptr;   // (only layers without one are taken)
             ci.basePipelineHandle = VK_NULL_HANDLE, ci.basePipelineIndex = -1;
             ci.flags &= ~(VkPipelineCreateFlags)VK_PIPELINE_CREATE_DERIVATIVE_BIT;
-            // (through the pipeline cache kept across runs, as FSR 3.1's: built once, loaded after. A failure is tried once more
-            // alone, when no other build is running: three of the largest at once can run the driver out of memory)
-            VkResult rr = shared_compute_pipeline(&ci, &made);
-            if (rr != VK_SUCCESS) {
-                made = VK_NULL_HANDLE;
-                logf("vk: AMD FSR 4: %s: its unrolled pipeline was not built (%d): tried again alone", name.c_str(), (int)rr);
-                for (;;) {
-                    {
-                        std::lock_guard lk(mu);
-                        if (jobs_running <= 1) break;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                }
-                rr = shared_compute_pipeline(&ci, &made);
-                if (rr != VK_SUCCESS) made = VK_NULL_HANDLE, logf("vk: AMD FSR 4: %s: not built again (%d): AMD's stays", name.c_str(), (int)rr);
-            }
+            // (through the pipeline cache kept across runs, as FSR 3.1's: built once, loaded after. A failure is not tried again:
+            // the library's pipeline stays)
+            const VkResult rr = shared_compute_pipeline(&ci, &made);
+            if (rr != VK_SUCCESS) made = VK_NULL_HANDLE, logf("vk: AMD FSR 4: %s: its unrolled pipeline was not built (%d): AMD's stays", name.c_str(), (int)rr);
             vkDestroyShaderModule(dev.device, module, nullptr);
         }
     }
@@ -377,15 +407,16 @@ void build_unrolled(VkPipeline original, std::shared_ptr<std::vector<uint32_t>> 
             better_count++;
         }
     }
-    bool last = false;
     {
         std::lock_guard lk(mu);
-        last = --jobs_running == 0 && pending.empty();
+        --jobs_running;
     }
-    if (last) pipeline_cache_save_play();   // (all built: kept for the next start whether or not the game closes normally)
+    // (each one kept as soon as it is built, whether or not the game closes normally: a build of a minute is not done again)
+    if (made && s > 1.0) pipeline_cache_save_play();
     if (made) logf("vk: AMD FSR 4: tuned %s: its loops unrolled (%zu -> %zu words), bound in its place from now (%.1f s to build)",
                    name.c_str(), code->size(), unrolled.size(), s);
-    else if (!ok) logf("vk: AMD FSR 4: %s not unrolled (%d loops left as they were)", name.c_str(), left);
+    else if (!ok) logf("vk: AMD FSR 4: %s left rolled (%d loops kept: unrolled whole it would pass %zu words, or they cannot be)",
+                       name.c_str(), left, kUnrollWords);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL create_compute_pipelines(VkDevice d, VkPipelineCache cache, uint32_t n,
@@ -399,14 +430,14 @@ VKAPI_ATTR VkResult VKAPI_CALL create_compute_pipelines(VkDevice d, VkPipelineCa
         for (uint32_t i = 0; i < n; i++) {
             auto k = module_kind.find(ci[i].stage.module);
             kind[i] = k == module_kind.end() ? 0 : k->second;
-            if (kind[i] != 1) continue;
+            if (!(kind[i] & 1)) continue;
             // (its own lane count in place of the one asked: first in the stage's chain, or put first)
             const VkBaseInStructure* s = (const VkBaseInStructure*)ci[i].stage.pNext;
             if (s && s->sType != VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO) {
                 bool deeper = false;
                 for (const VkBaseInStructure* t = s; t; t = t->pNext)
                     deeper |= t->sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
-                if (deeper) { kind[i] = 0; continue; }   // (not where it can be swapped: left as asked)
+                if (deeper) { kind[i] &= ~1; continue; }   // (not where it can be swapped: left as asked)
             }
             lanes[i] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
             lanes[i].requiredSubgroupSize = 64;
@@ -420,9 +451,9 @@ VKAPI_ATTR VkResult VKAPI_CALL create_compute_pipelines(VkDevice d, VkPipelineCa
     if (r != VK_SUCCESS) return r;
     std::lock_guard lk(mu);
     for (uint32_t i = 0; i < n; i++) {
-        if (kind[i] == 2) reads_tail[p[i]] = true;
+        if (kind[i] & 2) reads_tail[p[i]] = true;
         // (a layer whose creation carried nothing else: no specialization, no other structures)
-        if (kind[i] != 1 || ci[i].stage.pSpecializationInfo || lanes[i].pNext || ci[i].pNext) continue;
+        if (!(kind[i] & 1) || ci[i].stage.pSpecializationInfo || lanes[i].pNext || ci[i].pNext) continue;
         auto code = layer_code.find(ci[i].stage.module);
         auto lay = layouts.find(ci[i].layout);
         if (code == layer_code.end() || lay == layouts.end()) continue;

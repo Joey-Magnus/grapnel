@@ -87,8 +87,11 @@ inline bool arrays_to_buffer(const uint32_t* code, size_t words, uint32_t base_w
     std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> ptr; // pointer type -> (storage class, pointee)
     std::unordered_map<uint32_t, uint32_t> struct_member0, runtime_elem;
     std::unordered_map<uint32_t, uint32_t> var_type;               // variable -> pointer type
+    std::unordered_set<uint32_t> read_only;                         // structs (member 0) and variables decorated NonWritable
     for (const Ins& x : ins) {
         switch (x.op) {
+        case 71: if (x.n >= 3 && w(x, 2) == 24) read_only.insert(w(x, 1)); break;                 // OpDecorate NonWritable
+        case 72: if (x.n >= 4 && w(x, 2) == 0 && w(x, 3) == 24) read_only.insert(w(x, 1)); break; // OpMemberDecorate 0 NonWritable
         case 21: if (x.n == 4 && w(x, 2) == 32 && w(x, 3) == 0) t_uint = w(x, 1); break;           // OpTypeInt 32 0
         case 28: arr_elem[w(x, 1)] = w(x, 2); break;                                              // OpTypeArray
         case 29: runtime_elem[w(x, 1)] = w(x, 2); break;                                          // OpTypeRuntimeArray
@@ -100,12 +103,14 @@ inline bool arrays_to_buffer(const uint32_t* code, size_t words, uint32_t base_w
         }
     }
     if (!t_uint) return false;
-    // (the storage buffer to read: a StorageBuffer variable of a struct of one runtime array of uint; the pointer type to its
-    // elements; the constant 0)
+    // (the storage buffer to read: the one writable StorageBuffer variable of a struct of one runtime array of uint, the
+    // library's ScratchBuffer, which the tail is added to (the layers also read a read-only InitializerBuffer); the pointer type
+    // to its elements; the constant 0)
     uint32_t sb = 0, p_sb_uint = 0, c0 = 0;
     for (auto& [v, pt] : var_type) {
         auto p = ptr.find(pt);
         if (p == ptr.end() || p->second.first != 12) continue;   // StorageBuffer
+        if (read_only.count(v) || read_only.count(p->second.second)) continue;
         auto m = struct_member0.find(p->second.second);
         if (m == struct_member0.end()) continue;
         auto r = runtime_elem.find(m->second);
@@ -126,10 +131,12 @@ inline bool arrays_to_buffer(const uint32_t* code, size_t words, uint32_t base_w
         auto a = arr_elem.find(p->second.second);
         if (a != arr_elem.end() && a->second == t_uint) cand[v] = 0;
     }
+    // (every store of the variable the same constant: once in the postpass; again at each iteration of the loop that reads it
+    // in the network's layers, which copy their 576 weights in every time round)
     for (const Ins& x : ins)
         if (x.op == 62 && cand.count(w(x, 1))) {   // OpStore var value
-            stores[w(x, 1)]++;
-            cand[w(x, 1)] = composite.count(w(x, 2)) ? w(x, 2) : 0;
+            const uint32_t v = w(x, 1), c = composite.count(w(x, 2)) ? w(x, 2) : 0;
+            cand[v] = stores[v]++ == 0 || cand[v] == c ? c : 0;
         }
     // their element pointers, and every other use of the variables and of those pointers
     std::unordered_map<uint32_t, uint32_t> chain_var;   // access chain result -> var
@@ -156,7 +163,7 @@ inline bool arrays_to_buffer(const uint32_t* code, size_t words, uint32_t base_w
     std::unordered_map<uint32_t, uint32_t> moved;           // var -> its constant
     std::vector<uint32_t> new_tail;
     for (auto& [v, c] : cand) {
-        if (bad.count(v) || stores[v] != 1 || !c) continue;
+        if (bad.count(v) || !stores[v] || !c) continue;
         const auto& parts = composite[c];
         bool all = true;
         for (uint32_t e : parts) all = all && uconst.count(e);
