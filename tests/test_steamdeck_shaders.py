@@ -67,8 +67,20 @@ class DeckShadersTests(unittest.TestCase):
         self.assertNotIn("RADV_PERFTEST", env)
         self.assertEqual(env["AMDGPU_GPU_ID"], "vangogh")
         self.assertNotIn('MESA_SHADER_CACHE_DISABLE', env)
-        self.assertEqual(env["LD_PRELOAD"], str(self.root / "libamdgpu_noop_drm_shim.so"))
+        # Temporary paths can use Windows 8.3 aliases; the helper resolves its bundle.
+        self.assertEqual(env["LD_PRELOAD"], str(self.root.resolve() / "libamdgpu_noop_drm_shim.so"))
         self.assertEqual(env["KEPT"], "yes")
+
+    def test_driver_environment_uses_resolved_bundle_paths(self):
+        bundle = self.root / "driver with spaces é"
+        (bundle / "child").mkdir(parents=True)
+        alias = bundle / "child" / ".."
+        env = deck.driver_environment(alias, {})
+        resolved = bundle.resolve()
+        self.assertEqual(env["LD_LIBRARY_PATH"], str(resolved))
+        self.assertEqual(env["LD_PRELOAD"], str(resolved / "libamdgpu_noop_drm_shim.so"))
+        self.assertEqual(env["VK_DRIVER_FILES"], str(resolved / "radv-deck.json"))
+        self.assertEqual(env["XDG_CACHE_HOME"], str(resolved / "cache"))
 
     def fake_ssh(self, args, **kw):
         if "stdout" not in kw:
