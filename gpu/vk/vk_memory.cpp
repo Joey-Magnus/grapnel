@@ -2699,18 +2699,17 @@ void mirror_sync(Pool& p) {
 // ---- (hookshot) Large written bindings the CPU does not read: no write-back (RX_VK_WB_MAX_KB, wb_learn.h) ----
 // The table is fed from the bindings (wb_leave_out, the replay's threads, pools_mu held), the CPU's reads (memory_note_cpu_read,
 // invalidate on the game's threads) and the CPU's writes that a mirror sync copies (mirror_sync); its own mutex, taken last.
-// RX_VK_WB_MAX_KB=<KB>: the size from which a binding may be left out (1024; 0: every written binding written back, as before);
-// RX_VK_WB_PROBATION=<writes>: how many writes with no CPU read before it is (8)
+// RX_VK_WB_MAX_KB=<KB>: the size from which a binding may be left out (unset or 0: every written binding written back, the
+// default); RX_VK_WB_PROBATION=<submissions>: how many submissions write it whole before it is (8)
 std::mutex wb_learn_mu;
 wb_learn::Table wb_table;
 int64_t st_wb_left, st_wb_left_bytes, st_wb_stale;
 uint64_t wb_cap() {
     static const uint64_t v = [] {
         const uint64_t b = wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB"));
-        if (const char* e = getenv("RX_VK_WB_PROBATION")) wb_table.probation = (uint32_t)std::max(1, atoi(e));
-        if (b) logf("vk: write-backs of written bindings over %llu KB that the CPU has not read in %u writes are left out (RX_VK_WB_MAX_KB=0: "
-                    "none)", (unsigned long long)(b >> 10), wb_table.probation);
-        else logf("vk: every written binding is written back (RX_VK_WB_MAX_KB=0)");
+        wb_table.probation = (uint32_t)std::max(1, env_int("RX_VK_WB_PROBATION", (int)wb_table.probation));
+        if (b) logf("vk: written bindings over %llu KB are written back only where the CPU reads or writes them, after %u submissions "
+                    "whole (RX_VK_WB_MAX_KB)", (unsigned long long)(b >> 10), wb_table.probation);
         return b;
     }();
     return v;
@@ -3159,7 +3158,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);
     if (written) {
         p->gpu_written = true;   // (its mirror kept: mirrors_give_back)
-        // (hookshot) a binding over RX_VK_WB_MAX_KB (1024 by default; 0: none) that the CPU has not read through its
+        // (hookshot) a binding over RX_VK_WB_MAX_KB (off unless set; 1024 is the tested size) that the CPU has not read through its
         // probation queues no write-back: OoT writes tens of MB of culling lists and per-frame buffers through the GPU that
         // the CPU never reads, and copying them back was most of a submit's memory sync (issue 384: 68 MB a frame; Hyrule
         // Field on an RTX 3060 Ti, 68 -> 18 MB written back a frame). Learned, not a plain size cap: the CPU does read

@@ -16,9 +16,9 @@ int main() {
     using namespace wb_learn;
     const uint64_t KB = 1ull << 10, MB = 1ull << 20, cap = 1024 * KB;
     Keep keep;
-    // the cap: unset is 1024 KB (the default), 0 none, a number that many KB
-    CHECK(max_bytes(nullptr) == 1024 * KB && max_bytes("") == 1024 * KB);
-    CHECK(max_bytes("0") == 0);
+    // the cap: unset or 0 is none (the default: every binding written back), a number that many KB
+    CHECK(max_bytes(nullptr) == 0 && max_bytes("") == 0);
+    CHECK(max_bytes("0") == 0 && max_bytes("1024") == 1024 * KB);
     CHECK(max_bytes("4096") == 4096 * KB);
 
     {   // a small binding is always written back whole, and so is every one with no cap

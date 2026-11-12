@@ -26,9 +26,10 @@
 
 namespace wb_learn {
 
-// The cap from RX_VK_WB_MAX_KB: unset 1024 KB (the default), 0 none (every written binding written back, as before)
+// The cap from RX_VK_WB_MAX_KB=<KB>: unset or 0, none (every written binding written back, the default). Off by default until
+// it shows a gain on more than one machine: on an RTX 3060 Ti and an RX 580 it wrote back 50 MB a frame less at the same fps
 inline uint64_t max_bytes(const char* env) {
-    if (!env || !*env) return 1024ull << 10;
+    if (!env || !*env) return 0;
     unsigned long long kb = 0;
     for (const char* c = env; *c >= '0' && *c <= '9'; c++) kb = kb * 10 + (unsigned long long)(*c - '0');
     return (uint64_t)kb << 10;

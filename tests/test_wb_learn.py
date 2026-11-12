@@ -1,6 +1,6 @@
 """Compile and run the learned write-back cap's rules (gpu/vk/wb_learn.h; no game/GPU required), and check that vk_memory.cpp and
 vk_replay.cpp still use them: a written binding's write-back is left out only when the table says so, the CPU's reads (invalidate)
-and the writes a mirror sync copies feed it, and RX_VK_WB_MAX_KB=0 writes every binding back as before.
+and the writes a mirror sync copies feed it, and without RX_VK_WB_MAX_KB every binding is written back as before.
 
 python -I -B tests/test_wb_learn.py [--cxx g++]
 """
@@ -36,7 +36,7 @@ def check_source():
     need("vk_memory.cpp", mem, ['#include "wb_learn.h"'])
     # (the cap from RX_VK_WB_MAX_KB through the header's rule, 0: none; the table's probation from RX_VK_WB_PROBATION)
     need("vk_memory.cpp: wb_cap()", block(mem, "uint64_t wb_cap()"),
-         ['wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB"))', 'getenv("RX_VK_WB_PROBATION")'])
+         ['wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB"))', 'env_int("RX_VK_WB_PROBATION", (int)wb_table.probation)'])
     need("vk_memory.cpp: wb_leave_out()", block(mem, "bool wb_leave_out(uint64_t lo, uint64_t hi"),
          ["if (!wb_cap()) return false;", "std::lock_guard lk(wb_learn_mu);", "wb_table.plan(lo, hi, wb_cap(), mirror_epoch, keep)"])
     # (a CPU read or write counts only in a large binding the table follows)
