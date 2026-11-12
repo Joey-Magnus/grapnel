@@ -83,6 +83,12 @@ std::string predict_pending_path() {
 void predicted_sample_write(const std::vector<std::unique_ptr<PipeNote>>&) {}
 void driver_cache_log(const char*) {}
 unsigned usable_cpus() { return std::max(1u, std::thread::hardware_concurrency()); }
+enum class PreparePool : unsigned { Translate, Pipelines, Background };
+unsigned prepare_pool_workers(PreparePool, const char** why = nullptr) {
+    if (why) *why = "test";
+    return usable_cpus();
+}
+void prepare_resources_log(const char*) {}
 inline uint64_t mix(uint64_t h, uint64_t v) { return (h ^ v) * 0x100000001b3ull; }
 struct { uintptr_t device = 1; } dev;
 thread_local bool driver_cache_only = false;
