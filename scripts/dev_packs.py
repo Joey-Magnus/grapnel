@@ -41,7 +41,8 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # (the modules' names follow the target, not this PC: RX_TARGET=windows on Linux builds the Windows game)
-WINDOWS = os.name == "nt" or os.environ.get("RX_TARGET", "") == "windows"
+WINDOWS = os.name == "nt" or os.environ.get("RX_TARGET", "").strip().lower() == "windows"
+CROSS = WINDOWS and os.name != "nt"   # (the Windows game built on Linux: it cannot run here, so it prepares on the PC that plays it)
 # (the game's own caches beside it, kept between runs and stamped by the translator (gpu/vk/vk_progcache.cpp): a stale one is
 # not used, so a base can start from an older base's)
 CACHES = ("hookshot_programs.bin", "hookshot_programs.idx", "hookshot_pipelines.bin", "hookshot_pipelines.bin.predicted",
@@ -471,7 +472,9 @@ def cmd_rt(a):
         if src:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
-    if prepare:   # (as make_game.py prepares: the game's own environment, without the build's switches)
+    if prepare and CROSS:
+        print("the shaders were not prepared now (a Windows game built on Linux): the game prepares them at its first start", flush=True)
+    elif prepare:   # (as make_game.py prepares: the game's own environment, without the build's switches)
         print("+ %s --prepare-shaders" % GAME, flush=True)
         subprocess.run([os.path.join(rt, GAME), "--prepare-shaders"], cwd=rt, check=True, env=load_make_game().game_env())
     with open(os.path.join(rt, "dev_packs.json"), "w", encoding="utf-8") as f:
