@@ -135,6 +135,17 @@ int main() {
         CHECK(r.resets() == 0 && r.reads() == 2);
         r.read(0x9000, 0xa000);
         CHECK(r.resets() == 1 && r.reads() == 1);
+        // a binding with two edge pages when the reads are one short of full: both pages kept, not only the last (mooki000)
+        for (size_t before : {size_t(2), size_t(3)}) {
+            Table c;
+            c.max_read = 4;
+            for (size_t i = 0; i < before; i++) c.read(0x1000 + i * 0x10000, 0x2000 + i * 0x10000);
+            const uint64_t lo = 0x60000040, hi = lo + 2 * MB;
+            for (uint32_t i = 0; i < c.probation; i++) CHECK(!P(c, lo, hi, cap, keep));
+            CHECK(P(c, lo, hi, cap, keep) && keep.size() == 2);
+            CHECK(keep[0].first == lo && keep[0].second == lo / 4096 * 4096 + 4096);
+            CHECK(keep[1].first == hi / 4096 * 4096 && keep[1].second == hi);
+        }
         // a binding's edge pages filling the reads start it over too, with the binding still followed after
         Table e;
         e.max_read = 1;

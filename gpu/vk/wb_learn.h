@@ -119,8 +119,11 @@ private:
     // always written back)
     void edges(uint64_t lo, uint64_t hi) {
         constexpr uint64_t kPage = 4096;
-        if (lo % kPage) add_read(lo / kPage * kPage, lo / kPage * kPage + kPage);
-        if (hi % kPage) add_read(hi / kPage * kPage, hi / kPage * kPage + kPage);
+        const bool first = lo % kPage, last = hi % kPage;
+        // (room for both first: a reset between the two kept only the last, and the first shared page was left out (mooki000))
+        if (read_.size() + first + last > max_read) reset();
+        if (first) add_read(lo / kPage * kPage, lo / kPage * kPage + kPage);
+        if (last) add_read(hi / kPage * kPage, hi / kPage * kPage + kPage);
     }
     bool covered(uint64_t lo, uint64_t hi) const {
         auto it = read_.upper_bound(lo);
