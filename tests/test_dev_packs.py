@@ -124,11 +124,12 @@ def test_inputs_beside_the_objects():
     check("another source alone: only the version differs there", not md(["host/nvn_native.c"], "host/hos_main.c"))
 
 
-def refused(what, argv):
+def refused(what, argv, reason):
+    """Refused for that reason, not another check's"""
     try:
         packs.main(argv)
     except SystemExit as e:
-        check(what + " refused with a reason (%r)" % e.code, isinstance(e.code, str))
+        check(what + " refused because %s (%r)" % (reason, e.code), isinstance(e.code, str) and reason in e.code)
     else:
         check(what + " refused", False)
 
@@ -136,15 +137,16 @@ def refused(what, argv):
 def test_guards(d):
     base = d / "base"
     write(base / "game" / "user" / "save0.bin", b"played")
-    refused("a base built into a played game folder", ["base", str(base), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)])
+    refused("a base built into a played game folder", ["base", str(base), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)],
+            "new game folder")
     f = packs.pack_folders(str(base))
     refused("adopting the packs' own work folder", ["adopt", str(base), "--work", f["game_work"], "--game", str(base / "game"),
-                                                    "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)])
+                                                    "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)], "packs are built")
     write(base / "game" / packs.GAME, b"g")
     write(base / "game" / packs.RENDERER, b"r")
     packs.write_base(str(base), {"commit": "c" * 40, "work": str(d / "w"), "game": str(base / "game"), "romfs": "r", "exefs": "e"})
     for name in ("../game", "..", "a/b", str(d)):
-        refused("the pack name %r" % name, ["pack", str(base), name, "--tree", str(ROOT)])
+        refused("the pack name %r" % name, ["pack", str(base), name, "--tree", str(ROOT)], "pack's name")
     check("the base is still there", (base / "game" / "user" / "save0.bin").exists())
 
 
@@ -226,13 +228,9 @@ def test_generated_and_runtime(d):
     check("...not written through the base's hard link", (game / "romfs" / "prompts" / "icon.bntx").read_bytes() == b"base icon")
     check("the pack's deleted file is not in the runtime", not (rt / "prompts" / "Common.bntx").exists())
     check("...and still in the base", (game / "prompts" / "Common.bntx").exists())
-    for asked, what in ((["cpu", "cpu2"], "two packs with the same module"), (["old"], "a pack on another base")):
-        try:
-            packs.main(["rt", str(base_dir), str(d / ("rt-" + asked[-1])), *asked])
-        except SystemExit as e:
-            check(what + " refused with a reason", isinstance(e.code, str))
-        else:
-            check(what + " refused", False)
+    for asked, what, why in ((["cpu", "cpu2"], "two packs with the same module", "both bring"),
+                             (["old"], "a pack on another base", "not the base")):
+        refused(what, ["rt", str(base_dir), str(d / ("rt-" + asked[-1])), *asked], why)
 
 
 def main():

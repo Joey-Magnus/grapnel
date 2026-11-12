@@ -305,14 +305,13 @@ def link_objects(base_work, work):
 
 
 def cmd_base(a):
-    tree = os.path.abspath(a.tree)
-    dirty = [p for p in changed_files(tree, "HEAD") if route([p], tree)]
-    if dirty:
-        sys.exit("%s has uncommitted or untracked sources (%s): a base is a commit" % (tree, ", ".join(sorted(dirty)[:5])))
-    d = os.path.abspath(a.dir)
+    tree, d = os.path.abspath(a.tree), os.path.abspath(a.dir)
     work, game = os.path.join(d, "work"), os.path.join(d, "game")
     if os.path.isdir(game) and os.listdir(game):   # (its files are recorded as what the build made: a played folder holds saves)
         sys.exit("%s is not empty: a base is built into a new game folder" % game)
+    dirty = [p for p in changed_files(tree, "HEAD") if route([p], tree)]
+    if dirty:
+        sys.exit("%s has uncommitted or untracked sources (%s): a base is a commit" % (tree, ", ".join(sorted(dirty)[:5])))
     os.makedirs(game, exist_ok=True)
     if a.seed:
         for c in CACHES:
