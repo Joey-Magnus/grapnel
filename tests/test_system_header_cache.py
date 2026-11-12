@@ -69,17 +69,20 @@ class HeaderCacheTests(unittest.TestCase):
         return {str(p.relative_to(self.work)): p.read_bytes() for top in ('objcache', 'sa/build/obj')
                 for p in (self.work / top).rglob('*') if p.is_file()}
 
-    def check(self, tools):
+    def check(self, tools, source_root=None, compiler_path=None, compiler_script=False):
+        # An authored installation path models a shared compiler; the dependency probe
+        # still runs the real compiler over the fixture headers (no SDK/game data).
+        compiler_path = str(compiler_path or COMPILER)
         test = self
         class Toolchain:
             @staticmethod
             def find(name):
                 test.assertEqual(name, 'clang')
-                return COMPILER
+                return compiler_path
 
             @staticmethod
             def need(path):
-                test.assertEqual(path, COMPILER)
+                test.assertEqual(path, compiler_path)
                 return path
 
             @staticmethod
@@ -87,8 +90,10 @@ class HeaderCacheTests(unittest.TestCase):
                 return ['-nostdinc', '-I' + str(tools / 'include'), '-I' + str(test.external)]
 
         def run(command, **kwargs):
-            self.assertEqual(command[0], COMPILER)
-            self.assertTrue('-M' in command or command[1:] == ['--version'], command)
+            self.assertEqual(command[0], compiler_path)
+            command = ([sys.executable, compiler_path] if compiler_script else [COMPILER]) + command[1:]
+            args = command[2:] if compiler_script else command[1:]
+            self.assertTrue('-M' in args or args == ['--version'], command)
             if '-M' in command and self.dependency_failure:
                 return subprocess.CompletedProcess(command, 1, '', 'authored dependency failure')
             if command[1:] == ['--version'] and self.version is not None:
@@ -110,7 +115,7 @@ class HeaderCacheTests(unittest.TestCase):
             return REAL_RMTREE(target, **kwargs)
 
         with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch.object(make_game, 'ROOT', str(tools)))
+            stack.enter_context(mock.patch.object(make_game, 'ROOT', str(source_root or tools)))
             stack.enter_context(mock.patch.object(make_game, 'LINUX', False))
             stack.enter_context(mock.patch.dict(sys.modules, {'toolchain': Toolchain}))
             stack.enter_context(mock.patch.object(make_game.tempfile, 'TemporaryDirectory',
@@ -156,6 +161,104 @@ class HeaderCacheTests(unittest.TestCase):
         before = self.cache_bytes()
         self.check(tools)
         self.assertEqual(self.cache_bytes(), before)
+
+    def test_worktree_reusing_original_compiler_keeps_cached_bytes(self):
+        tools = self.install('original')
+        compiler = tools / 'bin' / 'clang'
+        self.check(tools, compiler_path=compiler)
+        self.cache()
+        before = self.cache_bytes()
+        self.check(tools, source_root=self.root / 'isolated-source', compiler_path=compiler)
+        self.assertEqual(self.cache_bytes(), before)
+        self.assertFalse(self.removed)
+
+    def test_shared_compiler_header_edit_invalidates_objects(self):
+        tools = self.install('original')
+        compiler = tools / 'bin' / 'clang'
+        self.check(tools, compiler_path=compiler)
+        self.cache()
+        (tools / 'include' / 'stdio.h').write_text('/* changed SDK header */\n', encoding='ascii')
+        self.check(tools, source_root=self.root / 'isolated-source', compiler_path=compiler)
+        self.assertFalse(self.cache_bytes())
+        self.assertEqual(len(self.removed), 2)
+
+    def test_distinct_compiler_installations_invalidate_even_with_identical_headers(self):
+        # Matching --version and header bytes do not prove that per-install
+        # driver configuration is equivalent. Only ROOT may move freely.
+        first, second = self.install('compiler one'), self.install('compiler two')
+        self.check(first, compiler_path=first / 'bin' / 'clang')
+        self.cache()
+        self.check(second, compiler_path=second / 'bin' / 'clang')
+        self.assertFalse(self.cache_bytes())
+        self.assertEqual(len(self.removed), 2)
+
+    def test_implicit_driver_config_change_between_installations_invalidates(self):
+        # Authored Python drivers model implicit per-install flags, not clang's
+        # native .cfg loader. Both invoke the actual compiler for -M and -E.
+        first, second = self.install('implicit one'), self.install('implicit two')
+        driver = ('import pathlib, subprocess, sys\n'
+                  'args = sys.argv[1:]\n'
+                  'config = pathlib.Path(__file__).with_suffix(".cfg")\n'
+                  'extra = [] if args == ["--version"] else '
+                  '["-DHEADER_CACHE_IMPLICIT=" + config.read_text().strip()]\n'
+                  'raise SystemExit(subprocess.run([' + repr(COMPILER) + ', *extra, *args], '
+                  'timeout=20).returncode)\n')
+        compilers = []
+        for tools, value in ((first, '1'), (second, '2')):
+            compiler = tools / 'bin' / 'driver.py'
+            compiler.parent.mkdir()
+            compiler.write_text(driver, encoding='utf-8')
+            compiler.with_suffix('.cfg').write_text(value, encoding='ascii')
+            compilers.append(compiler)
+        public_source = self.root / 'public.c'
+        public_source.write_text('HEADER_CACHE_IMPLICIT\n', encoding='ascii')
+        versions, outputs = [], []
+        for compiler in compilers:
+            versions.append(REAL_RUN([sys.executable, str(compiler), '--version'],
+                                     capture_output=True, text=True, check=True, timeout=30).stdout)
+            outputs.append(REAL_RUN([sys.executable, str(compiler), '-E', '-P', str(public_source)],
+                                    capture_output=True, text=True, check=True, timeout=30).stdout.strip())
+        self.assertEqual(versions[0], versions[1])
+        self.assertEqual(outputs, ['1', '2'])
+        source = self.root / 'separate-source'
+        self.check(first, source_root=source, compiler_path=compilers[0], compiler_script=True)
+        self.cache()
+        self.check(second, source_root=source, compiler_path=compilers[1], compiler_script=True)
+        self.assertFalse(self.cache_bytes())
+        self.assertEqual(len(self.removed), 2)
+
+    def test_relocated_compiler_with_changed_header_invalidates_objects(self):
+        first, second = self.install('compiler one'), self.install('compiler two')
+        self.check(first, compiler_path=first / 'bin' / 'clang')
+        self.cache()
+        (second / 'include' / 'stdio.h').write_text('/* different SDK */\n', encoding='ascii')
+        self.check(second, compiler_path=second / 'bin' / 'clang')
+        self.assertFalse(self.cache_bytes())
+        self.assertEqual(len(self.removed), 2)
+
+    def test_pre_content_stamp_invalidates_once_then_reuses(self):
+        # Characterize the deliberate migration cost; do not accept an old stamp
+        # as evidence of header bytes that the old implementation never hashed.
+        import hashlib
+        tools = self.install('migration')
+        compiler = tools / 'bin' / 'clang'
+        self.check(tools, compiler_path=compiler)
+        mine = os.path.normcase(str(tools)).lower().replace(os.sep, '/')
+        found = sorted({h.lower() for h in make_game.makefile_words(self.probes[-1]) if h.endswith('.h')})
+        rel = sorted('<tools>' + h[len(mine):].replace(os.sep, '/') if h.replace(os.sep, '/').startswith(mine + '/') else h for h in found)
+        assert isinstance(COMPILER, str)
+        version = REAL_RUN([COMPILER, '--version'], capture_output=True, text=True, check=True).stdout.splitlines()[:1]
+        old_stamp = hashlib.sha1(chr(10).join(version + rel).encode(), usedforsecurity=False).hexdigest()
+        (self.work / 'system_headers.txt').write_text(old_stamp + '\n', encoding='ascii')
+        self.cache()
+        self.check(tools, compiler_path=compiler)
+        self.assertFalse(self.cache_bytes())
+        self.assertEqual(len(self.removed), 2)
+        self.cache()
+        before = self.cache_bytes()
+        self.check(tools, compiler_path=compiler)
+        self.assertEqual(self.cache_bytes(), before)
+        self.assertEqual(len(self.removed), 2)
 
     def test_compiler_version_change_invalidates_objects(self):
         tools = self.install('version one')

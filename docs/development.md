@@ -40,6 +40,35 @@ Run everything with `python -I` from this folder.
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
 
+### Windows object-cache reuse across source worktrees
+
+A source worktree may share the original checkout's compiler through `HOOKSHOT_MINGW`.
+The system-header stamp identifies compiler-owned headers relative to that compiler, with
+content hashes, rather than relative to the current source ROOT. Moving ROOT no longer
+changes the identity of headers belonging to that same shared compiler. This does not
+guarantee reuse for every header category: the inherited ROOT-based classification of
+non-compiler headers can still change. The native Linux check is unchanged.
+
+The compiler's absolute invocation path is also part of the Windows stamp: two drivers
+with equal version strings and header bytes can still load different implicit configs.
+Moving the compiler itself deliberately causes a conservative cache miss, even when its
+bytes are identical. This includes a Builder update that puts the compiler under a new
+`versions/<tag>/...` directory: that cost can recur on every such relocation, not just
+on the initial stamp-format migration. Keep a shared compiler at a stable path when
+using this worktree-oriented policy; it is not transparent cross-installation reuse.
+
+The first build after changing stamp format may rebuild all objects. The preceding
+version-plus-paths (V1) stamp lacks the new compiler/header identity and conservatively
+misses; do not force it to match to avoid that migration. The older pre-version path-only
+format still has its existing compatibility path: matching legacy stamps may reuse objects
+before being rewritten. Not all old stamps are rejected.
+
+This is not an exhaustive toolchain fingerprint: edits to implicit config at the same
+compiler path remain a limitation. Headers under ROOT but outside the compiler root still
+use path-only `<tools>` entries; headers outside both roots, such as external SDK headers,
+remain absolute-path-only. Neither category attests header content. The dependency probe
+covers only the headers reached by its small C fixture.
+
 The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the README's
 [Running the game from the command line](../readme.md#running-the-game-from-the-command-line).
 

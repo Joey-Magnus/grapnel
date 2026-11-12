@@ -1004,8 +1004,8 @@ def makefile_words(text):
 
 def _drop_stale_linux(work):
     """The AppImage's sysroot is a new /tmp/.mount_... path every start. The stamp is the compiler's version and stdio.h's
-    bytes, not that path, so an update reuses the compiled game when the headers did not change (the Windows stamp leaves
-    the builder's install folder out for the same reason, issue 565)."""
+    bytes, not that path, so an update reuses the compiled game when the headers did not change. This Linux stamp excludes
+    installation paths; the Windows stamp separately retains the compiler invocation identity."""
     import hashlib
     sysroot = os.environ.get("HOOKSHOT_SYSROOT", "")
     stdio = os.path.join(sysroot, "usr", "include", "stdio.h") if sysroot else "/usr/include/stdio.h"
@@ -1109,15 +1109,17 @@ def drop_stale_objects(work):
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write(chr(10).join(("#include <stdio.h>", "#include <stdlib.h>", "#include <windows.h>", "")))
-        r = subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + ["-M", src], capture_output=True, text=True,
+        cc = toolchain.need(toolchain.find("clang"))
+        r = subprocess.run([cc] + toolchain.native_target() + ["-M", src], capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
     if r.returncode:
         return
-    found = sorted({h.lower() for h in makefile_words(r.stdout) if h.endswith(".h")})
+    header_paths = {h.lower(): h for h in makefile_words(r.stdout) if h.endswith(".h")}
+    found = sorted(header_paths)
 
-    # (issue 565) The paths are taken relative to the builder's own folder, with the compiler's version: under
-    # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours). clang
-    # writes them with / where the folder has \: compared with / on both sides, each path's own spelling kept for the old stamp
+    # (issue 565) Keep ROOT-relative spelling for legacy path-only compatibility stamps. Compiler headers are normalized
+    # separately below, with an absolute invocation discriminator: relocating a bundled compiler deliberately misses.
+    # clang writes paths with / where the folder has \; compare / on both sides, retaining each spelling for the old stamp.
     mine = os.path.normcase(os.path.abspath(ROOT)).lower().replace(os.sep, "/")
     ours = lambda h: h.replace(os.sep, "/").startswith(mine + "/")
 
@@ -1126,10 +1128,30 @@ def drop_stale_objects(work):
         moved = [((root if "/" in h[:len(mine)] else root.replace("/", os.sep)) + h[len(mine):]) if ours(h) else h for h in found]
         return hashlib.sha1(chr(10).join(sorted(moved)).encode(), usedforsecurity=False).hexdigest()
 
-    rel = sorted(("<tools>" + h[len(mine):].replace(os.sep, "/")) if ours(h) else h for h in found)
-    ver = subprocess.run([toolchain.need(toolchain.find("clang")), "--version"], capture_output=True, text=True, encoding="utf-8",
+    # A worktree may use the original checkout's compiler. Normalize its own
+    # installation before ROOT, so identical header paths do not change identity
+    # merely because that installation is now outside the source checkout.
+    compiler_root = os.path.normcase(os.path.dirname(os.path.dirname(os.path.abspath(cc)))).lower().replace(os.sep, "/")
+    rel = []
+    for h in found:
+        path = h.replace(os.sep, "/")
+        if path.startswith(compiler_root + "/"):
+            # Do not turn two installations with different headers but the same
+            # compiler version into a cache hit by dropping their absolute paths.
+            with open(header_paths[h], "rb") as f:
+                content = hashlib.sha1(f.read(), usedforsecurity=False).hexdigest()
+            rel.append("<compiler>" + path[len(compiler_root):] + ":" + content)
+        else:
+            rel.append(("<tools>" + h[len(mine):].replace(os.sep, "/")) if ours(h) else h)
+    rel.sort()
+    ver = subprocess.run([cc, "--version"], capture_output=True, text=True, encoding="utf-8",
                          errors="replace").stdout.splitlines()[:1]
-    stamp = hashlib.sha1(chr(10).join(ver + rel).encode(), usedforsecurity=False).hexdigest()
+    # ROOT may move around a shared compiler, but distinct compiler locations
+    # may have different implicit driver configurations despite equal versions
+    # and headers. Keep the invocation path independent of ROOT; do not resolve
+    # symlinks, since the invoked name/location can select a driver config.
+    compiler_id = os.path.normcase(os.path.abspath(cc)).replace(os.sep, "/")
+    stamp = hashlib.sha1(chr(10).join(ver + [compiler_id] + rel).encode(), usedforsecurity=False).hexdigest()
     note = os.path.join(work, "system_headers.txt")
     try:
         with open(note) as f:
