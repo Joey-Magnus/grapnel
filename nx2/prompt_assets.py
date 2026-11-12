@@ -14,8 +14,8 @@ points are the game's: its own images.
 
 The textures with button icons (the ocarina's notes, the letters on black, the controller in the pause menu) the same way, with
 Pillow, astc_encoder and texture2ddecoder: <out>/Common.bntx is the game's UI/Layout2Archive/Common bntx decompressed, and
-<face>/textures.bin the encoded blocks to write over it for each Switch button on each pad input, which the game picks by the
-controls when it serves the file. The Talk ring's buttons and the ocarina hint's icons (the layouts of UI/Layout2Archive/Common,
+<face>/textures.bin the encoded blocks to write over it for each Switch button on each pad input (the keyboard face's: on each
+key, by its key code), which the game picks by the controls when it serves the file. The Talk ring's buttons and the ocarina hint's icons (the layouts of UI/Layout2Archive/Common,
 <out>/Common.blarc) the same way: <out>/ring.bin and <face>/hint.bin say what to write over them for the controls.
 
 Each face's images (the notes, the letters, the controller picture drawn by nx2/prompt_draw.py, the leader lines) are made as
@@ -416,6 +416,14 @@ class Icons:
                 if n in rev:
                     self.code[p] = rev[n]
 
+    @classmethod
+    def keys(cls, plain):
+        """the keyboard face's: each key's icon in the built font (plain, faces_font's) at KEY_BASE + its key code, for the keys
+        nx2/prompt_keys.py names (the others: the game's own image, as a button with no key)"""
+        icons = cls.__new__(cls)
+        icons.path, icons.code = io.BytesIO(plain), {k: prompt_keys.KEY_BASE + k for k in sorted(prompt_keys.KEYS)}
+        return icons
+
     def masks(self, pad, size):
         """(the icon, its silhouette with the holes filled, the holes) as L masks of size x size, the icon centred in it"""
         from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
@@ -446,39 +454,74 @@ class Layer:
         self.name, self.texture, self.sw, self.pad, self.im, self.box, self.over = name, texture, sw, pad, im, box, over
 
 
+def button_layers(tex, icons, inputs, keep, scale=(0.9, 0.9)):
+    """the ocarina's notes and the letters on black, each Switch button's on each input (inputs: [(its name in the layers'
+    names, the value textures.bin keeps for it, icons' key)]) that keep(Switch button, icons' key) takes; scale: the icon's
+    size in the notes' and in the letters' textures, of their smaller side"""
+    from PIL import Image
+    layers = []
+    for name, sw in NOTES.items():
+        t = tex[name]
+        w, h = t[2], t[3]
+        for label, value, pad in inputs:
+            if not keep(sw, pad):
+                continue
+            icon, shape, holes = icons.masks(pad, int(min(w, h) * scale[0]))
+            im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            o = ((w - icon.width) // 2, (h - icon.height) // 2)
+            im.paste(Image.new("RGBA", icon.size, (255, 255, 255, 255)), o, shape)
+            im.paste(Image.new("RGBA", icon.size, (0, 0, 0, 255)), o, holes)
+            layers.append(Layer(f"{name}.{label}.png", name, SW[sw], value, im))
+    for name, sw in LETTERS.items():
+        t = tex[name]
+        w, h = t[2], t[3]
+        for label, value, pad in inputs:
+            if not keep(sw, pad):
+                continue
+            icon, shape, holes = icons.masks(pad, int(min(w, h) * scale[1]))
+            letter = holes if holes.getbbox() else icon   # (an icon with no letter in it: its shape)
+            im = Image.new("L", (w, h), 0)
+            im.paste(letter, ((w - letter.width) // 2, (h - letter.height) // 2))
+            layers.append(Layer(f"{name}.{label}.png", name, SW[sw], value, im))
+    return layers
+
+
+def hand_made(face, layers):
+    """each layer a hand-made one where nx2/prompt_faces/<face>/ has it"""
+    from PIL import Image
+    for layer in layers:
+        hand = override(face, layer.name)
+        if hand:
+            im = Image.open(hand).convert(layer.im.mode)
+            if im.size != layer.im.size:
+                raise SystemExit(f"prompts: {hand} is {im.size[0]}x{im.size[1]}, the texture {layer.im.size[0]}x{layer.im.size[1]}")
+            layer.im = im
+    return layers
+
+
+KEYBOARD_SCALE = (0.75, 0.7)   # (the keyboard's icons in the notes' and the letters' textures: button_layers' scale)
+
+
+def keyboard_layers(tex, plain):
+    """the keyboard face's images: the notes and the letters with each key's icon (Icons.keys), on the key code (textures.bin's
+    pad input byte: host/prompts.c texture_bind gives it each Switch button's first key). The controller picture and its lines
+    stay the game's, as for the Switch face's default controls"""
+    icons = Icons.keys(plain)
+    inputs = [(f"key{k:02x}", k, k) for k in icons.code]
+    # (a key fills its square, where a pad's round icon leaves the corners: smaller, the size of the game's own discs)
+    return hand_made("keyboard", button_layers(tex, icons, inputs, lambda sw, k: True, KEYBOARD_SCALE))
+
+
 def face_layers(b, tex, face, otf):
     """this face's images, as layers (in textures.bin's order), each a hand-made one if nx2/prompt_faces/<face>/ has it"""
     from PIL import Image, ImageDraw
     import prompt_draw
     icons = Icons(face, otf)
-    layers = []
 
     def keep(sw, pad):   # (the Switch face's default controls: the game's own textures)
         return pad in icons.code and not (face == "switch" and DEFAULT[SW[sw]] == pad)
 
-    for name, sw in NOTES.items():
-        t = tex[name]
-        w, h = t[2], t[3]
-        for pad in PADS:
-            if not keep(sw, pad):
-                continue
-            icon, shape, holes = icons.masks(pad, int(min(w, h) * 0.9))
-            im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-            o = ((w - icon.width) // 2, (h - icon.height) // 2)
-            im.paste(Image.new("RGBA", icon.size, (255, 255, 255, 255)), o, shape)
-            im.paste(Image.new("RGBA", icon.size, (0, 0, 0, 255)), o, holes)
-            layers.append(Layer(f"{name}.{pad}.png", name, SW[sw], PADS.index(pad), im))
-    for name, sw in LETTERS.items():
-        t = tex[name]
-        w, h = t[2], t[3]
-        for pad in PADS:
-            if not keep(sw, pad):
-                continue
-            icon, shape, holes = icons.masks(pad, int(min(w, h) * 0.9))
-            letter = holes if holes.getbbox() else icon   # (an icon with no letter in it: its shape)
-            im = Image.new("L", (w, h), 0)
-            im.paste(letter, ((w - letter.width) // 2, (h - letter.height) // 2))
-            layers.append(Layer(f"{name}.{pad}.png", name, SW[sw], PADS.index(pad), im))
+    layers = button_layers(tex, icons, [(pad, PADS.index(pad), pad) for pad in PADS], keep)
     own = None
     if face != "switch":
         hand = override(face, PICTURES[0] + ".png")
@@ -502,14 +545,7 @@ def face_layers(b, tex, face, otf):
         r = max(c[2] for c in PICTURE_BUTTONS.values())
         layers.append(Layer(name + ".png", name, 0xFF, 0, im, (min(xs) - r, min(ys) - r, max(xs) + r + 1, max(ys) + r + 1)))
     layers += guide_layers_of(b, tex, face)
-    for layer in layers:
-        hand = override(face, layer.name)
-        if hand:
-            im = Image.open(hand).convert(layer.im.mode)
-            if im.size != layer.im.size:
-                raise SystemExit(f"prompts: {hand} is {im.size[0]}x{im.size[1]}, the texture {layer.im.size[0]}x{layer.im.size[1]}")
-            layer.im = im
-    return layers
+    return hand_made(face, layers)
 
 
 def face_textures(b, tex, layers):
@@ -1176,8 +1212,8 @@ def generate(a):
         os.makedirs(d, exist_ok=True)
         if hint:
             write_hint(os.path.join(d, "hint.bin"), widths[face], hint)
-        if textures and face != "keyboard":   # (the keyboard's: the Switch's textures, host/prompts.c texture_face)
-            layers = face_layers(textures, tex, face, otf)
+        if textures:   # (the keyboard's: its keys' icons from the font just built)
+            layers = keyboard_layers(tex, plain) if face == "keyboard" else face_layers(textures, tex, face, otf)
             write_textures(os.path.join(d, "textures.bin"), face_textures(textures, tex, layers))
             if a.dump:
                 dump(a.dump, face, textures, tex, layers)

@@ -534,8 +534,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   a button yourself sets it to Custom.
 - **Button prompts** (on the Controls page): the button icons in the game's texts, hints and menus. Auto shows the first
   controller's; with no controller connected, the keyboard's. Keyboard shows the key or mouse button your controls put each
-  action on (the first of its two), and WASD and the mouse for the sticks; the ocarina's notes and the pause menu's
-  controller keep the Switch's buttons.
+  action on (the first of its two), and WASD and the mouse for the sticks, the ocarina's notes too; the pause menu's
+  controller keeps the Switch's buttons.
 - **Save my pipeline list** (Debug tab, under Developer): see [Send your pipeline list](#send-your-pipeline-list).
 
 ### Controls

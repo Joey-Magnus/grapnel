@@ -115,6 +115,7 @@ static void current_binds(int *bind) {
 }
 
 static int keyboard_built;   /* (the build made the keyboard face: prompts/keyboard/; choose_face) */
+static int keyboard_textures;   /* (and its textures, the keys' notes and letters: prompts/keyboard/textures.bin; texture_face) */
 
 /* Auto's face: the first controller's (by SDL's name); with none, and none through XInput either, the keyboard's */
 static int auto_face(const char *name) {
@@ -127,6 +128,8 @@ static int choose_face(const char *dir) {
     int choice = 0;
     snprintf(path, sizeof path, "%sprompts/keyboard", dir);
     keyboard_built = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    snprintf(path, sizeof path, "%sprompts/keyboard/textures.bin", dir);
+    keyboard_textures = keyboard_built && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
     snprintf(path, sizeof path, "%shookshot_options.ini", dir);
     FILE *f = fopen(path, "r");
     if (f) {
@@ -527,12 +530,15 @@ static Run *texture_runs(const uint8_t *t, long tn, const int *bind, size_t *nru
     return runs;
 }
 
-/* the face whose textures a face shows (the keyboard's: the Switch's), and the controls they follow (the keyboard face: the
-   Switch's own, its default controls: the game's pictures as they are); own: room for those */
-static int texture_face(int face) { return face == HOS_PROMPT_KEYBOARD ? HOS_PROMPT_SWITCH : face; }
+/* the face whose textures a face shows, and the controls they follow; own: room for those. The keyboard face's are its own
+   (the notes and the letters for each key, nx2/prompt_assets.py keyboard_layers), chosen by each Switch button's first key
+   (none: the game's own image); built without them, the Switch's on its default controls: the game's pictures as they are */
+static int texture_face(int face) {
+    return face == HOS_PROMPT_KEYBOARD && !keyboard_textures ? HOS_PROMPT_SWITCH : face;
+}
 static const int *texture_bind(int face, const int *bind, int *own) {
     if (face != HOS_PROMPT_KEYBOARD) return bind;
-    for (int b = 0; b < HOS_SW_N; b++) own[b] = switch_pad[b];
+    for (int b = 0; b < HOS_SW_N; b++) own[b] = keyboard_textures ? bind[HOS_SW_N + b] : switch_pad[b];
     return own;
 }
 

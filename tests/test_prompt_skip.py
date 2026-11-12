@@ -79,7 +79,7 @@ class PromptSkipTests(unittest.TestCase):
         for face in a.faces.split(","):
             (out / face).mkdir()
             (out / face / "hint.bin").write_bytes(b"authored hint")
-            if not a.no_textures and face != "keyboard":
+            if not a.no_textures:
                 (out / face / "textures.bin").write_bytes(b"authored texture")
         for name in ("Common.blarc", "ring.bin", "rsizetable.zs") + (() if a.no_textures else ("Common.bntx",)):
             (out / name).write_bytes(b"authored " + name.encode())
@@ -182,7 +182,8 @@ class PromptSkipTests(unittest.TestCase):
         self.build()
         (self.out / "keyboard" / "hint.bin").unlink()
         self.build()
-        (self.out / "keyboard" / "hint.bin").unlink()
+        for name in ("hint.bin", "textures.bin"):
+            (self.out / "keyboard" / name).unlink(missing_ok=True)
         (self.out / "keyboard").rmdir()
         self.build()
         self.assertEqual(self.calls, 3)
